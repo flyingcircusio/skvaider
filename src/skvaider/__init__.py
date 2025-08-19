@@ -1,7 +1,7 @@
 from fastapi import Depends, FastAPI
 
-from skvaider.auth import BearerToken
 import skvaider.routers.openai
+from skvaider.auth import BearerToken
 
 app = FastAPI(dependencies=[Depends(BearerToken)])
 
