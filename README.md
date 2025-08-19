@@ -2,6 +2,5 @@
 ## Start dev server
 
 ```
-uv run uvicorn chimera:app --reload
+uv run uvicorn skvaider:app --reload
 ```
-

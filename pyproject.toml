@@ -1,19 +1,16 @@
 [project]
-name = "chimera"
+name = "skvaider"
 version = "0.1.0"
-description = "ML model orchestrator"
+description = "Router for ML/AI model API access"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "Flying Circus Internet Operations GmbH", email = "mail@flyingcircus.io" }
+    { name = "Flying Circus Internet Operations GmbH", email = "mail@flyingcircus.io" },
 ]
-dependencies = [
-    "fastapi[standard]>=0.116.1",
-    "uvicorn[standard]>=0.35.0",
-]
+dependencies = ["fastapi[standard]>=0.116.1", "uvicorn[standard]>=0.35.0"]
 
 [project.scripts]
-chimera = "chimera:main"
+skvaider = "skvaider:main"
 
 [build-system]
 requires = ["uv_build>=0.8.2,<0.9.0"]
