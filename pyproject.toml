@@ -3,11 +3,17 @@ name = "skvaider"
 version = "0.1.0"
 description = "Router for ML/AI model API access"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     { name = "Flying Circus Internet Operations GmbH", email = "mail@flyingcircus.io" },
 ]
-dependencies = ["fastapi[standard]>=0.116.1", "uvicorn[standard]>=0.35.0"]
+dependencies = [
+    "fastapi[standard]>=0.116.1",
+    "httpx>=0.28.1",
+    "pydantic-settings>=2.10.1",
+    "svcs>=25.1.0",
+    "uvicorn[standard]>=0.35.0",
+]
 
 [project.scripts]
 skvaider = "skvaider:main"
