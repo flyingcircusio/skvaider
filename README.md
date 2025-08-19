@@ -2,5 +2,5 @@
 ## Start dev server
 
 ```
-uv run uvicorn skvaider:app --reload
+uv run uvicorn skvaider:app_factory --factory --reload
 ```
