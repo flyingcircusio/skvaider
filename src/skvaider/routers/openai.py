@@ -1,10 +1,12 @@
 import tomllib
+import os
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, AsyncGenerator, Generic, TypeVar
 
 import httpx
 import svcs
 from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -13,12 +15,30 @@ T = TypeVar("T")
 
 
 class Backend:
-    url: str = "http://localhost:8001"
+    def __init__(self):
+        # Use OLLAMA_HOST environment variable or default to localhost:11434
+        ollama_host = os.getenv("OLLAMA_HOST", "127.0.0.1:11434")
+        if not ollama_host.startswith("http"):
+            ollama_host = f"http://{ollama_host}"
+        self.url = ollama_host
 
     async def post(self, path: str, data: dict):
         async with httpx.AsyncClient() as client:
             r = await client.post(self.url + path, json=data, timeout=120)
             return r.json()
+    
+    async def post_stream(self, path: str, data: dict) -> AsyncGenerator[str, None]:
+        """Stream responses from the backend"""
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST", 
+                self.url + path, 
+                json=data, 
+                timeout=120
+            ) as response:
+                async for chunk in response.aiter_text():
+                    if chunk.strip():
+                        yield chunk
 
 
 class AIModel(BaseModel):
@@ -75,6 +95,49 @@ async def chat_completions(
 ) -> Any:
     request_data = await r.json()
     request_data["store"] = False
-    # backend = services.get(Backends)
     backend = Backend()
-    return await backend.post("/v1/chat/completions", request_data)
+    
+    # Check if streaming is requested
+    stream = request_data.get("stream", False)
+    
+    if stream:
+        # Return streaming response
+        async def generate():
+            async for chunk in backend.post_stream("/v1/chat/completions", request_data):
+                yield chunk
+        
+        return StreamingResponse(
+            generate(), 
+            media_type="text/plain",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
+    else:
+        # Return regular JSON response
+        return await backend.post("/v1/chat/completions", request_data)
+
+
+@router.post("/v1/completions")
+async def completions(
+    r: Request, services: svcs.fastapi.DepContainer
+) -> Any:
+    request_data = await r.json()
+    request_data["store"] = False
+    backend = Backend()
+    
+    # Check if streaming is requested
+    stream = request_data.get("stream", False)
+    
+    if stream:
+        # Return streaming response
+        async def generate():
+            async for chunk in backend.post_stream("/v1/completions", request_data):
+                yield chunk
+        
+        return StreamingResponse(
+            generate(), 
+            media_type="text/plain",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+        )
+    else:
+        # Return regular JSON response
+        return await backend.post("/v1/completions", request_data)
