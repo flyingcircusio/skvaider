@@ -8,3 +8,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Nix dev environment
+.direnv
+.devenv
+.envrc
