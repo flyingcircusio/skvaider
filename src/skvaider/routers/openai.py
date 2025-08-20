@@ -14,6 +14,11 @@ router = APIRouter()
 T = TypeVar("T")
 
 
+# XXX this requires a backend pool that implements the post api
+# we likely want a minimum of logging that also shows stuff like haproxy
+# on the timings and the queues/active requests
+
+
 class Backend:
     def __init__(self):
         # Use OLLAMA_HOST environment variable or default to localhost:11434
@@ -39,6 +44,21 @@ class Backend:
                 async for chunk in response.aiter_text():
                     if chunk.strip():
                         yield chunk
+
+    # XXX use regular health checks (poll the model list and update the model map!)
+    # mark backends down when they fail
+
+    #                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1730, in _send_single_request
+    #     response = await transport.handle_async_request(request)
+    #                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 393, in handle_async_request
+    #     with map_httpcore_exceptions():
+    #   File "/Users/ctheune/.nix-profile/lib/python3.11/contextlib.py", line 158, in __exit__
+    #     self.gen.throw(typ, value, traceback)
+    #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    #     raise mapped_exc(message) from exc
+    # httpx.ConnectError: All connection attempts failed
 
 
 class AIModel(BaseModel):
@@ -96,6 +116,7 @@ async def chat_completions(
     request_data = await r.json()
     request_data["store"] = False
     backend = Backend()
+    # XXX pass through headers?
     
     # Check if streaming is requested
     stream = request_data.get("stream", False)
