@@ -10,8 +10,7 @@ By default it expects Ollama at `127.0.0.1:11434`. Use `OLLAMA_HOST` to change t
 ## Testing
 
 ```bash
-python test_endpoints.py
-python test_openai_client.py
+uv run pytest
 ```
 
 Models are configured in `models.toml`.
