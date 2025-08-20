@@ -29,8 +29,8 @@ def app_factory():
         dependencies=[Security(verify_token)],
     )
     app.include_router(
-        skvaider.routers.openai.router,
-        prefix="/openai",
+        skvaider.routers.admin.router,
+        prefix="/admin",
     )
 
     return app
