@@ -13,7 +13,7 @@
       inputs.devenv.flakeModule
     ];
     systems = inputs.nixpkgs.lib.systems.flakeExposed;
-    perSystem = { config, pkgs, inputs', self', system, ... }: {
+    perSystem = {  pkgs, ... }: {
       devenv.shells.default = {
         packages = with pkgs; [
           postgresql.lib
