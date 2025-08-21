@@ -1,7 +1,8 @@
+import svcs
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from skvaider.db import DBSessionDep
+from skvaider.db import DBSession
 from skvaider.models import AuthToken
 
 router = APIRouter()
@@ -13,7 +14,9 @@ class AddTokenRequest(BaseModel):
 
 
 @router.put("/token")
-async def add_token(db_session: DBSessionDep, data: AddTokenRequest):
+async def add_token(data: AddTokenRequest, services: svcs.fastapi.DepContainer):
+    db_session = services.get(DBSession)
+
     token = await db_session.get(AuthToken, data.username)
     if token is not None:
         raise HTTPException(status_code=400, detail="Username already exists")
@@ -28,7 +31,11 @@ class DeleteTokenRequest(BaseModel):
 
 
 @router.delete("/token")
-async def delete_token(db_session: DBSessionDep, data: DeleteTokenRequest):
+async def delete_token(
+    data: DeleteTokenRequest, services: svcs.fastapi.DepContainer
+):
+    db_session = services.get(DBSession)
+
     token = await db_session.get(AuthToken, data.username)
     if token is not None:
         await db_session.delete(token)

@@ -1,9 +1,10 @@
 from typing import Annotated
 
+import svcs
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from skvaider.db import DBSessionDep
+from skvaider.db import DBSession
 from skvaider.models import AuthToken
 
 _bearer_auth = HTTPBearer()
@@ -11,8 +12,9 @@ _bearer_auth = HTTPBearer()
 
 async def verify_token(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_auth)],
-    db_session: DBSessionDep,
+    services: svcs.fastapi.DepContainer,
 ):
+    db_session = services.get(DBSession)
     token = credentials.credentials
     try:
         username, password = token.split("-", 1)

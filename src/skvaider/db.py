@@ -1,7 +1,6 @@
 import contextlib
-from typing import Annotated, Any, AsyncIterator
+from typing import Any, AsyncIterator
 
-from fastapi import Depends
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncSession,
@@ -10,7 +9,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-DB_URL = "postgresql+psycopg://skvaider:foobar@localhost:5432/skvaider"
+DBSession = AsyncSession
 
 
 class Base(DeclarativeBase):
@@ -32,23 +31,11 @@ class DBSessionManager:
 
     async def close(self):
         if self._engine is None:
-            raise Exception("DBSessionManager is not initialized")
+            return
         await self._engine.dispose()
 
         self._engine = None
         self._sessionmaker = None
-
-    @contextlib.asynccontextmanager
-    async def connect(self) -> AsyncIterator[AsyncConnection]:
-        if self._engine is None:
-            raise Exception("DBSessionManager is not initialized")
-
-        async with self._engine.begin() as connection:
-            try:
-                yield connection
-            except Exception:
-                await connection.rollback()
-                raise
 
     @contextlib.asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:
@@ -63,14 +50,3 @@ class DBSessionManager:
             raise
         finally:
             await session.close()
-
-
-sessionmanager = DBSessionManager(DB_URL)
-
-
-async def get_db_session():
-    async with sessionmanager.session() as session:
-        yield session
-
-
-DBSessionDep = Annotated[AsyncSession, Depends(get_db_session)]
