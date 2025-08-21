@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import svcs
 from fastapi import FastAPI, Security
 
@@ -7,12 +5,10 @@ import skvaider.routers.admin
 import skvaider.routers.openai
 from skvaider.auth import verify_token
 from skvaider.db import DBSession, DBSessionManager
-from skvaider.routers.openai import ModelDB
 
 
 @svcs.fastapi.lifespan
 async def lifespan(app: FastAPI, registry: svcs.Registry):
-    model_db = ModelDB.from_config_file(Path("models.toml"))
     DB_URL = "postgresql+psycopg://skvaider:foobar@localhost:5432/skvaider"
     sessionmanager = DBSessionManager(DB_URL)
 
@@ -21,12 +17,15 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
             print(session)
             yield session
 
-    # backends =
-
     registry.register_factory(DBSession, get_db_session)
-    registry.register_value(ModelDB, model_db)
+
+    pool = skvaider.routers.openai.Pool()
+    pool.add_backend(skvaider.routers.openai.Backend("http://127.0.0.1:11434"))
+    registry.register_value(skvaider.routers.openai.Pool, pool)
+
     yield {}
 
+    pool.close()
     await sessionmanager.close()
 
 
