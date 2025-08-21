@@ -14,7 +14,7 @@ async def verify_token(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_auth)],
     services: svcs.fastapi.DepContainer,
 ):
-    db_session = services.get(DBSession)
+    db_session = await services.aget(DBSession)
     token = credentials.credentials
     try:
         username, password = token.split("-", 1)
