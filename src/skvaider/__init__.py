@@ -1,3 +1,5 @@
+import tomllib
+
 import svcs
 from fastapi import FastAPI, Security
 
@@ -9,18 +11,22 @@ from skvaider.db import DBSession, DBSessionManager
 
 @svcs.fastapi.lifespan
 async def lifespan(app: FastAPI, registry: svcs.Registry):
-    DB_URL = "postgresql+psycopg://skvaider:foobar@localhost:5432/skvaider"
-    sessionmanager = DBSessionManager(DB_URL)
+    with open("config.toml", "rb") as f:
+        config = tomllib.load(f)
+
+    sessionmanager = DBSessionManager(config["database"]["url"])
 
     async def get_db_session():
         async with sessionmanager.session() as session:
-            print(session)
             yield session
 
     registry.register_factory(DBSession, get_db_session)
 
     pool = skvaider.routers.openai.Pool()
-    pool.add_backend(skvaider.routers.openai.Backend("http://127.0.0.1:11434"))
+    for backend_config in config["backend"]:
+        if backend_config["type"] != "openai":
+            continue
+        pool.add_backend(skvaider.routers.openai.Backend(backend_config["url"]))
     registry.register_value(skvaider.routers.openai.Pool, pool)
 
     yield {}
