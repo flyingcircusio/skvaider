@@ -195,10 +195,11 @@ async def chat_completions(
 async def completions(r: Request, services: svcs.fastapi.DepContainer) -> Any:
     request_data = await r.json()
     request_data["store"] = False
+    model = request_data["model"]
 
     pool = services.get(Pool)
 
-    with pool.use() as backend:
+    with pool.use(model) as backend:
         # Check if streaming is requested
         stream = request_data.get("stream", False)
 

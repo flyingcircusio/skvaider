@@ -1,5 +1,4 @@
-# Sample config used by the development environment and tests.
-
+# Sample config used by the development environment
 [database]
 url = "postgresql+psycopg://skvaider:foobar@localhost:5432/skvaider"
 

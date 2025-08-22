@@ -8,7 +8,11 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-DBSession = AsyncSession
+DBSession = AsyncSession  # Alias for easier referencing
+
+
+class SessionManagerClosed(Exception):
+    pass
 
 
 class Base(DeclarativeBase):
@@ -16,8 +20,6 @@ class Base(DeclarativeBase):
     async def create(cls, db: AsyncSession, **kwargs):
         transaction = cls(**kwargs)
         db.add(transaction)
-        await db.commit()
-        await db.refresh(transaction)
         return transaction
 
 
@@ -39,7 +41,7 @@ class DBSessionManager:
     @contextlib.asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:
         if self._sessionmaker is None:
-            raise Exception("DBSessionManager is not initialized")
+            raise SessionManagerClosed()
 
         session = self._sessionmaker()
         try:
@@ -47,5 +49,7 @@ class DBSessionManager:
         except Exception:
             await session.rollback()
             raise
+        else:
+            await session.commit()
         finally:
             await session.close()

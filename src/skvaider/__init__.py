@@ -1,3 +1,4 @@
+import os
 import tomllib
 
 import svcs
@@ -11,7 +12,8 @@ from skvaider.db import DBSession, DBSessionManager
 
 @svcs.fastapi.lifespan
 async def lifespan(app: FastAPI, registry: svcs.Registry):
-    with open("config.toml", "rb") as f:
+    config_file = os.environ.get("SKVAIDER_CONFIG_FILE", "config.toml")
+    with open(config_file, "rb") as f:
         config = tomllib.load(f)
 
     sessionmanager = DBSessionManager(config["database"]["url"])
