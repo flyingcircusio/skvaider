@@ -1,27 +1,45 @@
+## About
 
-## Start dev server
+skvaider is a proxy and router for AI-APIs.
 
-Ideally, this happens in a combination with a Nix-based devenv, as this provides a local postgresql.
+Features:
 
-You can start the devenv with `nix develop --impure` or by using direnv with a `.envrc` containing `use flake . --impure`.
-To start the postgres inside the devenv run `devenv up`.
+* route requests to different backend servers based on model availability and load
+* automated health checks
+* automated model discovery
+* token authentication
+
+
+> The name `skvaider` is derived from the Swedish word `skvader` which is one
+> of those mythical beasts concocted from multiple real animals. Incidentally
+> a flying rabbit seems more than apt as this project was started by the
+> Flying Circus.
+
+## Development environment
+
+> This requires a local Nix installation.
+
+This will start the development server, postgresql, and other auxiliary services.
+
+```bash
+$ nix develop --impure
+$ devenv up
+```
+
+### Variations of the development environment
+
+You can also activate the development environment with direnv and a `.envrc` (not checked in) using `use flake . --impure`.
 
 This project uses manual database migrations at the moment, these can be applied with the following command
 
+```bash
+$ nix develop --impure
+$ bootstrap-db
 ```
-psql -d skvaider -p 5432 -U skvaider < migrations/0001_init.sql
-```
-
-Then the server can be started with
-
-```
-uv run uvicorn skvaider:app_factory --factory --reload
-```
-
-By default it expects Ollama at `127.0.0.1:11434`. Use `OLLAMA_HOST` to change this.
 
 ## Testing
 
 ```bash
-uv run pytest
+$ nix develop --impure
+$ run-tests
 ```

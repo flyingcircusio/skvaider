@@ -1,6 +1,6 @@
 [project]
 name = "skvaider"
-version = "0.1.0"
+version = "0.1.0dev0"
 license = "MIT"
 description = "Router for ML/AI model API access"
 readme = "README.md"
@@ -34,8 +34,4 @@ profile = "black"
 line_length = 80
 
 [dependency-groups]
-dev = [
-    "openai>=1.100.2",
-    "pytest>=8.4.1",
-    "pytest-asyncio>=1.1.0",
-]
+dev = ["openai>=1.100.2", "pytest>=8.4.1", "pytest-asyncio>=1.1.0"]

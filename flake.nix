@@ -18,6 +18,19 @@
         packages = with pkgs; [
           postgresql.lib
         ];
+
+        scripts.bootstrap-db.exec = ''
+          psql -d skvaider -p 5432 -U skvaider < migrations/0001_init.sql
+        '';
+
+        scripts.run-tests.exec = ''
+          uv run pytest -vv
+        '';
+
+        processes = {
+          skvaider.exec = "uv run uvicorn skvaider:app_factory --reload-include '*.toml' --factory --reload ";
+        };
+
         services.postgres = {
           enable = true;
           listen_addresses = "localhost";
@@ -29,6 +42,7 @@
             }
           ];
         };
+
         languages.python = {
           enable = true;
           package = pkgs.python312;
