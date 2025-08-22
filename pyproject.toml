@@ -34,4 +34,10 @@ profile = "black"
 line_length = 80
 
 [dependency-groups]
-dev = ["openai>=1.100.2", "pytest>=8.4.1", "pytest-asyncio>=1.1.0"]
+dev = [
+    "openai>=1.100.2",
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+    "pytest-cov>=6.2.1",
+    "pytest-timeout>=2.4.0",
+]
