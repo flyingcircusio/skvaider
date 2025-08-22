@@ -1,6 +1,7 @@
 [project]
 name = "skvaider"
 version = "0.1.0"
+license = "MIT"
 description = "Router for ML/AI model API access"
 readme = "README.md"
 requires-python = ">=3.11"
