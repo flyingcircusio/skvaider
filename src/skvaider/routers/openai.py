@@ -55,7 +55,8 @@ class Backend:
                 async with httpx.AsyncClient() as client:
                     r = await client.get(self.url + "/v1/models")
                 self.models.clear()
-                for model in r.json()["data"]:
+                new_models = r.json()["data"] or ()
+                for model in new_models:
                     self.models[model["id"]] = AIModel(
                         id=model["id"],
                         created=model["created"],
