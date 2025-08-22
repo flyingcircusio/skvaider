@@ -14,10 +14,16 @@
     ];
     systems = inputs.nixpkgs.lib.systems.flakeExposed;
     perSystem = {  pkgs, ... }: {
+
       devenv.shells.default = {
         packages = with pkgs; [
           postgresql.lib
+          ollama
         ];
+
+        env = {
+          OLLAMA_HOST = "127.0.0.1:11435";
+        };
 
         scripts.bootstrap-db.exec = ''
           psql -d skvaider -p 5432 -U skvaider < migrations/0001_init.sql
@@ -29,6 +35,12 @@
 
         processes = {
           skvaider.exec = "uv run uvicorn skvaider:app_factory --reload-include '*.toml' --factory --reload ";
+          ollama.exec = ''
+            ollama serve&
+            ollama pull gemma3:1b
+            ollama list
+            wait
+          '';
         };
 
         services.postgres = {

@@ -1,6 +1,8 @@
+# Sample config used by the development environment and tests.
+
 [database]
 url = "postgresql+psycopg://skvaider:foobar@localhost:5432/skvaider"
 
 [[backend]]
 type = "openai"
-url = "http://127.0.0.1:11434"
+url = "http://127.0.0.1:11435"
