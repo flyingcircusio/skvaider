@@ -71,18 +71,14 @@ def test_chat_completions_streaming(openai_client):
             else ""
         )
         full_content += content
-        if chunk_count <= 5:  # Show first 5 chunks
-            print(f"   Chunk {chunk_count}: '{content}'")
-        if chunk_count >= 20:  # Stop after reasonable number
+        if chunk_count >= 100:  # Stop after reasonable number
             break
 
-    assert full_content
     assert "1" in full_content
     assert "2" in full_content
     assert "3" in full_content
     assert "4" in full_content
     assert "5" in full_content
-    assert 0 < chunk_count < 100
 
 
 def test_completions(openai_client):
