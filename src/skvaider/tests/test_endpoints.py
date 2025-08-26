@@ -22,6 +22,23 @@ def test_get_model(client, auth_header):
     assert model["owned_by"] == "library"
 
 
+def test_completions_with_non_existing_model(client, auth_header):
+    payload = {
+        "model": "non-existing",
+        "messages": [{"role": "user", "content": "Hello, how are you?"}],
+        "stream": False,
+        "max_tokens": 50,
+    }
+    response = client.post(
+        "http://localhost:8000/openai/v1/chat/completions",
+        json=payload,
+        headers={
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 400
+
+
 def test_chat_completions_non_streaming(client, auth_header):
     payload = {
         "model": "gemma3:1b",
@@ -55,7 +72,10 @@ def test_chat_completions_streaming(client, auth_header):
         },
     ) as response:
         assert response.status_code == 200, response.read()
-        assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
+        assert (
+            response.headers["content-type"]
+            == "text/event-stream; charset=utf-8"
+        )
         # Just confirm we can read some chunks
         chunk_count = 0
         for chunk in response.iter_text():

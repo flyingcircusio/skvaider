@@ -4,7 +4,7 @@ from typing import Any, AsyncGenerator, Generic, TypeVar
 
 import httpx
 import svcs
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -122,7 +122,13 @@ class Pool:
         """
         healthy = filter(lambda b: b.healthy, self.backends)
         with_model = filter(lambda b: model in b.models, healthy)
-        return sorted(with_model, key=lambda x: x.connections)[-1]
+        available_models = sorted(with_model, key=lambda x: x.connections)
+        if not available_models:
+            raise HTTPException(
+                400,
+                f"The model: `{model}` does not exist",
+            )
+        return available_models[-1]
 
     @contextlib.contextmanager
     def use(self, model):
