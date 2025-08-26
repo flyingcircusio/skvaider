@@ -17,3 +17,10 @@ wheels/
 # test generated files
 .coverage*
 htmlcov
+
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
