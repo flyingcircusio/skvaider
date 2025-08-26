@@ -228,3 +228,15 @@ async def completions(r: Request, services: svcs.fastapi.DepContainer) -> Any:
         else:
             # Return regular JSON response
             return await backend.post("/v1/completions", request_data)
+
+
+@router.post("/v1/embeddings")
+async def embeddings(r: Request, services: svcs.fastapi.DepContainer) -> Any:
+    request_data = await r.json()
+    request_data["store"] = False
+    model = request_data["model"]
+
+    pool = services.get(Pool)
+
+    with pool.use(model) as backend:
+        return await backend.post("/v1/embeddings", request_data)

@@ -40,6 +40,7 @@
         ollama serve&
         timeout 15 bash -c "until ${lib.getExe pkgs.curl} http://localhost:11435 -s; do sleep 0.5; done"
         ollama pull gemma3:1b
+        ollama pull nomic-embed-text:v1.5
         ollama list
         wait
       '';

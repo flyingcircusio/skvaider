@@ -4,7 +4,7 @@ Test script to verify OpenAI client compatibility with our API gateway.
 """
 
 import pytest
-from openai import AsyncOpenAI, OpenAI
+from openai import OpenAI
 
 
 @pytest.fixture
@@ -111,3 +111,11 @@ def test_completions_streaming(openai_client):
 
     assert "paris" in full_content.lower()
     assert 0 < chunk_count < 100
+
+
+def test_embeddings(openai_client):
+    response = openai_client.embeddings.create(
+        input="Test String", model="nomic-embed-text:v1.5"
+    )
+    assert response.data is not None
+    assert len(response.data[0].embedding) >= 100
