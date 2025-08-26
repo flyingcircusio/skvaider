@@ -9,6 +9,8 @@
   enterTest = ''
     wait_for_port 11435
     wait_for_port 5432
+    # Wait for model (defined in processes:ollama) to be available
+    until ${lib.getExe pkgs.curl} -s http://127.0.0.1:11435/v1/models | ${lib.getExe pkgs.yq-go} -e ".data"; do sleep 0.5; done
     bootstrap-db
     run-tests
   '';
@@ -33,12 +35,14 @@
 
   processes = {
     skvaider.exec = "uv run uvicorn skvaider:app_factory --reload-include 'config.toml' --factory --reload ";
-    ollama.exec = ''
-      ollama serve&
-      ollama pull gemma3:1b
-      ollama list
-      wait
-    '';
+    ollama = {
+      exec = ''
+        ollama serve&
+        ollama pull gemma3:1b
+        ollama list
+        wait
+      '';
+    };
   };
 
   services.postgres = {
