@@ -180,7 +180,7 @@ async def chat_completions(
 
             return StreamingResponse(
                 generate(),
-                media_type="text/plain",
+                media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
@@ -213,7 +213,7 @@ async def completions(r: Request, services: svcs.fastapi.DepContainer) -> Any:
 
             return StreamingResponse(
                 generate(),
-                media_type="text/plain",
+                media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",

@@ -55,6 +55,7 @@ def test_chat_completions_streaming(client, auth_header):
         },
     ) as response:
         assert response.status_code == 200, response.read()
+        assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
         # Just confirm we can read some chunks
         chunk_count = 0
         for chunk in response.iter_text():
@@ -81,3 +82,4 @@ def test_completions_non_streaming(client, auth_header):
         },
     )
     assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "application/json"
