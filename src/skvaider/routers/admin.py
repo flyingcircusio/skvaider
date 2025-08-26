@@ -15,7 +15,7 @@ class AddTokenRequest(BaseModel):
 
 @router.put("/token")
 async def add_token(data: AddTokenRequest, services: svcs.fastapi.DepContainer):
-    db_session = services.get(DBSession)
+    db_session = await services.aget(DBSession)
 
     token = await db_session.get(AuthToken, data.username)
     if token is not None:
@@ -34,7 +34,7 @@ class DeleteTokenRequest(BaseModel):
 async def delete_token(
     data: DeleteTokenRequest, services: svcs.fastapi.DepContainer
 ):
-    db_session = services.get(DBSession)
+    db_session = await services.aget(DBSession)
 
     token = await db_session.get(AuthToken, data.username)
     if token is not None:
