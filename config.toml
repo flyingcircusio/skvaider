@@ -2,6 +2,10 @@
 [database]
 url = "postgresql+psycopg://skvaider:foobar@localhost:5432/skvaider"
 
+[aramaki]
+url = "wss://directory.b82f1c635cc.largo01.fcdev.fcio.net/aramaki"
+state_directory = ".aramaki-workdir"
+
 [[backend]]
 type = "openai"
 url = "http://127.0.0.1:11435"

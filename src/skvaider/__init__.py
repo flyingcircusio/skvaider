@@ -1,12 +1,15 @@
+import asyncio
 import os
 import tomllib
 
 import svcs
 from fastapi import FastAPI, Security
 
-import skvaider.routers.admin
 import skvaider.routers.openai
+from skvaider.aramaki import Manager as AramakiManager
+from skvaider.aramaki.collection_replication import CollectionReplicationManager
 from skvaider.auth import verify_token
+from skvaider.collection_replicator import AITokenReplicator
 from skvaider.config import Config
 from skvaider.db import DBSession, DBSessionManager
 
@@ -33,8 +36,26 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
         pool.add_backend(skvaider.routers.openai.Backend(backend_config.url))
     registry.register_value(skvaider.routers.openai.Pool, pool)
 
+    aramaki_manager = AramakiManager(
+        config.aramaki.principal,
+        "skvaider",
+        config.aramaki.url,
+        config.aramaki.secret,
+    )
+    ai_token_replicator = AITokenReplicator(registry)
+    CollectionReplicationManager(
+        aramaki_manager,
+        "fc.directory.ai.token",
+        config.aramaki.state_directory,
+        ai_token_replicator.update,
+        ai_token_replicator.start_full_sync,
+        ai_token_replicator.end_full_sync,
+    )
+    aramaki_manager_task = asyncio.create_task(aramaki_manager.run())
+
     yield {}
 
+    aramaki_manager_task.cancel()
     pool.close()
     await sessionmanager.close()
 
@@ -45,10 +66,6 @@ def app_factory():
         skvaider.routers.openai.router,
         prefix="/openai",
         dependencies=[Security(verify_token)],
-    )
-    app.include_router(
-        skvaider.routers.admin.router,
-        prefix="/admin",
     )
 
     return app

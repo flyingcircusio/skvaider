@@ -6,5 +6,6 @@ from skvaider.db import Base
 class AuthToken(Base):
     __tablename__ = "auth_tokens"
 
-    username: Mapped[str] = mapped_column(primary_key=True)
-    password: Mapped[str] = mapped_column()
+    id: Mapped[int] = mapped_column(primary_key=True)
+    resource_group: Mapped[str] = mapped_column()
+    secret_hash: Mapped[str] = mapped_column()
