@@ -59,7 +59,7 @@ class CollectionReplicationManager:
                 "application": self.aramaki_manager.application,
                 "collection": self.collection,
             },
-            self.process_start_catchup,
+            self.process_start_catchup_message,
         )
         self.aramaki_manager.register_callback(
             "directory.collection.catchup.step",
@@ -78,7 +78,7 @@ class CollectionReplicationManager:
             self.process_update_message,
         )
 
-        self.request_full_sync()
+        self.request_catchup()
 
     async def start(self):
         db_url = f"sqlite+aiosqlite://{self.state_directory}/aramaki.sqlite3"
@@ -87,11 +87,7 @@ class CollectionReplicationManager:
         async with self.db_sessionmanager.session() as db_session:
             await db_session.get_bind().execute(
                 sqlalchemy.text(
-                    (
-                        importlib.resources.files(__package__)
-                        / "migrations"
-                        / "0001.sql"
-                    )
+                    (importlib.resources.files(__package__) / "migrations" / "0001.sql")
                     .open("r", encoding="utf-8")
                     .read()
                 )
@@ -108,11 +104,8 @@ class CollectionReplicationManager:
             ) = await CollectionReplicationStatus.currently_known_partition_and_version(
                 db_session, self.collection
             )
-            if (
-                current_partition is not None
-                and current_partition != msg["partition"]
-            ):
-                await self.request_full_sync()
+            if current_partition is None or current_partition != msg["partition"]:
+                await self.request_catchup()
                 return
 
             # Discard the message if we have a newer version
@@ -138,10 +131,10 @@ class CollectionReplicationManager:
                     )
 
                     if (
-                        current_partition is not None
-                        and current_partition != msg["partition"]
+                        current_partition is None
+                        or current_partition != msg["partition"]
                     ):
-                        asyncio.create_task(self.request_full_sync())
+                        asyncio.create_task(self.request_catchup())
                         return
                     if msg["version"] < current_version:
                         # Discard the message, we already processed a newer one
@@ -176,7 +169,7 @@ class CollectionReplicationManager:
                     # are now processable
                     self.new_update_message_event.set()
 
-    async def request_full_sync(self):
+    async def request_catchup(self):
         async with self.db_sessionmanager.session() as db_session:
             (
                 current_partition,
@@ -205,7 +198,7 @@ class CollectionReplicationManager:
         # XXX: Maybe we need to signal to the server that our partition is not the one they think we have.
         # Otherwise, we might wait for an infinite time to receive a catchup.step with version_from = 1
         full_sync = (
-            msg["start_version"] == 0 or msg["partition"] != current_partition
+            msg["start_version"] in (0, 1) or msg["partition"] != current_partition
         )
 
         async with self.update_lock:
@@ -214,12 +207,16 @@ class CollectionReplicationManager:
                     self.start_full_sync_callback()
                     async with self.db_sessionmanager.session() as db_session:
                         records = db_session.execute(
-                            sqlalchemy.select(
-                                CollectionReplicationStatus
-                            ).filter_by(collection=self.collection)
+                            sqlalchemy.select(CollectionReplicationStatus).filter_by(
+                                collection=self.collection
+                            )
                         )
                         for record in records:
                             record.delete()
+                        # There is currently no record in the partition
+                        if msg["start_version"] == 0:
+                            # remember the partition of the collection here
+                            pass
 
             await self.catchup_finished_event.wait()
 
