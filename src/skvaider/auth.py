@@ -4,26 +4,29 @@ import svcs
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from skvaider.db import DBSession
-from skvaider.models import AuthToken
+import aramaki
 
 _bearer_auth = HTTPBearer()
+
+
+class AuthTokens(aramaki.Collection):
+    collection = "fc.directory.ai.tokens"
 
 
 async def verify_token(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_auth)],
     services: svcs.fastapi.DepContainer,
 ):
-    db_session = await services.aget(DBSession)
+    authtokens = await services.aget(AuthTokens)
     token = credentials.credentials
     try:
         username, password = token.split("-", 1)
     except ValueError:
         raise HTTPException(403, detail="Not authenticated")
-    token_obj = await db_session.get(AuthToken, username)
+    token_obj = await authtokens.get(username)
     if token_obj is None:
         # TODO: Add hash calculation here to prevent timing attacks
         raise HTTPException(403, detail="Not authenticated")
     # TODO: Implement hashing function
-    if token_obj.password != password:
+    if token_obj["password"] != password:
         raise HTTPException(403, detail="Not authenticated")

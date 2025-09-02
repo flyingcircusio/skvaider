@@ -24,3 +24,5 @@ devenv.local.nix
 
 # direnv
 .direnv
+
+.aramaki-workdir

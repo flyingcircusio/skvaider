@@ -1,36 +1,105 @@
 import asyncio
-import importlib.resources
-from pathlib import Path
-from typing import Callable
+import json
+from typing import TYPE_CHECKING
 
 import sqlalchemy
+from sqlalchemy import UniqueConstraint, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped, mapped_column
 
-from skvaider.aramaki import Manager
-from skvaider.aramaki.db import DBSessionManager
-from skvaider.aramaki.models import CollectionReplicationStatus
+from aramaki.db import Base, DBSession
+
+
+class CollectionReplicationStatus(Base):
+    __tablename__ = "collection_replication_status"
+    __table_args__ = (
+        UniqueConstraint(
+            "collection",
+            "partition",
+            name="collection_partition_unique",
+        ),
+    )
+
+    collection: Mapped[str] = mapped_column(primary_key=True)
+    partition: Mapped[str] = mapped_column(primary_key=True)
+    record_id: Mapped[str] = mapped_column(primary_key=True)
+    version: Mapped[int] = mapped_column()
+    data: Mapped[bytes] = mapped_column()
+
+    @classmethod
+    async def currently_known_partition_and_version(
+        cls, db_session: DBSession, collection: str
+    ) -> tuple[str | None, int]:
+        # Use the fact that (collection, partition) is unique for the client view here.
+        maybe_result = (
+            (
+                await db_session.execute(
+                    select(cls.partition, func.max(cls.version))
+                    .filter_by(collection=collection)
+                    .group_by(cls.partition)
+                )
+            )
+            .scalar()
+            .one_or_none()
+        )
+        if maybe_result is None:
+            return None, 0
+        return maybe_result
+
+
+if TYPE_CHECKING:
+    from aramaki import Manager
+
+
+class Collection:
+    """Read-only access to a collection."""
+
+    collection: str  # The identifier for the collection in Aramaki
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get(self, key: str) -> dict | None:
+        breakpoint()
+        result = (
+            (
+                await self.session.execute(
+                    select(CollectionReplicationStatus).filter_by(
+                        collection=self.collection, record_id=key
+                    )
+                )
+            )
+            .scalars()
+            .one_or_none()
+        )
+        if not result:
+            return
+        return json.load(result["data"])
+
+    async def keys(self) -> list[str]:
+        result = []
+        result = (
+            await self.session.query(CollectionReplicationStatus)
+            .filter_by(collection=self.collection)
+            .all()
+        )
+        return [x["record_id"] for x in result]
 
 
 class CollectionReplicationManager:
+    """Manages the replication for a single collection."""
+
     def __init__(
         self,
-        aramaki_manager: Manager,
+        aramaki: "Manager",
         collection: str,
-        state_directory: Path,
-        # TODO: improve types
-        update_callback: Callable,
-        start_full_sync_callback: Callable,
-        end_full_sync_callback: Callable,
     ):
         self.collection = collection
-        self.state_directory: Path = state_directory
-        self.aramaki_manager = aramaki_manager
+        self.aramaki = aramaki
         self.new_update_message_event = asyncio.Event()
         self.new_catchup_step_message_event = asyncio.Event()
         self.catchup_finished_event = asyncio.Event()
         self.tasks = set()
-        self.update_callback: Callable = update_callback
-        self.start_full_sync_callback: Callable = start_full_sync_callback
-        self.end_full_sync_callback: Callable = end_full_sync_callback
         # We have two types of locks here:
         #
         # The update lock to ensure that no update runs concurrently:
@@ -44,7 +113,6 @@ class CollectionReplicationManager:
         # is wiped.
         self.catchup_lock = asyncio.Lock()
 
-        self.db_sessionmanager: DBSessionManager | None = None
         self.update_buffer: dict[int, dict] = {}
         self.catchup_buffer: dict[int, dict] = {}
 
@@ -52,25 +120,25 @@ class CollectionReplicationManager:
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
-        self.aramaki_manager.register_callback(
+        self.aramaki.register_callback(
             "directory.collection.catchup.start",
             {
-                "principal": self.aramaki_manager.principal,
-                "application": self.aramaki_manager.application,
+                "principal": self.aramaki.principal,
+                "application": self.aramaki.application,
                 "collection": self.collection,
             },
             self.process_start_catchup_message,
         )
-        self.aramaki_manager.register_callback(
+        self.aramaki.register_callback(
             "directory.collection.catchup.step",
             {
-                "principal": self.aramaki_manager.principal,
-                "application": self.aramaki_manager.application,
+                "principal": self.aramaki.principal,
+                "application": self.aramaki.application,
                 "collection": self.collection,
             },
-            self.process_update_message,
+            self.process_catchup_step_message,
         )
-        self.aramaki_manager.register_callback(
+        self.aramaki.register_callback(
             "directory.collection.update",
             {
                 "collection": self.collection,
@@ -78,33 +146,25 @@ class CollectionReplicationManager:
             self.process_update_message,
         )
 
-        self.request_catchup()
+        catchup = asyncio.create_task(self.request_catchup())
+        self.tasks.add(catchup)
 
     async def start(self):
-        db_url = f"sqlite+aiosqlite://{self.state_directory}/aramaki.sqlite3"
-        self.db_sessionmanager = DBSessionManager(db_url)
-
-        async with self.db_sessionmanager.session() as db_session:
-            await db_session.get_bind().execute(
-                sqlalchemy.text(
-                    (importlib.resources.files(__package__) / "migrations" / "0001.sql")
-                    .open("r", encoding="utf-8")
-                    .read()
-                )
-            )
-
         asyncio.create_task(self.process_update_buffer())
         asyncio.create_task(self.process_catchup_step_buffer())
 
     async def process_update_message(self, msg: dict):
-        async with self.db_sessionmanager.session() as db_session:
+        async with self.aramaki.db.session() as db_session:
             (
                 current_partition,
                 current_version,
             ) = await CollectionReplicationStatus.currently_known_partition_and_version(
                 db_session, self.collection
             )
-            if current_partition is None or current_partition != msg["partition"]:
+            if (
+                current_partition is None
+                or current_partition != msg["partition"]
+            ):
                 await self.request_catchup()
                 return
 
@@ -121,7 +181,7 @@ class CollectionReplicationManager:
             with self.update_lock:
                 version = min(self.update_buffer.keys())
                 msg = self.update_buffer[version]
-                async with self.db_sessionmanager.session() as db_session:
+                async with self.aramaki.db.session() as db_session:
                     # This is duplicated, but we may want that
                     (
                         current_partition,
@@ -169,8 +229,12 @@ class CollectionReplicationManager:
                     # are now processable
                     self.new_update_message_event.set()
 
+    async def get_collection_with_session(self):
+        async with self.aramaki.db.session() as db_session:
+            return self.collection(db_session)
+
     async def request_catchup(self):
-        async with self.db_sessionmanager.session() as db_session:
+        async with self.aramaki.db.session() as db_session:
             (
                 current_partition,
                 current_version,
@@ -178,7 +242,7 @@ class CollectionReplicationManager:
                 db_session, self.collection
             )
 
-        await self.aramaki_manager.send_message(
+        await self.aramaki.send_message(
             "directory.collection.catchup.request",
             {
                 "collection": self.collection,
@@ -187,8 +251,8 @@ class CollectionReplicationManager:
             },
         )
 
-    async def process_start_catchup(self, msg: dict):
-        async with self.db_sessionmanager.session() as db_session:
+    async def process_start_catchup_message(self, msg: dict):
+        async with self.aramaki.db.session() as db_session:
             (
                 current_partition,
                 current_version,
@@ -198,18 +262,19 @@ class CollectionReplicationManager:
         # XXX: Maybe we need to signal to the server that our partition is not the one they think we have.
         # Otherwise, we might wait for an infinite time to receive a catchup.step with version_from = 1
         full_sync = (
-            msg["start_version"] in (0, 1) or msg["partition"] != current_partition
+            msg["start_version"] in (0, 1)
+            or msg["partition"] != current_partition
         )
 
         async with self.update_lock:
             if full_sync:
                 async with self.catchup_lock:
                     self.start_full_sync_callback()
-                    async with self.db_sessionmanager.session() as db_session:
+                    async with self.aramaki.db.session() as db_session:
                         records = db_session.execute(
-                            sqlalchemy.select(CollectionReplicationStatus).filter_by(
-                                collection=self.collection
-                            )
+                            sqlalchemy.select(
+                                CollectionReplicationStatus
+                            ).filter_by(collection=self.collection)
                         )
                         for record in records:
                             record.delete()
@@ -229,7 +294,7 @@ class CollectionReplicationManager:
             await self.new_catchup_step_message_event.wait()
             version = min(self.catchup_buffer.keys())
             msg = self.update_buffer[version]
-            async with self.db_sessionmanager.session() as db_session:
+            async with self.aramaki.db.session() as db_session:
                 (
                     current_partition,
                     current_version,

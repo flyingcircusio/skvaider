@@ -1,6 +1,9 @@
 import contextlib
-from typing import Any, AsyncIterator
+from typing import AsyncIterator
 
+import structlog.stdlib
+from alembic import command
+from alembic.config import Config
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -9,6 +12,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 DBSession = AsyncSession  # Alias for easier referencing
+log = structlog.stdlib.get_logger()
 
 
 class SessionManagerClosed(Exception):
@@ -24,11 +28,28 @@ class Base(DeclarativeBase):
 
 
 class DBSessionManager:
-    def __init__(self, host: str, engine_kwargs: dict[str, Any] = {}):
-        self._engine = create_async_engine(host, **engine_kwargs)
+    state_directory: str
+
+    def __init__(self, state_directory: str):
+        self.state_directory = state_directory
+        db_url = f"sqlite+aiosqlite:///{self.state_directory}/aramaki.sqlite3"
+        self._engine = create_async_engine(db_url)
         self._sessionmaker = async_sessionmaker(
             autocommit=False, bind=self._engine, expire_on_commit=False
         )
+
+    def upgrade(self):
+        log.info("Upgrading aramaki database")
+        config = Config()
+        db_url = f"sqlite:///{self.state_directory}/aramaki.sqlite3"
+        from sqlalchemy import create_engine
+
+        config.set_main_option("script_location", "aramaki:alembic")
+        config.set_main_option("sqlalchemy.url", db_url)
+        engine = create_engine(db_url)
+        with engine.connect() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "head")
 
     async def close(self):
         if self._engine is None:

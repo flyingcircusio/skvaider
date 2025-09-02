@@ -9,19 +9,27 @@ import time
 import uuid
 from asyncio import CancelledError
 from collections import deque
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import rfc8785
 import structlog.stdlib
 from websockets.asyncio.client import connect
 
+from aramaki.collection import (
+    Collection,
+    CollectionReplicationManager,
+)
+from aramaki.db import DBSessionManager
 
 log = structlog.stdlib.get_logger()
 
 
 class MessageReplaySet:
     ids: set[str]
-    ages: deque[tuple[float, str]]  # monotonic increasing timestamp from left to right
+    ages: deque[
+        tuple[float, str]
+    ]  # monotonic increasing timestamp from left to right
 
     TIMEOUT = 60 * 60 + 5 * 60  # 1h 5m
 
@@ -51,16 +59,31 @@ class MessageReplaySet:
 
 
 class Manager:
-    def __init__(self, principal, application, url, secret):
+    collections: dict[type, CollectionReplicationManager]
+
+    def __init__(
+        self, principal, application, url, secret, state_directory: Path
+    ):
         self.known_messages = MessageReplaySet()
         self.principal = principal
         self.application = application
         self.url = url
         self.secret = secret
+        self.state_directory = state_directory
 
         self.subscriptions = {}
         self.callbacks = {}
         self.tasks: set[asyncio.Task] = set()
+
+        self.collections = {}
+
+        if not self.state_directory.exists():
+            raise RuntimeError(
+                f"Missing workdir {self.state_directory.resolve()}"
+            )
+        self.db = DBSessionManager(state_directory)
+        # This is blocking on purpose!
+        self.db.upgrade()
 
     def register_callback(
         self,
@@ -70,6 +93,16 @@ class Manager:
     ):
         self.subscriptions[type_] = scope
         self.callbacks[type_] = callback
+
+    def register_collection(
+        self, cls_: type["Collection"]
+    ) -> CollectionReplicationManager:
+        """Activate a collection and provide a factory that can be used with svcs."""
+        assert cls_ not in self.collections
+        self.collections[cls_] = manager = CollectionReplicationManager(
+            self, cls_
+        )
+        return manager
 
     async def run(self):
         loop = asyncio.get_running_loop()
@@ -110,7 +143,7 @@ class Manager:
                 log.exception("unexpected-exception")
             # XXX exponential backoff / csmacd
             log.info("connection lost, backing off")
-            time.sleep(5)
+            await asyncio.sleep(5)
 
     async def process(self, message):
         log.info("got message")
@@ -131,7 +164,9 @@ class Manager:
         expiry = datetime.datetime.fromisoformat(message["@expiry"])
         # Only accept messages that are not expired
         if expiry < datetime.datetime.now(datetime.UTC):
-            raise Exception(f"message too old (expired at {message['@expiry']})")
+            raise Exception(
+                f"message too old (expired at {message['@expiry']})"
+            )
 
         self.known_messages.check(message["@id"])
 
@@ -145,7 +180,9 @@ class Manager:
         ).hexdigest()
 
         if signature != advertised_signature:
-            raise Exception(f"signature mismatch {signature} != {advertised_signature}")
+            raise Exception(
+                f"signature mismatch {signature} != {advertised_signature}"
+            )
 
         # Once the message is authenticated, store the ID.
         # This prevents a DOS attack enumerating IDs
@@ -178,4 +215,6 @@ class Manager:
     async def send_message(self, type: str, message: dict):
         # TODO: testing
         async with connect(self.url) as websocket:
-            await websocket.send(self.prepare_message(message | {"@type": type}))
+            await websocket.send(
+                self.prepare_message(message | {"@type": type})
+            )

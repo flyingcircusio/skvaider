@@ -3,7 +3,6 @@ import pytest
 from fastapi.security import HTTPAuthorizationCredentials
 
 from skvaider.auth import verify_token
-from skvaider.models import AuthToken
 
 
 async def test_verify_token_incorrect_syntax(services):
@@ -24,8 +23,8 @@ async def test_verify_token_unknown_user(services):
     assert e.value.status_code == 403
 
 
-async def test_verify_token_incorrect_password(services, session):
-    await AuthToken.create(session, username="user", password="*")
+async def test_verify_token_incorrect_password(services, token_db):
+    token_db.data["user"] = {"password": "*"}
 
     credentials = HTTPAuthorizationCredentials(
         scheme="Bearer", credentials="user-password"
@@ -36,8 +35,8 @@ async def test_verify_token_incorrect_password(services, session):
     assert e.value.status_code == 403
 
 
-async def test_verify_token_correct_user_and_password(services, session):
-    await AuthToken.create(session, username="user", password="password")
+async def test_verify_token_correct_user_and_password(services, token_db):
+    token_db.data["user"] = {"password": "password"}
 
     credentials = HTTPAuthorizationCredentials(
         scheme="Bearer", credentials="user-password"

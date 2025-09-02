@@ -19,6 +19,8 @@ dependencies = [
     "uvicorn[standard]>=0.35.0",
     "rfc8785>=0.1.4",
     "structlog>=25.4.0",
+    "aiosqlite>=0.21.0",
+    "alembic>=1.16.5",
 ]
 
 [project.scripts]
