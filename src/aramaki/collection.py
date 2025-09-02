@@ -7,7 +7,10 @@ from sqlalchemy import UniqueConstraint, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from aramaki.db import Base, DBSession
+from aramaki.db import Base
+
+if TYPE_CHECKING:
+    from aramaki import Manager
 
 
 class CollectionReplicationStatus(Base):
@@ -26,30 +29,6 @@ class CollectionReplicationStatus(Base):
     version: Mapped[int] = mapped_column()
     data: Mapped[bytes] = mapped_column()
 
-    @classmethod
-    async def currently_known_partition_and_version(
-        cls, db_session: DBSession, collection: str
-    ) -> tuple[str | None, int]:
-        # Use the fact that (collection, partition) is unique for the client view here.
-        maybe_result = (
-            (
-                await db_session.execute(
-                    select(cls.partition, func.max(cls.version))
-                    .filter_by(collection=collection)
-                    .group_by(cls.partition)
-                )
-            )
-            .scalar()
-            .one_or_none()
-        )
-        if maybe_result is None:
-            return None, 0
-        return maybe_result
-
-
-if TYPE_CHECKING:
-    from aramaki import Manager
-
 
 class Collection:
     """Read-only access to a collection."""
@@ -60,7 +39,6 @@ class Collection:
         self.session = session
 
     async def get(self, key: str) -> dict | None:
-        breakpoint()
         result = (
             (
                 await self.session.execute(
@@ -74,25 +52,49 @@ class Collection:
         )
         if not result:
             return
-        return json.load(result["data"])
+        return json.loads(result.data)
 
     async def keys(self) -> list[str]:
         result = []
-        result = (
-            await self.session.query(CollectionReplicationStatus)
-            .filter_by(collection=self.collection)
+        result = result = (
+            (
+                await self.session.execute(
+                    select(CollectionReplicationStatus).filter_by(
+                        collection=self.collection,
+                    )
+                )
+            )
+            .scalars()
             .all()
         )
-        return [x["record_id"] for x in result]
+        return [x.record_id for x in result]
+
+    async def currently_known_partition_and_version(
+        self,
+    ) -> tuple[str | None, int]:
+        # Use the fact that (collection, partition) is unique for the client view here.
+        maybe_result = (
+            await self.session.execute(
+                select(
+                    CollectionReplicationStatus.partition,
+                    func.max(CollectionReplicationStatus.version),
+                )
+                .filter_by(collection=self.collection)
+                .group_by(CollectionReplicationStatus.partition)
+            )
+        ).one_or_none()
+        if maybe_result is None:
+            return None, 0
+        return maybe_result
 
 
-class CollectionReplicationManager:
+class ReplicationManager:
     """Manages the replication for a single collection."""
 
     def __init__(
         self,
         aramaki: "Manager",
-        collection: str,
+        collection: type["Collection"],
     ):
         self.collection = collection
         self.aramaki = aramaki

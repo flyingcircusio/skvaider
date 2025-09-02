@@ -16,10 +16,7 @@ import rfc8785
 import structlog.stdlib
 from websockets.asyncio.client import connect
 
-from aramaki.collection import (
-    Collection,
-    CollectionReplicationManager,
-)
+from aramaki.collection import Collection, ReplicationManager
 from aramaki.db import DBSessionManager
 
 log = structlog.stdlib.get_logger()
@@ -59,7 +56,7 @@ class MessageReplaySet:
 
 
 class Manager:
-    collections: dict[type, CollectionReplicationManager]
+    collections: dict[type, ReplicationManager]
 
     def __init__(
         self, principal, application, url, secret, state_directory: Path
@@ -96,12 +93,10 @@ class Manager:
 
     def register_collection(
         self, cls_: type["Collection"]
-    ) -> CollectionReplicationManager:
+    ) -> ReplicationManager:
         """Activate a collection and provide a factory that can be used with svcs."""
         assert cls_ not in self.collections
-        self.collections[cls_] = manager = CollectionReplicationManager(
-            self, cls_
-        )
+        self.collections[cls_] = manager = ReplicationManager(self, cls_)
         return manager
 
     async def run(self):
