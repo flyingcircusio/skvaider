@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 
 import rfc8785
 import structlog.stdlib
+from websockets import ClientConnection
 from websockets.asyncio.client import connect
 
 from aramaki.collection import Collection, ReplicationManager
@@ -61,6 +62,7 @@ class Manager:
     def __init__(
         self, principal, application, url, secret, state_directory: Path
     ):
+        self.websocket: ClientConnection | None = None
         self.known_messages = MessageReplaySet()
         self.principal = principal
         self.application = application
@@ -71,13 +73,12 @@ class Manager:
         self.subscriptions = {}
         self.callbacks = {}
         self.tasks: set[asyncio.Task] = set()
+        self.websocket_ready = asyncio.Event()
 
         self.collections = {}
 
         if not self.state_directory.exists():
-            raise RuntimeError(
-                f"Missing workdir {self.state_directory.resolve()}"
-            )
+            self.state_directory.mkdir()
         self.db = DBSessionManager(state_directory)
         # This is blocking on purpose!
         self.db.upgrade()
@@ -110,6 +111,7 @@ class Manager:
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
                 async with connect(self.url, ssl=ssl_context) as websocket:
+                    self.websocket = websocket
                     log.info("directory-connection", status="connected")
 
                     log.info("Sending subscription.")
@@ -125,6 +127,7 @@ class Manager:
                         ],
                     }
                     await websocket.send(self.prepare_message(subscription))
+                    self.websocket_ready.set()
 
                     # XXX error handling, e.g. if authentication has failed
                     # -> wait for a response
@@ -136,13 +139,14 @@ class Manager:
                 return
             except Exception:
                 log.exception("unexpected-exception")
+            finally:
+                self.websocket_ready.clear()
+                self.websocket = None
             # XXX exponential backoff / csmacd
             log.info("connection lost, backing off")
             await asyncio.sleep(5)
 
     async def process(self, message):
-        log.info("got message")
-        log.info(repr(message))
         message = json.loads(message)
         self.authenticate(message)
         if message["@type"] in self.callbacks:
@@ -184,6 +188,7 @@ class Manager:
         self.known_messages.mark(message["@id"])
 
     def sign_message(self, message):
+        log.info(rfc8785.dumps(message))
         signature = hmac.new(
             self.secret.encode("ascii"), rfc8785.dumps(message), hashlib.sha256
         ).hexdigest()
@@ -202,14 +207,17 @@ class Manager:
             "@id": uuid.uuid4().hex,
         }
         message = copy.deepcopy(message)
-        message.process_update_message(message_template)
+        message.update(message_template)
         self.sign_message(message)
         return json.dumps(message)
 
     # TODO: reuse conn, backoff, retry
     async def send_message(self, type: str, message: dict):
         # TODO: testing
-        async with connect(self.url) as websocket:
-            await websocket.send(
-                self.prepare_message(message | {"@type": type})
-            )
+        # XXX: scrub contents to not leak secrets
+        # XXX: Add buffering
+        await self.websocket_ready.wait()
+        log.info(f"sending message {type}: {message}")
+        await self.websocket.send(
+            self.prepare_message(message | {"@type": type})
+        )

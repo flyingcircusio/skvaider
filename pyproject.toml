@@ -21,6 +21,7 @@ dependencies = [
     "structlog>=25.4.0",
     "aiosqlite>=0.21.0",
     "alembic>=1.16.5",
+    "argon2-cffi>=25.1.0",
 ]
 
 [project.scripts]

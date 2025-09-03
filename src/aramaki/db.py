@@ -26,6 +26,9 @@ class Base(DeclarativeBase):
         db.add(transaction)
         return transaction
 
+    def delete(self, db: AsyncSession):
+        return db.delete(self)
+
 
 class DBSessionManager:
     state_directory: str

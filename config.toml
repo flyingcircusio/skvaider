@@ -3,10 +3,10 @@
 source = "aramaki"
 
 [aramaki]
-url = "wss://directory.b82f1c635cc.largo01.fcdev.fcio.net/aramaki"
+url = "wss://directory.0e9d93af.largo01.fcdev.fcio.net/aramaki"
 state_directory = ".aramaki-workdir"
-secret_salt = "foobar"
-principal = "asdf"
+secret_salt = ""
+principal = "kyle00"
 
 [[backend]]
 type = "openai"

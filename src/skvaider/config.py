@@ -13,7 +13,6 @@ class AramakiConfig(BaseModel):
     state_directory: Path
     secret_salt: str
     principal: str
-    collection: str = "fc.directory.ai.token"
 
 
 class BackendConfig(BaseModel):
