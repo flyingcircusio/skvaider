@@ -26,7 +26,7 @@ async def test_collection_basics(tmpdir):
             collection="mydummycollection",
             partition="x",
             record_id="test",
-            data=b"{}",
+            data={},
             version=1,
         )
         session.add(item)
