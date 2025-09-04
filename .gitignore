@@ -26,3 +26,5 @@ devenv.local.nix
 .direnv
 
 .aramaki-workdir
+
+.DS_store
