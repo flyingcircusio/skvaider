@@ -27,8 +27,11 @@ def upgrade() -> None:
         sa.Column("partition", sa.String(), nullable=False),
         sa.Column("record_id", sa.String(), nullable=False),
         sa.Column("version", sa.Integer(), nullable=False),
-        sa.Column("data", sa.JSON(), nullable=False),
+        sa.Column("data", sa.LargeBinary(), nullable=False),
         sa.PrimaryKeyConstraint("collection", "partition", "record_id"),
+        sa.UniqueConstraint(
+            "collection", "partition", name="collection_partition_unique"
+        ),
     )
     # ### end Alembic commands ###
 
