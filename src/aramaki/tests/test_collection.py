@@ -14,7 +14,11 @@ async def test_collection_basics(tmpdir):
     async with db.session() as session:
         collection = DummyCollection(session)
 
-        assert (await collection.currently_known_partition_and_version()) == (
+        assert (
+            await aramaki.collection._currently_known_partition_and_version(
+                session, collection.collection
+            )
+        ) == (
             None,
             0,
         )
@@ -34,7 +38,11 @@ async def test_collection_basics(tmpdir):
         assert await collection.get("test") == {}
         assert await collection.keys() == ["test"]
 
-        assert (await collection.currently_known_partition_and_version()) == (
+        assert (
+            await aramaki.collection._currently_known_partition_and_version(
+                session, collection.collection
+            )
+        ) == (
             "x",
             1,
         )

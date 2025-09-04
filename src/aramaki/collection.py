@@ -117,13 +117,6 @@ class Collection:
         )
         return [x.record_id for x in result]
 
-    async def currently_known_partition_and_version(
-        self,
-    ) -> tuple[str | None, int]:
-        return await _currently_known_partition_and_version(
-            self.session, self.collection
-        )
-
 
 class ReplicationManager:
     """Manages the replication for a single collection."""
