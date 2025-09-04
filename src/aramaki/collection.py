@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 INTERNAL_NULL_RECORD = "__ARAMAKI_INTERNAL_NULL__"
 
 
-class CollectionReplicationStatus(Base):
-    __tablename__ = "collection_replication_status"
+class Record(Base):
+    __tablename__ = "collection_record"
 
     collection: Mapped[str] = mapped_column(primary_key=True)
     partition: Mapped[str] = mapped_column(primary_key=True)
@@ -33,11 +33,11 @@ async def _currently_known_partition_and_version(
     maybe_result = (
         await db_session.execute(
             select(
-                CollectionReplicationStatus.partition,
-                func.max(CollectionReplicationStatus.version),
+                Record.partition,
+                func.max(Record.version),
             )
             .filter_by(collection=collection)
-            .group_by(CollectionReplicationStatus.partition)
+            .group_by(Record.partition)
         )
     ).one_or_none()
     if maybe_result is None:
@@ -49,7 +49,7 @@ async def _add_null_version(
     db_session: AsyncSession, collection: str, partition: int, version: int
 ):
     record = await db_session.get(
-        CollectionReplicationStatus,
+        Record,
         {
             "collection": collection,
             "partition": partition,
@@ -57,7 +57,7 @@ async def _add_null_version(
         },
     )
     if record is None:
-        record = await CollectionReplicationStatus.create(
+        record = await Record.create(
             db_session,
             collection=collection,
             partition=partition,
@@ -78,7 +78,7 @@ class Collection:
         result = (
             (
                 await self.session.execute(
-                    select(CollectionReplicationStatus).filter_by(
+                    select(Record).filter_by(
                         collection=self.collection, record_id=key
                     )
                 )
@@ -95,7 +95,7 @@ class Collection:
         result = result = (
             (
                 await self.session.execute(
-                    select(CollectionReplicationStatus).filter_by(
+                    select(Record).filter_by(
                         collection=self.collection,
                     )
                 )
@@ -229,7 +229,7 @@ class ReplicationManager:
                         return
 
                     record = await db_session.get(
-                        CollectionReplicationStatus,
+                        Record,
                         {
                             "collection": self.collection.collection,
                             "partition": msg["partition"],
@@ -238,7 +238,7 @@ class ReplicationManager:
                     )
                     if msg["change"] == "update":
                         if record is None:
-                            record = await CollectionReplicationStatus.create(
+                            record = await Record.create(
                                 db_session,
                                 collection=self.collection.collection,
                                 partition=msg["partition"],
@@ -305,9 +305,9 @@ class ReplicationManager:
                 async with self.catchup_lock:
                     async with self.aramaki.db.session() as db_session:
                         records = await db_session.execute(
-                            sqlalchemy.select(
-                                CollectionReplicationStatus
-                            ).filter_by(collection=self.collection.collection)
+                            sqlalchemy.select(Record).filter_by(
+                                collection=self.collection.collection
+                            )
                         )
                         for record in records:
                             await record.delete()
@@ -346,7 +346,7 @@ class ReplicationManager:
                     return
 
                 record = await db_session.get(
-                    CollectionReplicationStatus,
+                    Record,
                     {
                         "collection": self.collection.collection,
                         "partition": msg["partition"],
@@ -355,7 +355,7 @@ class ReplicationManager:
                 )
                 if msg["change"] == "update":
                     if record is None:
-                        record = await CollectionReplicationStatus.create(
+                        record = await Record.create(
                             db_session,
                             collection=self.collection.collection,
                             partition=msg["partition"],
