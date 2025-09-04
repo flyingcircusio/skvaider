@@ -12,8 +12,6 @@ from aramaki.db import Base
 if TYPE_CHECKING:
     from aramaki import Manager
 
-INTERNAL_NULL_RECORD = "__ARAMAKI_INTERNAL_NULL__"
-
 
 class Record(Base):
     __tablename__ = "collection_record"
@@ -45,23 +43,24 @@ async def _currently_known_partition_and_version(
     return maybe_result
 
 
-async def _add_null_version(
-    db_session: AsyncSession, collection: str, partition: int, version: int
+async def _set_null_record(
+    session: AsyncSession, collection: str, partition: int, version: int
 ):
-    record = await db_session.get(
+    record = await session.get(
         Record,
         {
             "collection": collection,
             "partition": partition,
-            "record_id": INTERNAL_NULL_RECORD,
+            "record_id": "",
         },
     )
     if record is None:
         record = await Record.create(
-            db_session,
+            session,
             collection=collection,
             partition=partition,
-            record_id=INTERNAL_NULL_RECORD,
+            record_id="",
+            data={},
         )
     record.version = version
 
@@ -87,6 +86,7 @@ class Collection:
         self.session = session
 
     async def get(self, key: str, default=None) -> dict | None:
+        assert key  # key must be non-empty - defensive against clients breaking protocol that "" is our internal null record
         result = (
             (
                 await self.session.execute(
@@ -119,7 +119,16 @@ class Collection:
 
 
 class ReplicationManager:
-    """Manages the replication for a single collection."""
+    """Manages the replication for a single collection.
+
+    The replication manager interacts with aramaki by sending and receiving
+    replication-related messages.
+
+    We generally buffer messages as we need to ensure proper order (based on the
+    versions we receive) when processing them and we need to isolate sync
+    activities from regular update activities.
+
+    """
 
     def __init__(
         self,
@@ -128,9 +137,7 @@ class ReplicationManager:
     ):
         self.collection = collection
         self.aramaki = aramaki
-        self.new_update_message_event = asyncio.Event()
-        self.new_catchup_step_message_event = asyncio.Event()
-        self.catchup_finished_event = asyncio.Event()
+        self.catchup_finished = asyncio.Event()
         self.tasks = set()
         # We have two types of locks here:
         #
@@ -145,45 +152,46 @@ class ReplicationManager:
         # is wiped.
         self.catchup_lock = asyncio.Lock()
 
-        self.update_buffer: dict[int, dict] = {}
-        self.catchup_buffer: dict[int, dict] = {}
+        self.update_buffer = PriorityPushbackQueue()
+        self.catchup_buffer = PriorityPushbackQueue()
 
-        task = asyncio.create_task(self.start())
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
-
-        self.aramaki.register_callback(
+        self.aramaki.register_message_handler(
             "directory.collection.catchup.start",
-            {
-                "principal": self.aramaki.principal,
-                "application": self.aramaki.application,
-                "collection": self.collection.collection,
-            },
             self.process_start_catchup_message,
+            principal=self.aramaki.principal,
+            application=self.aramaki.application,
+            collection=self.collection.collection,
         )
-        self.aramaki.register_callback(
+        self.aramaki.register_message_handler(
             "directory.collection.catchup.step",
-            {
-                "principal": self.aramaki.principal,
-                "application": self.aramaki.application,
-                "collection": self.collection.collection,
-            },
             self.process_catchup_step_message,
+            principal=self.aramaki.principal,
+            application=self.aramaki.application,
+            collection=self.collection.collection,
         )
-        self.aramaki.register_callback(
+        self.aramaki.register_message_handler(
             "directory.collection.update",
-            {
-                "collection": self.collection.collection,
-            },
             self.process_update_message,
+            collection=self.collection.collection,
         )
 
-        catchup = asyncio.create_task(self.request_catchup())
-        self.tasks.add(catchup)
+        for t in [
+            self.request_catchup,
+            self.process_update_buffer,
+            self.process_catchup_step_buffer,
+        ]:
+            task = asyncio.create_task(t())
+            self.tasks.add(task)
 
-    async def start(self):
-        asyncio.create_task(self.process_update_buffer())
-        asyncio.create_task(self.process_catchup_step_buffer())
+    def stop(self):
+        for task in self.tasks:
+            task.cancel()
+        self.tasks.clear()
+
+    @asynccontextmanager
+    async def get_collection_with_session(self):
+        async with self.aramaki.db.session() as db_session:
+            yield self.collection(db_session)
 
     async def process_update_message(self, msg: dict):
         async with self.aramaki.db.session() as db_session:
@@ -201,76 +209,72 @@ class ReplicationManager:
         if msg["version"] < current_version:
             return
 
-        self.update_buffer[msg["version"]] = msg
-        self.new_update_message_event.set()
+        await self.update_buffer.put(msg["version"], msg)
 
     async def process_update_buffer(self):
         while True:
-            await self.new_update_message_event.wait()
-            self.new_update_message_event.clear()
-            async with self.update_lock:
-                version = min(self.update_buffer.keys())
-                msg = self.update_buffer[version]
-                async with self.aramaki.db.session() as db_session:
-                    # This is duplicated, but we may want that
-                    (
-                        current_partition,
-                        current_version,
-                    ) = await _currently_known_partition_and_version(
-                        db_session, self.collection.collection
-                    )
+            update_version, msg = await self.update_buffer.get()
+            assert msg["record_id"]  # defensive against peers breaking protocol
+            async with (
+                self.update_lock,
+                self.aramaki.db.session() as db_session,
+            ):
+                # This is duplicated, but we may want that
+                (
+                    current_partition,
+                    current_version,
+                ) = await _currently_known_partition_and_version(
+                    db_session, self.collection.collection
+                )
 
-                    if (
-                        current_partition is None
-                        or current_partition != msg["partition"]
-                    ):
-                        asyncio.create_task(self.request_catchup())
-                        return
-                    if msg["version"] < current_version:
-                        # Discard the message, we already processed a newer one
-                        del self.update_buffer[msg["version"]]
-                    if msg["version"] > current_version + 1:
-                        # This message is too new, keep it in the buffer and wait for another one
-                        return
+                if (
+                    current_partition is None
+                    or current_partition != msg["partition"]
+                ):
+                    asyncio.create_task(self.request_catchup())
+                    self.update_buffer.task_done()
+                    continue
 
-                    record = await db_session.get(
-                        Record,
-                        {
-                            "collection": self.collection.collection,
-                            "partition": msg["partition"],
-                            "record_id": msg.get("record_id"),
-                        },
-                    )
-                    if msg["change"] == "update":
-                        if record is None:
-                            record = await Record.create(
-                                db_session,
-                                collection=self.collection.collection,
-                                partition=msg["partition"],
-                                record_id=msg["record_id"],
-                            )
+                if update_version <= current_version:
+                    # This version is old, ignore it.
+                    self.update_buffer.task_done()
+                    continue
 
-                        record.version = msg["version"]
-                        record.data = msg["data"]
-                    if msg["change"] == "delete" and record is not None:
-                        await record.delete(db_session)
-                    if msg["change"] == "delete" or msg["change"] == "null":
-                        await _add_null_version(
+                if update_version > current_version + 1:
+                    # This message is too new, keep it in the buffer and wait for another one
+                    await self.update_buffer.put_back(update_version, msg)
+                    continue
+
+                assert update_version == current_version + 1
+
+                record = await db_session.get(
+                    Record,
+                    {
+                        "collection": self.collection.collection,
+                        "partition": msg["partition"],
+                        "record_id": msg["record_id"],
+                    },
+                )
+                if msg["change"] == "update":
+                    if record is None:
+                        record = await Record.create(
                             db_session,
-                            self.collection.collection,
-                            msg["partition"],
-                            msg["version"],
+                            collection=self.collection.collection,
+                            partition=msg["partition"],
+                            record_id=msg["record_id"],
                         )
-                del self.update_buffer[msg["version"]]
-                if len(self.update_buffer.keys()) > 0:
-                    # Trigger itself to process messages in the buffer with a higher version that
-                    # are now processable
-                    self.new_update_message_event.set()
-
-    @asynccontextmanager
-    async def get_collection_with_session(self):
-        async with self.aramaki.db.session() as db_session:
-            yield self.collection(db_session)
+                    record.version = msg["version"]
+                    record.data = msg["data"]
+                if msg["change"] == "delete" and record is not None:
+                    await record.delete(db_session)
+                if msg["change"] == "delete" or msg["change"] == "null":
+                    await _set_null_record(
+                        db_session,
+                        self.collection.collection,
+                        msg["partition"],
+                        msg["version"],
+                    )
+            self.update_buffer.task_done()
 
     async def request_catchup(self):
         async with self.aramaki.db.session() as db_session:
@@ -291,50 +295,56 @@ class ReplicationManager:
         )
 
     async def process_start_catchup_message(self, msg: dict):
+        self.catchup_finished.clear()
+
         async with self.aramaki.db.session() as db_session:
-            (
-                current_partition,
-                current_version,
-            ) = await _currently_known_partition_and_version(
+            r = await _currently_known_partition_and_version(
                 db_session, self.collection.collection
             )
-        # XXX: Maybe we need to signal to the server that our partition is not the one they think we have.
-        # Otherwise, we might wait for an infinite time to receive a catchup.step with version_from = 1
-        full_sync = (
-            msg["start_version"] in (0, 1)
-            or msg["partition"] != current_partition
-        )
+            current_partition, current_version = r
+        start_version = msg["start_version"]
+        partition = msg["partition"]
 
-        if full_sync:
-            async with self.update_lock:
-                async with self.catchup_lock:
-                    async with self.aramaki.db.session() as db_session:
-                        records = await db_session.execute(
-                            sqlalchemy.select(Record).filter_by(
-                                collection=self.collection.collection
-                            )
+        async with self.update_lock, self.catchup_lock:
+            if partition == current_partition and start_version == 0:
+                async with self.aramaki.db.session() as db_session:
+                    # The partition is empty and we will not receive further messages.
+                    await db_session.execute(
+                        sqlalchemy.delete(Record).filter_by(
+                            collection=self.collection.collection
                         )
-                        for record in records:
-                            await record.delete()
-                        # There is currently no record in the partition
-                        if msg["start_version"] == 0:
-                            # remember the partition of the collection here
-                            pass
+                    )
+                return
 
-                await self.catchup_finished_event.wait()
-                self.catchup_finished_event.clear()
+            is_full_sync = partition != current_partition or start_version == 1
+            if is_full_sync:
+                # Remove version markers from all records for now (and delete them when the catchup has finished.)
+                # We keep the records to avoid "holes" for our clients while we're updating from an earlier state.
+                async with self.aramaki.db.session() as db_session:
+                    await db_session.execute(
+                        sqlalchemy.update(Record)
+                        .filter_by(collection=self.collection.collection)
+                        .values(version=None)
+                    )
+
+            # Let the sync continue
+            await self.catchup_finished.wait()
+
+            if is_full_sync:
+                # Delete all items that haven't received version markers during the catchup.
+                async with self.aramaki.db.session() as db_session:
+                    await db_session.execute(
+                        sqlalchemy.delete(Record).filter_by(
+                            collection=self.collection.collection, version=None
+                        )
+                    )
 
     async def process_catchup_step_message(self, msg: dict):
-        self.catchup_buffer[msg["from_version"]] = msg
-        self.new_catchup_step_message_event.set()
-        self.new_catchup_step_message_event.clear()
+        await self.catchup_buffer.put(msg["from_version"], msg)
 
     async def process_catchup_step_buffer(self):
         while True:
-            await self.new_catchup_step_message_event.wait()
-            self.new_catchup_step_message_event.clear()
-            min_version = min(self.catchup_buffer.keys())
-            msg = self.catchup_buffer[min_version]
+            from_version, msg = await self.catchup_buffer.get()
             async with self.aramaki.db.session() as db_session:
                 (
                     current_partition,
@@ -342,13 +352,14 @@ class ReplicationManager:
                 ) = await _currently_known_partition_and_version(
                     db_session, self.collection.collection
                 )
-                if msg["to_version"] < current_version:
+                if msg["from_version"] < current_version:
                     # Discard the message, we already processed a newer one
-                    del self.catchup_buffer[min_version]
-                    return
+                    self.catchup_buffer.task_done()
+                    continue
                 if msg["from_version"] > current_version:
                     # This message is too new, keep it in the buffer and wait for another one
-                    return
+                    self.catchup_buffer.put_back(from_version, msg)
+                    continue
 
                 record = await db_session.get(
                     Record,
@@ -369,22 +380,57 @@ class ReplicationManager:
 
                     record.version = msg["to_version"]
                     record.data = msg["data"]
+
                 if msg["change"] == "delete" and record is not None:
                     await record.delete(db_session)
 
                 if msg["change"] == "delete" or msg["change"] == "null":
-                    await _add_null_version(
+                    await _set_null_record(
                         db_session,
                         self.collection.collection,
                         msg["partition"],
                         msg["to_version"],
                     )
-
-            del self.catchup_buffer[min_version]
-            if len(self.catchup_buffer.keys()) > 0:
-                # Trigger itself to process messages in the buffer with a higher version that
-                # are now processable
-                self.new_catchup_step_message_event.set()
-
+            # After commit
             if msg["is_final_record"]:
-                self.catchup_finished_event.set()
+                self.catchup_finished.set()
+            self.catchup_buffer.task_done()
+
+
+class PriorityPushbackQueue:
+    """A priority queue that allows putting items back.
+
+    It also supports non-hashable objects.
+
+    Putting an item back means we do not pass it out to waiters
+    until at least one another item has been put in.
+
+    """
+
+    def __init__(self):
+        self.items = {}
+        self.queue = asyncio.PriorityQueue()
+        self.new_item = asyncio.Event()
+
+    async def put(self, priority, item):
+        self.items.setdefault(priority, []).append(item)
+        await self.queue.put(priority)
+        self.new_item.set()
+
+    async def put_back(self, priority, item):
+        self.items.setdefault(priority, []).append(item)
+        self.new_item.clear()
+        await self.queue.put(priority)
+        # The client should not mark this as "task done", we do that for it.
+        self.queue.task_done()
+
+    async def get(self):
+        await self.new_item.wait()
+        priority = await self.queue.get()
+        return priority, self.items[priority].pop(0)
+
+    async def join(self):
+        return await self.queue.join()
+
+    def task_done(self):
+        self.queue.task_done()

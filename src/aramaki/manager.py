@@ -80,14 +80,16 @@ class Manager:
         if not self.state_directory.exists():
             self.state_directory.mkdir()
         self.db = DBSessionManager(state_directory)
-        # This is blocking on purpose!
+        # This is blocking on purpose, to ensure we have a clean DB when everything starts up.
         self.db.upgrade()
 
-    def register_callback(
+        self.tasks.add(asyncio.create_task(self.run()))
+
+    def register_message_handler(
         self,
         type_: str,
-        scope: dict,
         callback: Callable[[dict], Awaitable[Any]],
+        **scope: str,
     ):
         self.subscriptions[type_] = scope
         self.callbacks[type_] = callback
@@ -95,7 +97,7 @@ class Manager:
     def register_collection(
         self, cls_: type["Collection"]
     ) -> ReplicationManager:
-        """Activate a collection and provide a factory that can be used with svcs."""
+        """Activate a collection and provide a factory that can be used with `svcs`."""
         assert cls_ not in self.collections
         self.collections[cls_] = manager = ReplicationManager(self, cls_)
         return manager
@@ -146,6 +148,12 @@ class Manager:
             log.info("connection lost, backing off")
             await asyncio.sleep(5)
 
+    def stop(self):
+        for collection in self.collections.values():
+            collection.stop()
+        for task in self.tasks:
+            task.cancel()
+
     async def process(self, message):
         message = json.loads(message)
         self.authenticate(message)
@@ -182,7 +190,6 @@ class Manager:
             raise Exception(
                 f"signature mismatch {signature} != {advertised_signature}"
             )
-
         # Once the message is authenticated, store the ID.
         # This prevents a DOS attack enumerating IDs
         self.known_messages.mark(message["@id"])
@@ -211,11 +218,11 @@ class Manager:
         self.sign_message(message)
         return json.dumps(message)
 
-    # TODO: reuse conn, backoff, retry
     async def send_message(self, type: str, message: dict):
+        # TODO: backoff, retry
         # TODO: testing
-        # XXX: scrub contents to not leak secrets
-        # XXX: Add buffering
+        # XXX: logging scrub contents to not leak secrets
+        # XXX: add (persistent?) buffering
         await self.websocket_ready.wait()
         log.info(f"sending message {type}: {message}")
         await self.websocket.send(

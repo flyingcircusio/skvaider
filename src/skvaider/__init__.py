@@ -25,8 +25,6 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
         pool.add_backend(skvaider.routers.openai.Backend(backend_config.url))
     registry.register_value(skvaider.routers.openai.Pool, pool)
 
-    tasks = []
-
     aramaki = AramakiManager(
         config.aramaki.principal,
         "skvaider",
@@ -38,12 +36,8 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
     registry.register_factory(
         skvaider.auth.AuthTokens, auth_tokens.get_collection_with_session
     )
-    tasks.append(asyncio.create_task(aramaki.run()))
-
     yield {}
-    # XXX cancel the collection sync tasks, maybe rewrap the aramaki task and handle the collection tasks internally
-    for task in tasks:
-        task.cancel()
+    aramaki.stop()
     pool.close()
 
 
