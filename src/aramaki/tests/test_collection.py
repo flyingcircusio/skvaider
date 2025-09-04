@@ -22,7 +22,7 @@ async def test_collection_basics(tmpdir):
         assert await collection.get("test") is None
         assert await collection.keys() == []
 
-        item = aramaki.collection.CollectionReplicationStatus(
+        item = aramaki.collection.Record(
             collection="mydummycollection",
             partition="x",
             record_id="test",
@@ -38,3 +38,6 @@ async def test_collection_basics(tmpdir):
             "x",
             1,
         )
+
+        assert await collection.get("foobar") is None
+        assert await collection.get("foobar", 5) == 5

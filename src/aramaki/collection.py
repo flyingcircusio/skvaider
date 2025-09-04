@@ -67,14 +67,26 @@ async def _add_null_version(
 
 
 class Collection:
-    """Read-only access to a collection."""
+    """Provides a read-only view to an Aramaki collection.
+
+    The collection provides a simple interface:
+
+        get(key, default=None)
+        keys()
+
+    The data is kept (eventually consistent) with the server side, but always available.
+    From a CAP perspective, this drops the consistency
+
+    It is updated in the background automatically and automatically detects the need for partial and full syncs.
+
+    """
 
     collection: str  # The identifier for the collection in Aramaki
 
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get(self, key: str) -> dict | None:
+    async def get(self, key: str, default=None) -> dict | None:
         result = (
             (
                 await self.session.execute(
@@ -87,7 +99,7 @@ class Collection:
             .one_or_none()
         )
         if not result:
-            return None
+            return default
         return result.data
 
     async def keys(self) -> list[str]:
