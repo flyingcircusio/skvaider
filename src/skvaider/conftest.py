@@ -1,12 +1,17 @@
 import asyncio
+import base64
+import json
 
 import pytest
 import svcs
+from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import skvaider.routers.openai
 from skvaider import app_factory
+
+hasher = PasswordHasher()
 
 
 class DummyTokens:
@@ -59,8 +64,12 @@ def token_db():
 @pytest.fixture
 async def auth_token(token_db):
     """Return a valid auth token."""
-    token_db.data["rg"] = {"password": "apassword"}
-    yield "rg-apassword"
+    secret = "asdf"
+    token_db.data["user"] = {"secret_hash": hasher.hash(secret)}
+    auth_token = base64.b64encode(
+        json.dumps({"id": "user", "secret": secret}).encode("utf-8")
+    )
+    yield auth_token.decode("ascii")
 
 
 @pytest.fixture
