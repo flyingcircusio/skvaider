@@ -27,7 +27,6 @@ async def _currently_known_partition_and_version(
     db_session: AsyncSession, collection: str
 ):
     # Use the fact that (collection, partition) is unique for the client view here.
-
     maybe_result = (
         await db_session.execute(
             select(
@@ -103,13 +102,14 @@ class Collection:
         return result.data
 
     async def keys(self) -> list[str]:
-        result = []
-        result = result = (
+        result = (
             (
                 await self.session.execute(
-                    select(Record).filter_by(
+                    select(Record)
+                    .filter_by(
                         collection=self.collection,
                     )
+                    .filter(Record.record_id != "")
                 )
             )
             .scalars()
@@ -295,28 +295,62 @@ class ReplicationManager:
         )
 
     async def process_start_catchup_message(self, msg: dict):
+        """Start and manage the overall catchup process.
+
+        This can happen in various combinations.
+
+        However, one thing is important: we want to avoid removing records
+        too early and delay deletion of records as long as possible to avoid
+        flapping for our clients.
+
+        For example:
+
+        - we only mass delete records if the server signals that the partition is empty
+        - in partial catchups we only delete those records that we receive deletions for
+        - in full catchups we only delete those records that have not received data after the sync
+
+        """
         self.catchup_finished.clear()
+
+        start_version = msg["start_version"]
+        partition = msg["partition"]
 
         async with self.aramaki.db.session() as db_session:
             r = await _currently_known_partition_and_version(
                 db_session, self.collection.collection
             )
             current_partition, current_version = r
-        start_version = msg["start_version"]
-        partition = msg["partition"]
 
         async with self.update_lock, self.catchup_lock:
-            if partition == current_partition and start_version == 0:
-                async with self.aramaki.db.session() as db_session:
-                    # The partition is empty and we will not receive further messages.
-                    await db_session.execute(
+            if start_version == 0:
+                # The partition is empty and we will not receive further messages.
+                async with self.aramaki.db.session() as session:
+                    await session.execute(
                         sqlalchemy.delete(Record).filter_by(
                             collection=self.collection.collection
                         )
                     )
+                    await _set_null_record(
+                        session, self.collection.collection, partition, 0
+                    )
                 return
 
-            is_full_sync = partition != current_partition or start_version == 1
+            if partition != current_partition and start_version > 1:
+                # We switched partitions but that means we can't do a partial sync.
+                # Re-request a full sync (not re-using request_catchup because
+                # we don't want to use the persistent data we have).
+                await self.aramaki.send_message(
+                    "directory.collection.catchup.request",
+                    {
+                        "collection": self.collection.collection,
+                        "partition": partition,
+                        "current_version": 0,
+                    },
+                )
+                return
+
+            is_full_sync = start_version == 1
+
             if is_full_sync:
                 # Remove version markers from all records for now (and delete them when the catchup has finished.)
                 # We keep the records to avoid "holes" for our clients while we're updating from an earlier state.
@@ -392,7 +426,7 @@ class ReplicationManager:
                         msg["to_version"],
                     )
             # After commit
-            if msg["is_final_record"]:
+            if msg.get("is_final_record"):
                 self.catchup_finished.set()
             self.catchup_buffer.task_done()
 

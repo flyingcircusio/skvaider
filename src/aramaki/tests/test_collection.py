@@ -291,12 +291,135 @@ async def test_replication(tmpdir):
     manager.stop()
 
 
-async def test_replication_empty_sync():
-    pass
+async def test_replication_empty_sync(tmpdir):
+    db = aramaki.db.DBSessionManager(tmpdir)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager, DummyCollection
+    )
+
+    await aramaki_manager.message_received.wait()
+    assert aramaki_manager.message == (
+        (
+            "directory.collection.catchup.request",
+            {
+                "collection": "mydummycollection",
+                "current_version": 0,
+                "partition": None,
+            },
+        ),
+        {},
+    )
+    async with manager.get_collection_with_session() as collection:
+        # let's run through a full sync
+        assert await collection.keys() == []
+
+        await manager.process_start_catchup_message(
+            {"start_version": 0, "partition": "partition-1"}
+        )
+
+        assert await collection.keys() == []
+
+        await manager.process_update_message(
+            {
+                "record_id": "1",
+                "partition": "partition-1",
+                "version": 1,
+                "change": "update",
+                "data": {"key": "other-value"},
+            }
+        )
+
+        await asyncio.wait_for(manager.update_buffer.join(), timeout=1)
+
+        assert await collection.keys() == ["1"]
+
+        await manager.process_start_catchup_message(
+            {"start_version": 0, "partition": "partition-1"}
+        )
+
+        assert await collection.keys() == []
 
 
-async def test_replication_catchup_sync():
-    pass
+async def test_replication_catchup_sync(tmpdir):
+    db = aramaki.db.DBSessionManager(tmpdir)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    async with db.session() as session:
+        await aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="1",
+            version=4,
+            data={},
+        )
+        await aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="2",
+            version=5,
+            data={},
+        )
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager, DummyCollection
+    )
+
+    async with manager.get_collection_with_session() as collection:
+        await aramaki_manager.message_received.wait()
+
+        assert aramaki_manager.message == (
+            (
+                "directory.collection.catchup.request",
+                {
+                    "collection": "mydummycollection",
+                    "current_version": 5,
+                    "partition": "partition-1",
+                },
+            ),
+            {},
+        )
+
+        # let's run through a partial sync
+        catchup_task = asyncio.create_task(
+            manager.process_start_catchup_message(
+                {"start_version": 6, "partition": "partition-1"}
+            )
+        )
+        await manager.process_catchup_step_message(
+            {
+                "from_version": 5,
+                "record_id": "1",
+                "partition": "partition-1",
+                "to_version": 6,
+                "change": "delete",
+            }
+        )
+        await manager.process_catchup_step_message(
+            {
+                "from_version": 6,
+                "record_id": "2",
+                "partition": "partition-1",
+                "to_version": 10,
+                "change": "update",
+                "data": {"key": "value-10"},
+                "is_final_record": True,
+            }
+        )
+
+        await catchup_task
+
+        assert await collection.get("1") is None
+        assert await collection.get("2") == {"key": "value-10"}
 
 
 async def test_full_sync_deletes_superfluous_records_at_end():
