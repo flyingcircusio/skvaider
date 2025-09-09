@@ -11,3 +11,7 @@ principal = "kyle00"
 [[backend]]
 type = "openai"
 url = "http://127.0.0.1:11435"
+
+[logging]
+log_level = "DEBUG"
+access_log_path = ".access_log"

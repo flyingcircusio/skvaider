@@ -172,6 +172,7 @@ async def chat_completions(
     pool = services.get(Pool)
 
     with pool.use(model) as backend:
+        r.state.backend = backend
         # XXX pass through headers?
         # Check if streaming is requested
         stream = request_data.get("stream", False)
@@ -206,6 +207,7 @@ async def completions(r: Request, services: svcs.fastapi.DepContainer) -> Any:
     pool = services.get(Pool)
 
     with pool.use(model) as backend:
+        r.state.backend = backend
         # Check if streaming is requested
         stream = request_data.get("stream", False)
 
@@ -239,4 +241,5 @@ async def embeddings(r: Request, services: svcs.fastapi.DepContainer) -> Any:
     pool = services.get(Pool)
 
     with pool.use(model) as backend:
+        r.state.backend = backend
         return await backend.post("/v1/embeddings", request_data)
