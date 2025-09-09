@@ -4,7 +4,6 @@ import datetime
 import hashlib
 import hmac
 import json
-import ssl
 import time
 import uuid
 from asyncio import CancelledError
@@ -14,8 +13,8 @@ from typing import Any, Awaitable, Callable
 
 import rfc8785
 import structlog.stdlib
+import websockets
 from websockets import ClientConnection
-from websockets.asyncio.client import connect
 
 from aramaki.collection import Collection, ReplicationManager
 from aramaki.db import DBSessionManager
@@ -29,6 +28,7 @@ class MessageReplaySet:
         tuple[float, str]
     ]  # monotonic increasing timestamp from left to right
 
+    EXPIRE_INTERVAL = 60
     TIMEOUT = 60 * 60 + 5 * 60  # 1h 5m
 
     def __init__(self):
@@ -37,7 +37,7 @@ class MessageReplaySet:
         self.last_expire = time.time()
 
     def check(self, id: str):
-        if self.last_expire < time.time() - 60:
+        if self.last_expire < time.time() - self.EXPIRE_INTERVAL:
             self.expire()
         if id in self.ids:
             raise KeyError(f"ID already seen: {id}")
@@ -54,6 +54,19 @@ class MessageReplaySet:
                 self.ages.appendleft((t, id))
                 break
             self.ids.remove(id)
+        self.last_expire = time.time()
+
+
+class MessageAuthenticationError(Exception):
+    pass
+
+
+class MessageTooOldError(MessageAuthenticationError):
+    pass
+
+
+class InvalidSignatureError(MessageAuthenticationError):
+    pass
 
 
 class Manager:
@@ -83,8 +96,6 @@ class Manager:
         # This is blocking on purpose, to ensure we have a clean DB when everything starts up.
         self.db.upgrade()
 
-        self.tasks.add(asyncio.create_task(self.run()))
-
     def register_message_handler(
         self,
         type_: str,
@@ -108,14 +119,9 @@ class Manager:
         while True:
             try:
                 log.info("directory-connection", status="connecting")
-                # TODO: testing
-                ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                async with connect(self.url, ssl=ssl_context) as websocket:
+                async with websockets.connect(self.url) as websocket:
                     self.websocket = websocket
                     log.info("directory-connection", status="connected")
-
                     log.info("Sending subscription.")
                     subscription = {
                         "@type": "aramaki.subscription",
@@ -131,9 +137,6 @@ class Manager:
                     await websocket.send(self.prepare_message(subscription))
                     self.websocket_ready.set()
 
-                    # XXX error handling, e.g. if authentication has failed
-                    # -> wait for a response
-
                     log.info("Waiting for messages ...")
                     async for message in websocket:
                         loop.create_task(self.process(message))
@@ -148,6 +151,9 @@ class Manager:
             log.info("connection lost, backing off")
             await asyncio.sleep(5)
 
+    def start(self):
+        self.tasks.add(asyncio.create_task(self.run()))
+
     def stop(self):
         for collection in self.collections.values():
             collection.stop()
@@ -157,7 +163,7 @@ class Manager:
     async def process(self, message):
         message = json.loads(message)
         self.authenticate(message)
-        if message["@type"] in self.callbacks:
+        if message.get("@type") in self.callbacks:
             await self.callbacks[message["@type"]](message)
 
     def authenticate(self, message):
@@ -171,7 +177,7 @@ class Manager:
         expiry = datetime.datetime.fromisoformat(message["@expiry"])
         # Only accept messages that are not expired
         if expiry < datetime.datetime.now(datetime.UTC):
-            raise Exception(
+            raise MessageTooOldError(
                 f"message too old (expired at {message['@expiry']})"
             )
 
@@ -187,7 +193,7 @@ class Manager:
         ).hexdigest()
 
         if signature != advertised_signature:
-            raise Exception(
+            raise InvalidSignatureError(
                 f"signature mismatch {signature} != {advertised_signature}"
             )
         # Once the message is authenticated, store the ID.
@@ -196,6 +202,7 @@ class Manager:
 
     def sign_message(self, message):
         log.info(rfc8785.dumps(message))
+        message["@signature"] = {"alg": "HS256"}
         signature = hmac.new(
             self.secret.encode("ascii"), rfc8785.dumps(message), hashlib.sha256
         ).hexdigest()
@@ -206,7 +213,6 @@ class Manager:
         message_template = {
             "@context": "https://flyingcircus.io/ns/aramaki",
             "@version": 1,
-            "@signature": {"alg": "HS256"},
             "@principal": self.principal,
             "@application": self.application,
             "@issued": now.isoformat(),
@@ -220,11 +226,9 @@ class Manager:
 
     async def send_message(self, type: str, message: dict):
         # TODO: backoff, retry
-        # TODO: testing
-        # XXX: logging scrub contents to not leak secrets
-        # XXX: add (persistent?) buffering
+        # TODO: consider adding (persistent?) buffering
         await self.websocket_ready.wait()
-        log.info(f"sending message {type}: {message}")
+        log.info(f"sending message {type}")
         await self.websocket.send(
             self.prepare_message(message | {"@type": type})
         )

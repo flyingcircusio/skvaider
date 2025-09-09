@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
         config.aramaki.secret_salt,
         config.aramaki.state_directory,
     )
+    aramaki.start()
     auth_tokens = aramaki.register_collection(skvaider.auth.AuthTokens)
     registry.register_factory(
         skvaider.auth.AuthTokens, auth_tokens.get_collection_with_session

@@ -130,6 +130,8 @@ class ReplicationManager:
 
     """
 
+    catchup_running = False
+
     def __init__(
         self,
         aramaki: "Manager",
@@ -194,21 +196,6 @@ class ReplicationManager:
             yield self.collection(db_session)
 
     async def process_update_message(self, msg: dict):
-        async with self.aramaki.db.session() as db_session:
-            (
-                current_partition,
-                current_version,
-            ) = await _currently_known_partition_and_version(
-                db_session, self.collection.collection
-            )
-        if current_partition is None or current_partition != msg["partition"]:
-            await self.request_catchup()
-            return
-
-        # Discard the message if we have a newer version
-        if msg["version"] < current_version:
-            return
-
         await self.update_buffer.put(msg["version"], msg)
 
     async def process_update_buffer(self):
@@ -219,7 +206,6 @@ class ReplicationManager:
                 self.update_lock,
                 self.aramaki.db.session() as db_session,
             ):
-                # This is duplicated, but we may want that
                 (
                     current_partition,
                     current_version,
@@ -231,6 +217,12 @@ class ReplicationManager:
                     current_partition is None
                     or current_partition != msg["partition"]
                 ):
+                    # There's a certain chance here that, if we get too much of chaotic messages, then we may end up in a flapping
+                    # state, e.g. if there's a number of update messages for two partitions (while partitions change) that can cause
+                    # (due to version numbers of the new partition being lower) us to early on detect the partition change,
+                    # but then find the old partition again in the higher version numbers, this would trigger multiple catchups
+                    # but I think this should settle nicely if the upstream partition assignment hasn't changed, so we'd
+                    # basically request more catchups but those will quickly converge and not replay everything ...
                     asyncio.create_task(self.request_catchup())
                     self.update_buffer.task_done()
                     continue
@@ -392,7 +384,7 @@ class ReplicationManager:
                     continue
                 if msg["from_version"] > current_version:
                     # This message is too new, keep it in the buffer and wait for another one
-                    self.catchup_buffer.put_back(from_version, msg)
+                    await self.catchup_buffer.put_back(from_version, msg)
                     continue
 
                 record = await db_session.get(
@@ -441,6 +433,8 @@ class PriorityPushbackQueue:
 
     """
 
+    metric_put_back = 0
+
     def __init__(self):
         self.items = {}
         self.queue = asyncio.PriorityQueue()
@@ -452,6 +446,7 @@ class PriorityPushbackQueue:
         self.new_item.set()
 
     async def put_back(self, priority, item):
+        self.metric_put_back += 1
         self.items.setdefault(priority, []).append(item)
         self.new_item.clear()
         await self.queue.put(priority)

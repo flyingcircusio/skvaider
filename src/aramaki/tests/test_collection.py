@@ -422,5 +422,319 @@ async def test_replication_catchup_sync(tmpdir):
         assert await collection.get("2") == {"key": "value-10"}
 
 
-async def test_full_sync_deletes_superfluous_records_at_end():
-    pass
+async def test_full_sync_deletes_superfluous_records_at_end(tmpdir):
+    db = aramaki.db.DBSessionManager(tmpdir)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    async with db.session() as session:
+        await aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="1",
+            version=4,
+            data={},
+        )
+        await aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="2",
+            version=5,
+            data={},
+        )
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager, DummyCollection
+    )
+
+    async with manager.get_collection_with_session() as collection:
+        await aramaki_manager.message_received.wait()
+
+        assert aramaki_manager.message == (
+            (
+                "directory.collection.catchup.request",
+                {
+                    "collection": "mydummycollection",
+                    "current_version": 5,
+                    "partition": "partition-1",
+                },
+            ),
+            {},
+        )
+
+        # let's run through a partial sync
+        catchup_task = asyncio.create_task(
+            manager.process_start_catchup_message(
+                {"start_version": 0, "partition": "partition-1"}
+            )
+        )
+        assert await collection.keys() == ["1", "2"]
+        await manager.process_catchup_step_message(
+            {
+                "from_version": 0,
+                "record_id": "1",
+                "partition": "partition-1",
+                "to_version": 1,
+                "change": "null",
+                "is_final_record": True,
+            }
+        )
+        await catchup_task
+        assert await collection.keys() == []
+
+
+async def test_update_with_missing_partition_triggers_catchup(
+    tmpdir,
+):
+    db = aramaki.db.DBSessionManager(tmpdir)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager, DummyCollection
+    )
+
+    async with manager.get_collection_with_session() as collection:
+        await aramaki_manager.message_received.wait()
+        aramaki_manager.message = None
+
+        assert await collection.keys() == []
+        # Send an update message -> triggers a catchup
+
+        await manager.process_update_message(
+            {
+                "record_id": "1",
+                "partition": "partition-1",
+                "version": 5,
+                "change": "update",
+                "data": {"key": "other-value"},
+            }
+        )
+
+        await manager.update_buffer.join()
+
+        assert await collection.keys() == []
+
+        while aramaki_manager.message is None:
+            await asyncio.sleep(0.1)
+
+        assert aramaki_manager.message == (
+            (
+                "directory.collection.catchup.request",
+                {
+                    "collection": "mydummycollection",
+                    "current_version": 0,
+                    "partition": None,
+                },
+            ),
+            {},
+        )
+
+
+async def test_update_with_wrong_partition_triggers_catchup(
+    tmpdir,
+):
+    db = aramaki.db.DBSessionManager(tmpdir)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager, DummyCollection
+    )
+
+    async with db.session() as session:
+        await aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="1",
+            version=4,
+            data={},
+        )
+
+    async with manager.get_collection_with_session() as collection:
+        await aramaki_manager.message_received.wait()
+        aramaki_manager.message = None
+
+        assert await collection.keys() == ["1"]
+
+        # Send an update message -> triggers a catchup
+        await manager.process_update_message(
+            {
+                "record_id": "5",
+                "partition": "partition-2",
+                "version": 5,
+                "change": "update",
+                "data": {"key": "other-value"},
+            }
+        )
+
+        await manager.update_buffer.join()
+
+        assert await collection.keys() == ["1"]
+        while aramaki_manager.message is None:
+            await asyncio.sleep(0.1)
+
+        assert aramaki_manager.message == (
+            (
+                "directory.collection.catchup.request",
+                {
+                    "collection": "mydummycollection",
+                    "current_version": 4,
+                    "partition": "partition-1",
+                },
+            ),
+            {},
+        )
+
+
+async def test_partial_sync_wrong_partition_restart_catchup(
+    tmpdir,
+):
+    db = aramaki.db.DBSessionManager(tmpdir)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    async with db.session() as session:
+        await aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="1",
+            version=4,
+            data={},
+        )
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager, DummyCollection
+    )
+
+    async with manager.get_collection_with_session() as collection:
+        await aramaki_manager.message_received.wait()
+        assert aramaki_manager.message == (
+            (
+                "directory.collection.catchup.request",
+                {
+                    "collection": "mydummycollection",
+                    "current_version": 4,
+                    "partition": "partition-1",
+                },
+            ),
+            {},
+        )
+        aramaki_manager.message = None
+
+        assert await collection.keys() == ["1"]
+
+        # Get a partial catchup initiation but with the wrong partition -> request a new full sync
+        catchup_task = asyncio.create_task(
+            manager.process_start_catchup_message(
+                {"start_version": 2, "partition": "partition-2"}
+            )
+        )
+        assert await collection.keys() == ["1"]
+        await catchup_task
+
+        assert await collection.keys() == ["1"]
+        assert aramaki_manager.message == (
+            (
+                "directory.collection.catchup.request",
+                {
+                    "collection": "mydummycollection",
+                    "current_version": 0,
+                    "partition": "partition-2",
+                },
+            ),
+            {},
+        )
+
+
+async def test_replication_catchup_out_of_order(tmpdir):
+    db = aramaki.db.DBSessionManager(tmpdir)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    async with db.session() as session:
+        await aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="1",
+            version=4,
+            data={},
+        )
+        await aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="2",
+            version=5,
+            data={},
+        )
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager, DummyCollection
+    )
+
+    async with manager.get_collection_with_session() as collection:
+        await aramaki_manager.message_received.wait()
+
+        assert aramaki_manager.message == (
+            (
+                "directory.collection.catchup.request",
+                {
+                    "collection": "mydummycollection",
+                    "current_version": 5,
+                    "partition": "partition-1",
+                },
+            ),
+            {},
+        )
+
+        # let's run through a partial sync
+        catchup_task = asyncio.create_task(
+            manager.process_start_catchup_message(
+                {"start_version": 6, "partition": "partition-1"}
+            )
+        )
+        await manager.process_catchup_step_message(
+            {
+                "from_version": 6,
+                "record_id": "2",
+                "partition": "partition-1",
+                "to_version": 10,
+                "change": "update",
+                "data": {"key": "value-10"},
+                "is_final_record": True,
+            }
+        )
+
+        while manager.catchup_buffer.metric_put_back == 0:
+            await asyncio.sleep(0.1)
+
+        await manager.process_catchup_step_message(
+            {
+                "from_version": 5,
+                "record_id": "1",
+                "partition": "partition-1",
+                "to_version": 6,
+                "change": "delete",
+            }
+        )
+
+        await catchup_task
+
+        assert await collection.get("1") is None
+        assert await collection.get("2") == {"key": "value-10"}
