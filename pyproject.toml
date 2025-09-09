@@ -16,12 +16,13 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "sqlalchemy>=2.0.43",
     "svcs>=25.1.0",
-    "uvicorn[standard]>=0.35.0",
     "rfc8785>=0.1.4",
     "structlog>=25.4.0",
     "aiosqlite>=0.21.0",
     "alembic>=1.16.5",
     "argon2-cffi>=25.1.0",
+    "uvicorn-worker>=0.3.0",
+    "gunicorn>=23.0.0",
 ]
 
 [project.scripts]
@@ -40,6 +41,9 @@ line_length = 80
 
 [tool.coverage.run]
 concurrency = ["thread", "greenlet"]
+
+[tool.uv.build-backend]
+module-name = ["aramaki", "skvaider"]
 
 [dependency-groups]
 dev = [
