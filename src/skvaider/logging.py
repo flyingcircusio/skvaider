@@ -65,6 +65,10 @@ def logging_config(config: Config) -> dict:
                 "level": config.logging.log_level,
                 "handlers": ["console"],
             },
+            "aramaki": {
+                "level": config.logging.log_level,
+                "handlers": ["console"],
+            },
             "skvaider.accesslog": {
                 "level": "INFO",
                 "handlers": ["accesslog"],
