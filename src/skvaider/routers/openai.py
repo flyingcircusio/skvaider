@@ -33,7 +33,7 @@ class Backend:
         self.models = {}
 
     async def post(self, path: str, data: dict):
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(self.url + path, json=data, timeout=120)
             return r.json()
 
@@ -41,7 +41,7 @@ class Backend:
         self, path: str, data: dict
     ) -> AsyncGenerator[str, None]:
         """Stream responses from the backend"""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             async with client.stream(
                 "POST", self.url + path, json=data, timeout=120
             ) as response:
@@ -52,7 +52,7 @@ class Backend:
     async def monitor_health_and_update_models(self):
         while True:
             try:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(follow_redirects=True) as client:
                     r = await client.get(self.url + "/v1/models")
                 self.models.clear()
                 new_models = r.json()["data"] or ()

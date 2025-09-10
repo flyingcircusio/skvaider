@@ -1,69 +1,75 @@
-import os
+import asyncio
+import base64
+import json
 
 import pytest
 import svcs
+from argon2 import PasswordHasher
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import delete
 
+import skvaider.routers.openai
 from skvaider import app_factory
-from skvaider.db import DBSession, DBSessionManager
-from skvaider.models import AuthToken
 
-TEST_SERVER_PORT = 8001
+hasher = PasswordHasher()
 
-CONFIG_TEMPLATE = """
-# Sample config used by the tests.
 
-[database]
-url = "{db_url}"
+class DummyTokens:
+    def __init__(self):
+        self.data = {}
 
-[[backend]]
-type = "openai"
-url = "http://127.0.0.1:11435"
-"""
+    async def get(self, key):
+        return self.data.get(key)
+
+    async def keys(self):
+        return self.data.keys()
+
+
+DUMMY_TOKENS = DummyTokens()
 
 
 @pytest.fixture
 def services():
     reg = svcs.Registry()
+    reg.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
     with svcs.Container(reg) as container:
         yield container
 
 
-@pytest.fixture
-def db_url():
-    return "postgresql+psycopg://skvaider:foobar@localhost:5432/test"
+@svcs.fastapi.lifespan
+async def test_lifespan(app: FastAPI, registry: svcs.Registry):
+    pool = skvaider.routers.openai.Pool()
+    pool.add_backend(skvaider.routers.openai.Backend("http://localhost:11435"))
+    registry.register_value(skvaider.routers.openai.Pool, pool)
+    registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
+
+    while True:
+        try:
+            pool.choose_backend("gemma3:1b")
+        except Exception:
+            await asyncio.sleep(1)
+            continue
+        break
+
+    yield {}
+    pool.close()
 
 
 @pytest.fixture
-def skvaider_url():
-    return f"http://localhost:{TEST_SERVER_PORT}"
-
-
-async def cleanup_db(session):
-    await session.execute(delete(AuthToken))
-    await session.commit()
-
-
-@pytest.fixture(autouse=True)
-async def session(services, db_url):  # autouse to always ensure a clean DB
-    sessionmanager = DBSessionManager(db_url)
-    async with sessionmanager.session() as session:
-        services.register_local_value(DBSession, session)
-        await cleanup_db(session)
-        yield session
-        await cleanup_db(session)
-    await sessionmanager.close()
+def token_db():
+    DUMMY_TOKENS.data.clear()
+    yield DUMMY_TOKENS
 
 
 @pytest.fixture
-async def auth_token(session):
+async def auth_token(token_db):
     """Return a valid auth token."""
-    token = await AuthToken.create(
-        session, username="user", password="password"
+    secret = "asdf"
+    token_db.data["user"] = {"secret_hash": hasher.hash(secret)}
+    auth_token = base64.b64encode(
+        json.dumps({"id": "user", "secret": secret}).encode("utf-8")
     )
-    await session.commit()  # make this visible to other sessions, too.
-    yield f"{token.username}-{token.password}"
+    yield auth_token.decode("ascii")
 
 
 @pytest.fixture
@@ -75,10 +81,6 @@ async def auth_header(client, auth_token):
 
 
 @pytest.fixture
-def client(skvaider_url, db_url, tmp_path):
-    cfg_path = tmp_path / "config.test.toml"
-    with cfg_path.open("w") as f:
-        f.write(CONFIG_TEMPLATE.format(db_url=db_url))
-        os.environ["SKVAIDER_CONFIG_FILE"] = str(cfg_path)
-    with TestClient(app_factory()) as client:
+def client():
+    with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client

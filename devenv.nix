@@ -2,16 +2,13 @@
 
 {
   packages = with pkgs; [
-    postgresql.lib
     ollama
   ];
 
   enterTest = ''
     wait_for_port 11435
-    wait_for_port 5432
     # Wait for model (defined in processes:ollama) to be available
     until ${lib.getExe pkgs.curl} -s http://127.0.0.1:11435/v1/models | ${lib.getExe pkgs.yq-go} -e ".data"; do sleep 0.5; done
-    bootstrap-db
     run-tests
   '';
 
@@ -20,21 +17,14 @@
     PYTHONUNBUFFERED = "1"; # makes output from subprocesses in tests more reliably visible
   };
 
-  scripts.bootstrap-db.exec = ''
-    dropdb skvaider || true
-    createdb -O skvaider skvaider
-    psql -d skvaider -p 5432 -U skvaider < migrations/0001_init.sql
-    dropdb test || true
-    createdb -O skvaider test
-    psql -d test -p 5432 -U skvaider < migrations/0001_init.sql
-  '';
-
   scripts.run-tests.exec = ''
     uv run pytest -vv "$@"
   '';
 
   processes = {
-    skvaider.exec = "uv run uvicorn skvaider:app_factory --reload-include 'config.toml' --factory --reload ";
+    skvaider.exec = ''
+      uv run gunicorn "skvaider:app_factory()" -w 2 -k uvicorn_worker.UvicornWorker --reload-extra-file config.toml
+    '';
     ollama = {
       exec = ''
         ollama serve&
@@ -45,18 +35,6 @@
         wait
       '';
     };
-  };
-
-  services.postgres = {
-    enable = true;
-    listen_addresses = "localhost";
-    initialDatabases = [
-      {
-        name = "skvaider";
-        user = "skvaider";
-        pass = "foobar";
-      }
-    ];
   };
 
   languages.python = {

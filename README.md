@@ -1,6 +1,6 @@
 ## About
 
-skvaider is a proxy and router for AI-APIs.
+skvaider is a proxy and router for (Open)AI-APIs.
 
 Features:
 
@@ -8,7 +8,6 @@ Features:
 * automated health checks
 * automated model discovery
 * token authentication
-
 
 > The name `skvaider` is derived from the Swedish word `skvader` which is one
 > of those mythical beasts concocted from multiple real animals. Incidentally
@@ -30,11 +29,8 @@ $ devenv up
 
 You can also activate the development environment with direnv and a `.envrc` (not checked in) using `use flake . --impure`.
 
-This project uses manual database migrations at the moment, these can be applied with the following command
-
 ```bash
 $ nix develop --impure
-$ bootstrap-db
 ```
 
 ## Testing

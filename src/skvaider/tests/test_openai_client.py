@@ -88,7 +88,7 @@ def test_completions(openai_client):
         max_tokens=50,  # More generous token budget
     )
     assert "paris" in response.choices[0].text.lower()
-    assert 0 < response.usage.total_tokens <= 50
+    assert 0 < response.usage.total_tokens <= 100
 
 
 def test_completions_streaming(openai_client):

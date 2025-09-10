@@ -1,6 +1,12 @@
 # Sample config used by the development environment
-[database]
-url = "postgresql+psycopg://skvaider:foobar@localhost:5432/skvaider"
+[auth]
+source = "aramaki"
+
+[aramaki]
+url = "wss://directory.0e9d93af.largo01.fcdev.fcio.net/aramaki"
+state_directory = ".aramaki-workdir"
+secret_salt = ""
+principal = "kyle00"
 
 [[backend]]
 type = "openai"
