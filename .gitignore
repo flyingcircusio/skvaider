@@ -13,6 +13,7 @@ wheels/
 .direnv
 .devenv
 .envrc
+result
 
 # test generated files
 .coverage*
