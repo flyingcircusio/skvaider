@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import sqlalchemy
+import structlog
 from sqlalchemy import JSON, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -11,6 +12,8 @@ from aramaki.db import Base
 
 if TYPE_CHECKING:
     from aramaki import Manager
+
+log = structlog.stdlib.get_logger()
 
 
 class Record(Base):
@@ -196,12 +199,19 @@ class ReplicationManager:
             yield self.collection(db_session)
 
     async def process_update_message(self, msg: dict):
+        log.debug("collection-process-update-message", id=msg.get("@id"))
         await self.update_buffer.put(msg["version"], msg)
 
     async def process_update_buffer(self):
         while True:
             update_version, msg = await self.update_buffer.get()
             assert msg["record_id"]  # defensive against peers breaking protocol
+            log.debug(
+                "collection-process-update-message",
+                id=msg.get("@id"),
+                parition=msg["partition"],
+                version=update_version,
+            )
             async with (
                 self.update_lock,
                 self.aramaki.db.session() as db_session,
@@ -277,6 +287,11 @@ class ReplicationManager:
                 db_session, self.collection.collection
             )
 
+        log.debug(
+            "collection-request-catchup",
+            partition=current_partition,
+            current_version=current_version,
+        )
         await self.aramaki.send_message(
             "directory.collection.catchup.request",
             {
@@ -307,6 +322,13 @@ class ReplicationManager:
         start_version = msg["start_version"]
         partition = msg["partition"]
 
+        log.debug(
+            "collection-start-catchup",
+            id=msg.get("@id"),
+            partition=partition,
+            start_version=start_version,
+        )
+
         async with self.aramaki.db.session() as db_session:
             r = await _currently_known_partition_and_version(
                 db_session, self.collection.collection
@@ -331,6 +353,11 @@ class ReplicationManager:
                 # We switched partitions but that means we can't do a partial sync.
                 # Re-request a full sync (not re-using request_catchup because
                 # we don't want to use the persistent data we have).
+                log.debug(
+                    "collection-request-catchup",
+                    partition=partition,
+                    current_version=0,
+                )
                 await self.aramaki.send_message(
                     "directory.collection.catchup.request",
                     {
@@ -344,6 +371,12 @@ class ReplicationManager:
             is_full_sync = start_version == 1
 
             if is_full_sync:
+                log.debug(
+                    "collection-full-sync",
+                    status="start",
+                    partition=partition,
+                    current_version=0,
+                )
                 # Remove version markers from all records for now (and delete them when the catchup has finished.)
                 # We keep the records to avoid "holes" for our clients while we're updating from an earlier state.
                 async with self.aramaki.db.session() as db_session:
@@ -357,6 +390,7 @@ class ReplicationManager:
             await self.catchup_finished.wait()
 
             if is_full_sync:
+                log.debug("collection-full-sync", status="finished")
                 # Delete all items that haven't received version markers during the catchup.
                 async with self.aramaki.db.session() as db_session:
                     await db_session.execute(
@@ -371,6 +405,13 @@ class ReplicationManager:
     async def process_catchup_step_buffer(self):
         while True:
             from_version, msg = await self.catchup_buffer.get()
+            log.debug(
+                "collection-process-catchup-step-buffer",
+                id=msg.get("@id"),
+                from_version=from_version,
+                to_version=msg["to_version"],
+                change=msg["change"],
+            )
             async with self.aramaki.db.session() as db_session:
                 (
                     current_partition,

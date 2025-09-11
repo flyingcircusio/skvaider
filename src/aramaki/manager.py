@@ -122,7 +122,6 @@ class Manager:
                 async with websockets.connect(self.url) as websocket:
                     self.websocket = websocket
                     log.info("directory-connection", status="connected")
-                    log.info("Sending subscription.")
                     subscription = {
                         "@type": "aramaki.subscription",
                         "@application": self.application,
@@ -135,6 +134,7 @@ class Manager:
                         ],
                     }
                     await websocket.send(self.prepare_message(subscription))
+                    log.info("subscriptions", status="sent")
                     self.websocket_ready.set()
 
                     log.info("Waiting for messages ...")
@@ -161,10 +161,13 @@ class Manager:
             task.cancel()
 
     async def process(self, message):
-        message = json.loads(message)
-        self.authenticate(message)
-        if message.get("@type") in self.callbacks:
-            await self.callbacks[message["@type"]](message)
+        try:
+            message = json.loads(message)
+            self.authenticate(message)
+            if message.get("@type") in self.callbacks:
+                await self.callbacks[message["@type"]](message)
+        except Exception:
+            log.exception("message-processing-failed", message=message)
 
     def authenticate(self, message):
         """Authenticate whether this message has originated from the advertised
@@ -201,15 +204,22 @@ class Manager:
         self.known_messages.mark(message["@id"])
 
     def sign_message(self, message):
-        log.info(rfc8785.dumps(message))
         message["@signature"] = {"alg": "HS256"}
         signature = hmac.new(
             self.secret.encode("ascii"), rfc8785.dumps(message), hashlib.sha256
         ).hexdigest()
         message["@signature"]["signature"] = signature
+        log.debug(
+            "signing-message",
+            type=message.get("@type"),
+            id=message.get("@id"),
+            signature=signature,
+        )
 
-    def prepare_message(self, message):
+    def prepare_message(self, message) -> str:
         now = datetime.datetime.now().astimezone(datetime.UTC)
+        id_ = uuid.uuid4().hex
+        log.debug("prepare-message", type=message.get("@type"), id=id_)
         message_template = {
             "@context": "https://flyingcircus.io/ns/aramaki",
             "@version": 1,
@@ -217,7 +227,7 @@ class Manager:
             "@application": self.application,
             "@issued": now.isoformat(),
             "@expiry": (now + datetime.timedelta(hours=1)).isoformat(),
-            "@id": uuid.uuid4().hex,
+            "@id": id_,
         }
         message = copy.deepcopy(message)
         message.update(message_template)
@@ -227,8 +237,8 @@ class Manager:
     async def send_message(self, type: str, message: dict):
         # TODO: backoff, retry
         # TODO: consider adding (persistent?) buffering
+        log.debug("sending-message", status="wait", type=type)
         await self.websocket_ready.wait()
-        log.info(f"sending message {type}")
-        await self.websocket.send(
-            self.prepare_message(message | {"@type": type})
-        )
+        prepared_message = self.prepare_message(message | {"@type": type})
+        await self.websocket.send(prepared_message)
+        log.debug("sending-message", status="sent", type=type)

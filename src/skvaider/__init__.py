@@ -1,6 +1,7 @@
-import asyncio
 import os
 import tomllib
+from logging import getLogger
+from logging.config import dictConfig
 
 import svcs
 from fastapi import FastAPI, Security
@@ -9,6 +10,7 @@ import skvaider.routers.openai
 from aramaki import Manager as AramakiManager
 from skvaider.auth import verify_token
 from skvaider.config import Config
+from skvaider.logging import LoggingMiddleware, logging_config
 
 
 @svcs.fastapi.lifespan
@@ -17,6 +19,8 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
     with open(config_file, "rb") as f:
         config_data = tomllib.load(f)
     config = Config.model_validate(config_data)
+
+    dictConfig(logging_config(config))
 
     pool = skvaider.routers.openai.Pool()
     for backend_config in config.backend:
@@ -48,5 +52,8 @@ def app_factory(lifespan=lifespan):
         skvaider.routers.openai.router,
         prefix="/openai",
         dependencies=[Security(verify_token)],
+    )
+    app.add_middleware(
+        LoggingMiddleware, logger=getLogger("skvaider.accesslog")
     )
     return app
