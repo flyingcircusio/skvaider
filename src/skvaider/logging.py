@@ -1,41 +1,79 @@
+import ipaddress
 import logging
 import time
-from typing import Callable
+from typing import Awaitable, Callable
 
 import structlog
-from fastapi import FastAPI, Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import Request
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from skvaider import Config
 
 log = structlog.stdlib.get_logger()
 
 
-class LoggingMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: FastAPI, *, logger: logging.Logger):
+class LoggingMiddleware:
+    def __init__(self, app: ASGIApp, *, logger: logging.Logger):
+        self.app = app
         self._logger = logger
-        super().__init__(app)
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        try:
-            data = await request.json()
-            model = data.get("model", "n/a")
-        except Exception:
-            model = "n/a"
-        try:
-            backend = request.state.backend.url
-        except AttributeError:
-            backend = "n/a"
+    async def inner_send(
+        self, message: Message, send: Send, status_code: list[int]
+    ):
+        if message["type"] == "http.response.start":
+            status_code[0] = message["status"]
+
+        await send(message)
+
+    def inner_send_factory(
+        self, send: Send, status_code: list[int]
+    ) -> Callable[[Message], Awaitable[None]]:
+        return lambda message: self.inner_send(message, send, status_code)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
 
         start_time = time.perf_counter()
-        response = await call_next(request)
-        process_time = time.perf_counter() - start_time
+        client = scope["client"]
+        anon_ip = "no ip"
+        if client:
+            try:
+                client_ip = ipaddress.ip_network(client[0])
+                anon_net = None
+                if client_ip.version == 4:
+                    anon_net = client_ip.supernet(new_prefix=24)
+                if client_ip.version == 6:
+                    anon_net = client_ip.supernet(new_prefix=64)
+                anon_ip = str(anon_net.network_address)
+            except ValueError:
+                pass
 
-        self._logger.info(
-            f"{request.method} {request.url.path} {model} -> {backend} {response.status_code} {process_time}"
-        )
+        status_code = [500]
+        try:
+            await self.app(
+                scope, receive, self.inner_send_factory(send, status_code)
+            )
+        finally:
+            process_time = round(time.perf_counter() - start_time, 3)
+            request = Request(scope, receive)
 
-        return response
+            try:
+                backend = request.state.backend.url
+                model = request.state.model
+                if request.state.stream:
+                    stream = "stream true"
+                else:
+                    stream = "stream false"
+
+            except AttributeError:
+                backend = "no backend"
+                model = "no model"
+                stream = "stream false"
+
+            self._logger.info(
+                f"{anon_ip} {request.method} {request.url.path} {model} {stream} -> {backend} {status_code[0]} {process_time}s"
+            )
 
 
 def logging_config(config: Config) -> dict:
