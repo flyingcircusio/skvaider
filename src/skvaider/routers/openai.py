@@ -1,6 +1,6 @@
 import asyncio
 import contextlib
-from typing import Any, AsyncGenerator, Generic, TypeVar
+from typing import Any, AsyncGenerator, Dict, Generic, Optional, TypeVar
 
 import httpx
 import svcs
@@ -20,6 +20,31 @@ class AIModel(BaseModel):
     owned_by: str
 
 
+class ModelConfig:
+    """Configuration for model-specific options"""
+
+    def __init__(self):
+        # Hard-coded configurations for specific models
+        self.model_options: Dict[str, Dict[str, Any]] = {
+            "gpt-oss:20b": {
+                "num_ctx": 64 * 1024,
+            },
+            "gpt-oss:120b": {
+                "num_ctx": 64 * 1024,
+            },
+            "mistral-small3.2:latest": {
+                "num_ctx": 32 * 1024,
+            },
+            "gemma3:1b": {
+                "num_ctx": 3 * 1024,
+            },
+        }
+
+    def get_options(self, model_id: str) -> Optional[Dict[str, Any]]:
+        """Get custom options for a specific model"""
+        return self.model_options.get(model_id)
+
+
 class Backend:
     url: str
     connections: int = 0
@@ -27,10 +52,12 @@ class Backend:
     healthy: bool = False
     unhealthy_reason: str = ""
     models: dict[str, AIModel]
+    model_config: ModelConfig
 
     def __init__(self, url):
         self.url = url
         self.models = {}
+        self.model_config = ModelConfig()
 
     async def post(self, path: str, data: dict):
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -48,6 +75,28 @@ class Backend:
                 async for chunk in response.aiter_text():
                     if chunk.strip():
                         yield chunk
+
+    async def load_model_with_options(self, model_id: str) -> bool:
+        """Load a model with custom options if configured"""
+        options = self.model_config.get_options(model_id)
+        if options:
+            # Load model with custom options using Ollama's /api/generate endpoint
+            load_data = {
+                "model": model_id,
+                "prompt": "",  # Empty prompt to just load the model
+                "options": options,
+            }
+            try:
+                async with httpx.AsyncClient(follow_redirects=True) as client:
+                    r = await client.post(
+                        self.url + "/api/generate", json=load_data, timeout=120
+                    )
+                    result = r.json()
+                    return result.get("done", False)
+            except Exception as e:
+                print(f"Failed to load model {model_id} with options: {e}")
+                return False
+        return True  # No custom options, assume model is ready
 
     async def monitor_health_and_update_models(self):
         while True:
@@ -130,11 +179,13 @@ class Pool:
             )
         return available_models[-1]
 
-    @contextlib.contextmanager
-    def use(self, model):
+    @contextlib.asynccontextmanager
+    async def use(self, model):
         backend = self.choose_backend(model)
         backend.connections += 1
         try:
+            # Ensure model is loaded with custom options if configured
+            await backend.load_model_with_options(model)
             yield backend
         finally:
             backend.connections -= 1
@@ -172,7 +223,7 @@ async def chat_completions(
 
     pool = services.get(Pool)
 
-    with pool.use(model) as backend:
+    async with pool.use(model) as backend:
         r.state.backend = backend
         # XXX pass through headers?
         # Check if streaming is requested
@@ -209,7 +260,7 @@ async def completions(r: Request, services: svcs.fastapi.DepContainer) -> Any:
 
     pool = services.get(Pool)
 
-    with pool.use(model) as backend:
+    async with pool.use(model) as backend:
         r.state.backend = backend
         # Check if streaming is requested
         stream = request_data.get("stream", False)
@@ -245,7 +296,7 @@ async def embeddings(r: Request, services: svcs.fastapi.DepContainer) -> Any:
 
     pool = services.get(Pool)
 
-    with pool.use(model) as backend:
+    async with pool.use(model) as backend:
         r.state.stream = False
         r.state.backend = backend
         return await backend.post("/v1/embeddings", request_data)
