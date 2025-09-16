@@ -17,25 +17,25 @@ Features:
 ## Development environment
 
 > This requires a local Nix installation.
+> This also requires a devenv installation.
 
 This will start the development server, postgresql, and other auxiliary services.
 
 ```bash
-$ nix develop --impure
 $ devenv up
 ```
 
 ### Variations of the development environment
 
-You can also activate the development environment with direnv and a `.envrc` (not checked in) using `use flake . --impure`.
+You can also activate the development environment with devenv shell:
 
 ```bash
-$ nix develop --impure
+$ devenv shell
 ```
 
 ## Testing
 
 ```bash
-$ nix develop --impure
+$ devenv shell
 $ run-tests
 ```
