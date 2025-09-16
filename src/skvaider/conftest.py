@@ -39,7 +39,12 @@ def services():
 @svcs.fastapi.lifespan
 async def test_lifespan(app: FastAPI, registry: svcs.Registry):
     pool = skvaider.routers.openai.Pool()
-    pool.add_backend(skvaider.routers.openai.Backend("http://localhost:11435"))
+    model_config = skvaider.routers.openai.ModelConfig(
+        {"gemma3": {"num_ctx": 3072}}
+    )
+    pool.add_backend(
+        skvaider.routers.openai.Backend("http://localhost:11435", model_config)
+    )
     registry.register_value(skvaider.routers.openai.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
 

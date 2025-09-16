@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -7,6 +8,11 @@ class Config(BaseModel):
     aramaki: "AramakiConfig"
     backend: list["BackendConfig"]
     logging: "LoggingConfig"
+    openai: "OpenAIConfig"
+
+
+class OpenAIConfig(BaseModel):
+    models: dict[str, dict[str, Any]]
 
 
 class AramakiConfig(BaseModel):

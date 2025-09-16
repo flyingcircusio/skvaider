@@ -22,11 +22,15 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
 
     dictConfig(logging_config(config))
 
+    model_config = skvaider.routers.openai.ModelConfig(config.openai.models)
+
     pool = skvaider.routers.openai.Pool()
     for backend_config in config.backend:
         if backend_config.type != "openai":
             continue
-        pool.add_backend(skvaider.routers.openai.Backend(backend_config.url))
+        pool.add_backend(
+            skvaider.routers.openai.Backend(backend_config.url, model_config)
+        )
     registry.register_value(skvaider.routers.openai.Pool, pool)
 
     aramaki = AramakiManager(

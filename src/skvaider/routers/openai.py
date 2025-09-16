@@ -23,26 +23,18 @@ class AIModel(BaseModel):
 class ModelConfig:
     """Configuration for model-specific options"""
 
-    def __init__(self):
-        # Hard-coded configurations for specific models
-        self.model_options: Dict[str, Dict[str, Any]] = {
-            "gpt-oss:20b": {
-                "num_ctx": 64 * 1024,
-            },
-            "gpt-oss:120b": {
-                "num_ctx": 64 * 1024,
-            },
-            "mistral-small3.2:latest": {
-                "num_ctx": 32 * 1024,
-            },
-            "gemma3:1b": {
-                "num_ctx": 3 * 1024,
-            },
-        }
+    # map model names (including or excluding tags) to dicts containing model-specific settings
+    config: Dict[str, Dict[str, Any]]
 
-    def get_options(self, model_id: str) -> Optional[Dict[str, Any]]:
+    def __init__(self, config):
+        self.config = config
+
+    def get(self, model_id: str) -> Optional[Dict[str, Any]]:
         """Get custom options for a specific model"""
-        return self.model_options.get(model_id)
+        for candidate in [model_id, model_id.split(":")[0], "__default__"]:
+            if candidate in self.config:
+                return self.config[candidate]
+        return {}
 
 
 class Backend:
@@ -54,10 +46,10 @@ class Backend:
     models: dict[str, AIModel]
     model_config: ModelConfig
 
-    def __init__(self, url):
+    def __init__(self, url, model_config):
         self.url = url
         self.models = {}
-        self.model_config = ModelConfig()
+        self.model_config = model_config
 
     async def post(self, path: str, data: dict):
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -78,25 +70,23 @@ class Backend:
 
     async def load_model_with_options(self, model_id: str) -> bool:
         """Load a model with custom options if configured"""
-        options = self.model_config.get_options(model_id)
-        if options:
-            # Load model with custom options using Ollama's /api/generate endpoint
-            load_data = {
-                "model": model_id,
-                "prompt": "",  # Empty prompt to just load the model
-                "options": options,
-            }
-            try:
-                async with httpx.AsyncClient(follow_redirects=True) as client:
-                    r = await client.post(
-                        self.url + "/api/generate", json=load_data, timeout=120
-                    )
-                    result = r.json()
-                    return result.get("done", False)
-            except Exception as e:
-                print(f"Failed to load model {model_id} with options: {e}")
-                return False
-        return True  # No custom options, assume model is ready
+        options = self.model_config.get(model_id)
+        # Load model with custom options using Ollama's /api/generate endpoint
+        load_data = {
+            "model": model_id,
+            "prompt": "",  # Empty prompt to just load the model
+            "options": options,
+        }
+        try:
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                r = await client.post(
+                    self.url + "/api/generate", json=load_data, timeout=120
+                )
+                result = r.json()
+                return result.get("done", False)
+        except Exception as e:
+            print(f"Failed to load model {model_id} with options: {e}")
+            raise
 
     async def monitor_health_and_update_models(self):
         while True:
