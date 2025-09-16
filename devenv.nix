@@ -23,7 +23,7 @@
 
   processes = {
     skvaider.exec = ''
-      uv run gunicorn "skvaider:app_factory()" -w 2 -k uvicorn_worker.UvicornWorker --reload-extra-file config.toml
+      uv run gunicorn "skvaider:app_factory()" -k uvicorn_worker.UvicornWorker --reload-extra-file config.toml
     '';
     ollama = {
       exec = ''
