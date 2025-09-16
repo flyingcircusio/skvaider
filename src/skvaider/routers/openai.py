@@ -1,6 +1,6 @@
 import asyncio
 import contextlib
-from typing import Any, AsyncGenerator, Generic, TypeVar, Dict, Optional
+from typing import Any, AsyncGenerator, Dict, Generic, Optional, TypeVar
 
 import httpx
 import svcs
