@@ -12,6 +12,10 @@ principal = "kyle00"
 type = "openai"
 url = "http://127.0.0.1:11435"
 
+[[backend]]
+type = "openai"
+url = "http://127.0.0.1:11436"
+
 [openai.models."gpt-oss:20b"]
 num_ctx = 65536
 

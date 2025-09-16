@@ -48,13 +48,13 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
     registry.register_value(skvaider.routers.openai.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
 
-    while True:
-        try:
-            pool.choose_backend("gemma3:1b")
-        except Exception:
-            await asyncio.sleep(1)
-            continue
-        break
+    tries = 10
+    while tries := tries - 1:
+        if "gemma3:1b" in pool.models:
+            break
+        await asyncio.sleep(1)
+    else:
+        raise ValueError("Missing sample model")
 
     yield {}
     pool.close()
