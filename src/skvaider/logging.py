@@ -58,18 +58,24 @@ class LoggingMiddleware:
             process_time = round(time.perf_counter() - start_time, 3)
             request = Request(scope, receive)
 
+            model = "n/a"
+            try:
+                model = request.state.model
+            except Exception:
+                pass
+
+            backend = "n/a"
             try:
                 backend = request.state.backend.url
-                model = request.state.model
+            except Exception:
+                pass
+
+            stream = "-"
+            try:
                 if request.state.stream:
                     stream = "S"
-                else:
-                    stream = "-"
-
-            except AttributeError:
-                backend = "n/a"
-                model = "n/a"
-                stream = "-"
+            except Exception:
+                pass
 
             # Timings
             # - warmup time

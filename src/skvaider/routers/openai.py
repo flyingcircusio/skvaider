@@ -6,10 +6,10 @@ This uses Ollama-internal APIs for better load-balancing but exposes a pure Open
 
 import asyncio
 import contextlib
-import logging
 from typing import Any, AsyncGenerator, Dict, Generic, Optional, TypeVar
 
 import httpx
+import structlog
 import svcs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -19,6 +19,8 @@ router = APIRouter()
 
 T = TypeVar("T")
 
+log = structlog.stdlib.get_logger()
+
 
 def log_task_exception(task: asyncio.Task) -> None:
     try:
@@ -26,7 +28,7 @@ def log_task_exception(task: asyncio.Task) -> None:
     except asyncio.CancelledError:
         pass  # Task cancellation should not be logged as an error.
     except Exception:  # pylint: disable=broad-except
-        logging.exception("Exception raised by task = %r", task)
+        log.exception("Exception raised by task = %r", task)
 
 
 def create_logged_task(aw):
@@ -51,11 +53,15 @@ class AIModel(BaseModel):
     limit: int = Field(default=5, exclude=True)
     idle: asyncio.Event = Field(default=True, exclude=True)
     is_loaded: bool = Field(default=False, exclude=True)
+    memory_usage: int = Field(default=0, exclude=True)
+    log: Any = Field(default=None, exclude=True)
 
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
         self.idle = asyncio.Event()
         self.idle.set()
+
+        self.log = log.bind(model=self.id, backend=self.backend.url)
 
     @contextlib.asynccontextmanager
     async def use(self):
@@ -63,7 +69,9 @@ class AIModel(BaseModel):
             yield
         finally:
             self.in_progress -= 1
+            self.log.debug("done", in_progress=self.in_progress)
             if not self.in_progress:
+                self.log.debug("idling")
                 self.idle.set()
 
     async def wait(self):
@@ -94,7 +102,7 @@ class Backend:
     url: str
 
     health_interval: int = 15
-    healthy: bool = False
+    healthy: bool = None
     unhealthy_reason: str = ""
     models: dict[str, AIModel]
     model_config: ModelConfig
@@ -103,6 +111,11 @@ class Backend:
         self.url = url
         self.models = {}
         self.model_config = model_config
+        self.log = structlog.stdlib.get_logger().bind(backend=self.url)
+
+    @property
+    def memory_usage(self):
+        return sum([v.memory_usage for v in self.models.values()])
 
     async def post(self, path: str, data: dict):
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -137,23 +150,36 @@ class Backend:
                 )
                 result = r.json()
                 return result.get("done", False)
+            await self.update_model_load_status()
         except Exception as e:
-            print(f"Failed to load model {model_id} with options: {e}")
+            self.log("failed loading model", exception=e, model=model_id)
             raise
 
+    async def update_model_load_status(self):
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.get(self.url + "/api/ps")
+            model_status = {}
+            for entry in r.json()["models"]:
+                model_status[entry["name"]] = entry
+
+        for model_id, model_obj in self.models.items():
+            if model_data := model_status.get(model_obj.id):
+                model_obj.is_loaded = True
+                model_obj.memory_usage = model_data["size_vram"]
+            else:
+                model_obj.is_loaded = False
+                model_obj.memory_usage = 0
+
     async def monitor_health_and_update_models(self, pool):
-        print(f"Starting monitor for {self.url}")
+        self.log.debug("starting monitor")
         while True:
             try:
+                self.log.debug("probing backend")
                 async with httpx.AsyncClient(follow_redirects=True) as client:
                     r = await client.get(self.url + "/v1/models")
                     known_models = r.json()["data"] or ()
-                async with httpx.AsyncClient(follow_redirects=True) as client:
-                    r = await client.get(self.url + "/api/ps")
-                    loaded_models = set([m["name"] for m in r.json()["models"]])
-
+                self.log.debug("updating backends")
                 current_models = self.models
-
                 updated_models = {}
                 for model in known_models:
                     if model["id"] not in known_models:
@@ -170,24 +196,24 @@ class Backend:
                         model_obj.created = model["created"]
                         model_obj.owned_by = model["owned_by"]
 
-                    model_obj.is_loaded = model_obj.id in loaded_models
-
                     updated_models[model_obj.id] = model_obj
 
                 self.models = updated_models
 
+                await self.update_model_load_status()
+
                 pool.update_model_maps()
 
             except Exception as e:
-                if self.healthy:
-                    print(f"Marking {self.url} as UNHEALTHY: {e}")
+                if self.healthy or self.healthy is None:
+                    self.log.error("marking as unhealthy", error=str(e))
                 self.healthy = False
                 self.unhealthy_reason = str(e)
                 # Reset our model knowledge, drop statistics
                 self.models = {}
             else:
                 if not self.healthy:
-                    print(f"Marking {self.url} as HEALTHY.")
+                    self.log.info("marking as healthy")
                 self.healthy = True
                 self.unhealthy_reason = ""
 
@@ -263,56 +289,93 @@ class Pool:
             del self.queues[model_id]
 
     async def assign_backends(self, model_id: str):
+        """Continuously assign requests to backends.
+
+        Perform batching and model distribution and warmup.
+
+        """
         while True:
-            print(f"{model_id}: waiting for idle backends")
-            backends_to_wait_for = [
-                create_logged_task(b.models[model_id].wait())
-                for b in self.backends
-                if model_id in b.models
-            ]
-            if not backends_to_wait_for:
-                print(f"{model_id} - no backends ready")
+            log.debug("waiting for request", model=model_id)
+            queue = self.queues[model_id]
+            request_batch = [await queue.get()]
+            log.debug("got request", model=model_id)
+
+            # Now, are there any backends with the model loaded and are they available?
+            while not (
+                model_backends := [
+                    b for b in self.backends if model_id in b.models
+                ]
+            ):
+                log.warning("no backends with model available", model=model_id)
                 await asyncio.sleep(1)
-                continue
-            idle_backends, _ = await asyncio.wait(
-                backends_to_wait_for,
-                return_when=asyncio.FIRST_COMPLETED,
+
+            loaded_backends = [
+                b for b in model_backends if b.models[model_id].is_loaded
+            ]
+            idle_backends = [
+                b for b in loaded_backends if b.models[model_id].idle.is_set()
+            ]
+            not_loaded_backends = [
+                b for b in model_backends if not b.models[model_id].is_loaded
+            ]
+
+            if (
+                not idle_backends
+                and len(loaded_backends) < 2
+                and not_loaded_backends
+            ):  # At most 2 instances per model
+                # Load the model on a host with as little used memory as possible
+                # if we have spare hosts.
+                not_loaded_backends.sort(key=lambda b: b.memory_usage)
+                new_backend = not_loaded_backends[0]
+                log.debug(
+                    "warming up model on new backend",
+                    backend=new_backend.url,
+                    model=model_id,
+                )
+                await new_backend.load_model_with_options(model_id)
+                idle_backends.insert(0, new_backend)
+
+            if not idle_backends:
+                # Need to wait for an idle backend
+                log.debug("waiting for idle backends", model=model_id)
+                backends_to_wait_for = [
+                    create_logged_task(b.models[model_id].wait())
+                    for b in model_backends
+                ]
+                idle_backends, _ = await asyncio.wait(
+                    backends_to_wait_for,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            backend = idle_backends[0]
+            model = backend.models[model_id]
+            log.debug("got idle backend", backend=backend.url, model=model_id)
+
+            # This should not be necessary, but it should also be gratuitous.
+            await backend.load_model_with_options(model_id)
+            log.debug("gathering more batchable requests", model=model_id)
+            # Prime the model
+            # Wait up to 0.1s for up to N requests
+            more_request_tasks = await asyncio.gather(
+                *[
+                    asyncio.wait_for(queue.get(), 0.001)
+                    for _ in range(model.limit - 1)
+                ],
+                return_exceptions=True,
             )
-            for task in idle_backends:
-                model = task.result()
-                backend = model.backend
-                print(f"{model_id} got idle backend {backend.url}")
-                queue = self.queues[model_id]
-                print(f"{model_id}: assigning tasks to backend {backend.url}")
-                # Wait infinitely long for the first request
-                request_batch = [await queue.get()]
-                print(f"{model_id}: priming")
-                await backend.load_model_with_options(model_id)
-                print(f"{model_id}: gathering batchable requests")
-                # Prime the model
-                # Wait up to 0.1s for up to N requests
-                more_request_tasks = await asyncio.gather(
-                    *[
-                        asyncio.wait_for(queue.get(), 0.001)
-                        for _ in range(model.limit - 1)
-                    ],
-                    return_exceptions=True,
+            request_batch.extend(
+                [t for t in more_request_tasks if not isinstance(t, Exception)]
+            )
+            for request in request_batch:
+                log.debug(
+                    "assigning request to backend",
+                    model=model_id,
+                    backend=backend.url,
                 )
-                request_batch.extend(
-                    [
-                        t
-                        for t in more_request_tasks
-                        if not isinstance(t, Exception)
-                    ]
-                )
-                for request in request_batch:
-                    print(
-                        f"{model}: assigning request to backend {backend.url}"
-                    )
-                    model.in_progress += 1
-                    request.model = model
-                    request.backend_available.set()
-                model.idle.clear()
+                model.in_progress += 1
+                request.model = model
+                request.backend_available.set()
+            model.idle.clear()
 
     def close(self):
         for task in self.health_check_tasks:
@@ -367,14 +430,15 @@ class Pool:
                 400,
                 f"The model `{model_id}` is currently not available.",
             )
-        print(f"queuing request for {model_id}")
+        log.debug("queuing request", model=model_id)
         queue = self.queues[model_id]
         await queue.put(request)
-        print("waiting for backend to become available")
+        log.debug("waiting for backend to become available", model=model_id)
         await request.backend_available.wait()
-        print("got backend")
+        log.debug(
+            "got backend", backend=request.model.backend.url, model=model_id
+        )
         async with request.model.use():
-            print("making backend available")
             yield request.model.backend
 
 
@@ -394,6 +458,7 @@ class OpenAIProxy:
         )
 
         async with self.pool.use(request.state.model) as backend:
+            request.state.backend = backend
             if request.state.stream:
                 return StreamingResponse(
                     backend.post_stream(endpoint, request_data),
