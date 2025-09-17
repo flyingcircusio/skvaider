@@ -23,12 +23,42 @@
 
   processes = {
     skvaider.exec = ''
-      uv run gunicorn "skvaider:app_factory()" -w 2 -k uvicorn_worker.UvicornWorker --reload-extra-file config.toml
+      uv run gunicorn "skvaider:app_factory()" -k uvicorn_worker.UvicornWorker --reload-extra-file config.toml
     '';
-    ollama = {
+    ollama1 = {
       exec = ''
+        export OLLAMA_HOST="127.0.0.1:11435"
+        export OLLAMA_DEBUG="1"
+        export OLLAMA_NUM_PARALLEL="10"
+        export OLLAMA_FLASH_ATTENTION="1"
+        export OLLAMA_SCHED_SPREAD="0"
+        export OLLAMA_MULTIUSER_CACHE="1"
+        export OLLAMA_NEW_ENGINE="1"
+        export OLLAMA_NEW_ESTIMATES="1"
+        export OLLAMA_KEEP_ALIVE="-1"
+
         ollama serve&
         timeout 15 bash -c "until ${lib.getExe pkgs.curl} http://localhost:11435 -s; do sleep 0.5; done"
+        ollama pull gemma3:1b
+        ollama pull nomic-embed-text:v1.5
+        ollama list
+        wait
+      '';
+    };
+    ollama2 = {
+      exec = ''
+        export OLLAMA_HOST="127.0.0.1:11436";
+        export OLLAMA_DEBUG="1"
+        export OLLAMA_NUM_PARALLEL="10"
+        export OLLAMA_FLASH_ATTENTION="1"
+        export OLLAMA_SCHED_SPREAD="0"
+        export OLLAMA_MULTIUSER_CACHE="1"
+        export OLLAMA_NEW_ENGINE="1"
+        export OLLAMA_NEW_ESTIMATES="1"
+        export OLLAMA_KEEP_ALIVE="-1"
+
+        ollama serve&
+        timeout 15 bash -c "until ${lib.getExe pkgs.curl} http://localhost:11436 -s; do sleep 0.5; done"
         ollama pull gemma3:1b
         ollama pull nomic-embed-text:v1.5
         ollama list

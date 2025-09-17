@@ -62,17 +62,27 @@ class LoggingMiddleware:
                 backend = request.state.backend.url
                 model = request.state.model
                 if request.state.stream:
-                    stream = "stream true"
+                    stream = "S"
                 else:
-                    stream = "stream false"
+                    stream = "-"
 
             except AttributeError:
-                backend = "no backend"
-                model = "no model"
-                stream = "stream false"
+                backend = "n/a"
+                model = "n/a"
+                stream = "-"
 
+            # Timings
+            # - warmup time
+            # - queuing time
+            # - time to first chunk
+            # - total time
+            # Status codes
+            # - streaming
+            # response size
+            # ... tokens?
+            # XXX queue sizes - number of parallel requests  / with same model / on same backend / ...
             self._logger.info(
-                f"{anon_ip} {request.method} {request.url.path} {model} {stream} -> {backend} {status_code[0]} {process_time}s"
+                f'{anon_ip} {model} {backend} -/-/{process_time} {status_code[0]} 0 {stream} "{request.method} {request.url.path}" '
             )
 
 
