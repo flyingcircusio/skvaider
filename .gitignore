@@ -30,3 +30,5 @@ devenv.local.nix
 
 .DS_store
 .access_log
+
+.ollama?

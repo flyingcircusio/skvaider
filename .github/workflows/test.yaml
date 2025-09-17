@@ -25,5 +25,13 @@ jobs:
           purge-primary-key: never
       - name: Install devenv.sh
         run: nix profile install nixpkgs#devenv
+      - name: Ollama Model Directorys
+        id: ollama-models
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ollama1
+            .ollama2
+          key: ${{ runner.os }}-ollama-models
       - name: Run tests
         run: devenv test
