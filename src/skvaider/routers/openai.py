@@ -352,6 +352,7 @@ class Pool:
             log.debug("got idle backend", backend=backend.url, model=model_id)
 
             # This should not be necessary, but it should also be gratuitous.
+
             await backend.load_model_with_options(model_id)
             log.debug("gathering more batchable requests", model=model_id)
             # Prime the model
@@ -456,19 +457,28 @@ class OpenAIProxy:
         request.state.stream = allow_stream and request_data.get(
             "stream", False
         )
+        if request.state.stream:
+            # We need to place the context manager in a scope that is valid while the response is
+            # streaming, so wrap the original streaming method and iterate there
+            async def stream():
+                async with self.pool.use(request.state.model) as backend:
+                    request.state.backend = backend
+                    async for chunk in backend.post_stream(
+                        endpoint, request_data
+                    ):
+                        yield chunk
 
-        async with self.pool.use(request.state.model) as backend:
-            request.state.backend = backend
-            if request.state.stream:
-                return StreamingResponse(
-                    backend.post_stream(endpoint, request_data),
-                    media_type="text/event-stream",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                    },
-                )
-            return await backend.post(endpoint, request_data)
+            return StreamingResponse(
+                stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+        else:
+            async with self.pool.use(request.state.model) as backend:
+                return await backend.post(endpoint, request_data)
 
 
 class ListResponse(BaseModel, Generic[T]):
