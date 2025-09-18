@@ -347,6 +347,8 @@ class Pool:
                     backends_to_wait_for,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
+                # the above is a set, we want a list
+                idle_backends = [b for b in idle_backends]
             backend = idle_backends[0]
             model = backend.models[model_id]
             log.debug("got idle backend", backend=backend.url, model=model_id)
@@ -468,7 +470,7 @@ class OpenAIProxy:
                     async for chunk in stream_aws:
                         yield chunk
                 finally:
-                    await context.__aexit__()
+                    await context.__aexit__(None, None, None)
 
             context = self.pool.use(request.state.model)
             backend = await context.__aenter__()
