@@ -426,11 +426,7 @@ class Pool:
     @contextlib.asynccontextmanager
     async def use(self, model_id: str):
         request = ProxyRequest()
-        if model_id not in self.queues:
-            raise HTTPException(
-                400,
-                f"The model `{model_id}` is currently not available.",
-            )
+        assert model_id in self.queues
         log.debug("queuing request", model=model_id)
         queue = self.queues[model_id]
         await queue.put(request)
@@ -457,19 +453,29 @@ class OpenAIProxy:
         request.state.stream = allow_stream and request_data.get(
             "stream", False
         )
+
+        if request.state.model not in self.pool.queues:
+            raise HTTPException(
+                400,
+                f"The model `{request.state.model}` is currently not available.",
+            )
+
         if request.state.stream:
             # We need to place the context manager in a scope that is valid while the response is
             # streaming, so wrap the original streaming method and iterate there
-            async def stream():
-                async with self.pool.use(request.state.model) as backend:
-                    request.state.backend = backend
-                    async for chunk in backend.post_stream(
-                        endpoint, request_data
-                    ):
+            async def stream(stream_aws, context):
+                try:
+                    async for chunk in stream_aws:
                         yield chunk
+                finally:
+                    await context.__aexit__()
 
+            context = self.pool.use(request.state.model)
+            backend = await context.__aenter__()
+            request.state.backend = backend
+            stream_aws = backend.post_stream(endpoint, request_data)
             return StreamingResponse(
-                stream(),
+                stream(stream_aws, context),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
