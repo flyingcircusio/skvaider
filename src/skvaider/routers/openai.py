@@ -6,6 +6,8 @@ This uses Ollama-internal APIs for better load-balancing but exposes a pure Open
 
 import asyncio
 import contextlib
+import json
+import time
 from typing import Any, AsyncGenerator, Dict, Generic, Optional, TypeVar
 
 import httpx
@@ -133,27 +135,6 @@ class Backend:
                 async for chunk in response.aiter_text():
                     if chunk.strip():
                         yield chunk
-
-    async def load_model_with_options(self, model_id: str) -> bool:
-        """Load a model with custom options if configured"""
-        options = self.model_config.get(model_id)
-        # Load model with custom options using Ollama's /api/generate endpoint
-        load_data = {
-            "model": model_id,
-            "prompt": "",  # Empty prompt to just load the model
-            "options": options,
-        }
-        try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                r = await client.post(
-                    self.url + "/api/generate", json=load_data, timeout=120
-                )
-                result = r.json()
-                return result.get("done", False)
-            await self.update_model_load_status()
-        except Exception as e:
-            self.log("failed loading model", exception=e, model=model_id)
-            raise
 
     async def update_model_load_status(self):
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -328,12 +309,6 @@ class Pool:
                 # if we have spare hosts.
                 not_loaded_backends.sort(key=lambda b: b.memory_usage)
                 new_backend = not_loaded_backends[0]
-                log.debug(
-                    "warming up model on new backend",
-                    backend=new_backend.url,
-                    model=model_id,
-                )
-                await new_backend.load_model_with_options(model_id)
                 idle_backends.insert(0, new_backend)
 
             if not idle_backends:
@@ -353,9 +328,6 @@ class Pool:
             model = backend.models[model_id]
             log.debug("got idle backend", backend=backend.url, model=model_id)
 
-            # This should not be necessary, but it should also be gratuitous.
-
-            await backend.load_model_with_options(model_id)
             log.debug("gathering more batchable requests", model=model_id)
             # Prime the model
             # Wait up to 0.1s for up to N requests
@@ -462,6 +434,15 @@ class OpenAIProxy:
                 f"The model `{request.state.model}` is currently not available.",
             )
 
+        # Use native Ollama API for supported endpoints to apply model options
+        if endpoint == "/v1/chat/completions":
+            return await self._proxy_native_chat(request, request_data)
+        elif endpoint == "/v1/completions":
+            return await self._proxy_native_completions(request, request_data)
+        elif endpoint == "/v1/embeddings":
+            return await self._proxy_native_embeddings(request, request_data)
+
+        # Fallback to original OpenAI-compatible proxy for unsupported endpoints
         if request.state.stream:
             # We need to place the context manager in a scope that is valid while the response is
             # streaming, so wrap the original streaming method and iterate there
@@ -487,6 +468,500 @@ class OpenAIProxy:
         else:
             async with self.pool.use(request.state.model) as backend:
                 return await backend.post(endpoint, request_data)
+
+    async def _proxy_native_chat(self, request, request_data):
+        """Handle chat completions using native Ollama API with model options"""
+        async with self.pool.use(request.state.model) as backend:
+            # Translate OpenAI request to Ollama format
+            ollama_data = self._translate_openai_to_ollama_chat(request_data)
+
+            # Add model configuration options
+            model_id = request_data["model"]
+            model_options = backend.model_config.get(model_id)
+            if model_options:
+                if "options" in ollama_data:
+                    # Merge with existing options, model config takes priority
+                    ollama_data["options"].update(model_options)
+                else:
+                    ollama_data["options"] = model_options
+
+            if request.state.stream:
+                return await self._stream_native_chat(
+                    backend, ollama_data, request_data
+                )
+            else:
+                return await self._non_stream_native_chat(
+                    backend, ollama_data, request_data
+                )
+
+    def _translate_openai_to_ollama_chat(self, openai_data: dict) -> dict:
+        """Translate OpenAI chat completion request to Ollama format"""
+        messages = openai_data.get("messages", [])
+
+        # Process messages to handle images for multimodal models
+        processed_messages = []
+
+        for message in messages:
+            processed_message = {"role": message.get("role", "user")}
+            message_images = []
+
+            content = message.get("content")
+            if isinstance(content, list):
+                # Handle array of content parts (text + images)
+                text_parts = []
+                for part in content:
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif part.get("type") == "image_url":
+                        image_url = part.get("image_url", {}).get("url", "")
+                        if image_url.startswith("data:image/"):
+                            # Extract base64 data from data URL
+                            base64_data = (
+                                image_url.split(",", 1)[1]
+                                if "," in image_url
+                                else ""
+                            )
+                            if base64_data:
+                                message_images.append(base64_data)
+
+                processed_message["content"] = " ".join(text_parts)
+            else:
+                # Handle simple string content
+                processed_message["content"] = content or ""
+
+            # Add images to the message if any were found
+            if message_images:
+                processed_message["images"] = message_images
+
+            processed_messages.append(processed_message)
+
+        ollama_data = {
+            "model": openai_data.get("model"),
+            "messages": processed_messages,
+            "stream": openai_data.get("stream", False),
+        }
+
+        # Handle response format (JSON mode)
+        response_format = openai_data.get("response_format")
+        if response_format and response_format.get("type") == "json_object":
+            ollama_data["format"] = "json"
+
+        # Handle tools (function calling)
+        if "tools" in openai_data:
+            ollama_data["tools"] = openai_data["tools"]
+
+        # Map OpenAI parameters to Ollama options
+        options = {}
+        if "temperature" in openai_data:
+            options["temperature"] = openai_data["temperature"]
+        if "max_tokens" in openai_data:
+            options["num_predict"] = openai_data["max_tokens"]
+        if "top_p" in openai_data:
+            options["top_p"] = openai_data["top_p"]
+        if "frequency_penalty" in openai_data:
+            options["frequency_penalty"] = openai_data["frequency_penalty"]
+        if "presence_penalty" in openai_data:
+            options["presence_penalty"] = openai_data["presence_penalty"]
+        if "stop" in openai_data:
+            options["stop"] = openai_data["stop"]
+        if "seed" in openai_data:
+            options["seed"] = openai_data["seed"]
+
+        if options:
+            ollama_data["options"] = options
+
+        return ollama_data
+
+    async def _non_stream_native_chat(
+        self, backend, ollama_data, original_request
+    ):
+        """Handle non-streaming native chat completion"""
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.post(
+                backend.url + "/api/chat", json=ollama_data, timeout=120
+            )
+            r.raise_for_status()
+            ollama_response = r.json()
+
+            # Translate Ollama response back to OpenAI format
+            return self._translate_ollama_to_openai_chat(
+                ollama_response, original_request
+            )
+
+    async def _stream_native_chat(self, backend, ollama_data, original_request):
+        """Handle streaming native chat completion"""
+
+        async def stream():
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with client.stream(
+                    "POST",
+                    backend.url + "/api/chat",
+                    json=ollama_data,
+                    timeout=120,
+                ) as response:
+                    response.raise_for_status()
+                    request_id = f"chatcmpl-{int(time.time())}"
+
+                    async for line in response.aiter_lines():
+                        if line.strip():
+                            try:
+                                chunk = json.loads(line)
+                                openai_chunk = (
+                                    self._translate_ollama_to_openai_chat_chunk(
+                                        chunk, request_id
+                                    )
+                                )
+                                yield f"data: {json.dumps(openai_chunk)}\n\n"
+                            except json.JSONDecodeError:
+                                continue
+
+                    yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+    def _translate_ollama_to_openai_chat(
+        self, ollama_response: dict, original_request: dict
+    ) -> dict:
+        """Translate Ollama chat response to OpenAI format"""
+        return {
+            "id": f"chatcmpl-{int(time.time())}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": original_request["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": ollama_response.get("message", {}).get(
+                            "content", ""
+                        ),
+                        **(
+                            {
+                                "tool_calls": ollama_response.get(
+                                    "message", {}
+                                ).get("tool_calls", [])
+                            }
+                            if ollama_response.get("message", {}).get(
+                                "tool_calls"
+                            )
+                            else {}
+                        ),
+                    },
+                    "finish_reason": (
+                        "tool_calls"
+                        if ollama_response.get("message", {}).get("tool_calls")
+                        else ("stop" if ollama_response.get("done") else None)
+                    ),
+                }
+            ],
+            "usage": {
+                "prompt_tokens": ollama_response.get("prompt_eval_count", 0),
+                "completion_tokens": ollama_response.get("eval_count", 0),
+                "total_tokens": ollama_response.get("prompt_eval_count", 0)
+                + ollama_response.get("eval_count", 0),
+            },
+        }
+
+    def _translate_ollama_to_openai_chat_chunk(
+        self, ollama_chunk: dict, request_id: str
+    ) -> dict:
+        """Translate Ollama streaming chunk to OpenAI format"""
+        delta = {}
+        message = ollama_chunk.get("message", {})
+
+        # Only include role in first chunk (when role is present)
+        if message.get("role"):
+            delta["role"] = message["role"]
+
+        # Include content if present
+        content = message.get("content", "")
+        if content:
+            delta["content"] = content
+
+        # Include tool calls if present
+        tool_calls = message.get("tool_calls")
+        if tool_calls:
+            delta["tool_calls"] = tool_calls
+
+        # Determine finish reason
+        finish_reason = None
+        if ollama_chunk.get("done"):
+            if tool_calls:
+                finish_reason = "tool_calls"
+            else:
+                finish_reason = "stop"
+
+        return {
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": ollama_chunk.get("model", ""),
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
+
+    async def _proxy_native_completions(self, request, request_data):
+        """Handle completions using native Ollama API with model options"""
+        async with self.pool.use(request.state.model) as backend:
+            # Translate OpenAI request to Ollama format
+            ollama_data = self._translate_openai_to_ollama_completions(
+                request_data
+            )
+
+            # Add model configuration options
+            model_id = request_data["model"]
+            model_options = backend.model_config.get(model_id)
+            if model_options:
+                if "options" in ollama_data:
+                    # Merge with existing options, model config takes priority
+                    ollama_data["options"].update(model_options)
+                else:
+                    ollama_data["options"] = model_options
+
+            if request.state.stream:
+                return await self._stream_native_completions(
+                    backend, ollama_data, request_data
+                )
+            else:
+                return await self._non_stream_native_completions(
+                    backend, ollama_data, request_data
+                )
+
+    def _translate_openai_to_ollama_completions(
+        self, openai_data: dict
+    ) -> dict:
+        """Translate OpenAI completion request to Ollama format"""
+        ollama_data = {
+            "model": openai_data.get("model"),
+            "prompt": openai_data.get("prompt", ""),
+            "stream": openai_data.get("stream", False),
+        }
+
+        # Handle suffix parameter
+        if "suffix" in openai_data:
+            ollama_data["suffix"] = openai_data["suffix"]
+
+        # Handle response format (JSON mode)
+        response_format = openai_data.get("response_format")
+        if response_format and response_format.get("type") == "json_object":
+            ollama_data["format"] = "json"
+
+        # Map OpenAI parameters to Ollama options
+        options = {}
+        if "temperature" in openai_data:
+            options["temperature"] = openai_data["temperature"]
+        if "max_tokens" in openai_data:
+            options["num_predict"] = openai_data["max_tokens"]
+        if "top_p" in openai_data:
+            options["top_p"] = openai_data["top_p"]
+        if "frequency_penalty" in openai_data:
+            options["frequency_penalty"] = openai_data["frequency_penalty"]
+        if "presence_penalty" in openai_data:
+            options["presence_penalty"] = openai_data["presence_penalty"]
+        if "stop" in openai_data:
+            options["stop"] = openai_data["stop"]
+        if "seed" in openai_data:
+            options["seed"] = openai_data["seed"]
+
+        if options:
+            ollama_data["options"] = options
+
+        return ollama_data
+
+    async def _non_stream_native_completions(
+        self, backend, ollama_data, original_request
+    ):
+        """Handle non-streaming native completion"""
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.post(
+                backend.url + "/api/generate", json=ollama_data, timeout=120
+            )
+            r.raise_for_status()
+            ollama_response = r.json()
+
+            # Translate Ollama response back to OpenAI format
+            return self._translate_ollama_to_openai_completions(
+                ollama_response, original_request
+            )
+
+    async def _stream_native_completions(
+        self, backend, ollama_data, original_request
+    ):
+        """Handle streaming native completion"""
+
+        async def stream():
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with client.stream(
+                    "POST",
+                    backend.url + "/api/generate",
+                    json=ollama_data,
+                    timeout=120,
+                ) as response:
+                    response.raise_for_status()
+                    request_id = f"cmpl-{int(time.time())}"
+
+                    async for line in response.aiter_lines():
+                        if line.strip():
+                            try:
+                                chunk = json.loads(line)
+                                openai_chunk = self._translate_ollama_to_openai_completions_chunk(
+                                    chunk, request_id
+                                )
+                                yield f"data: {json.dumps(openai_chunk)}\n\n"
+                            except json.JSONDecodeError:
+                                continue
+
+                    yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+    def _translate_ollama_to_openai_completions(
+        self, ollama_response: dict, original_request: dict
+    ) -> dict:
+        """Translate Ollama completion response to OpenAI format"""
+        return {
+            "id": f"cmpl-{int(time.time())}",
+            "object": "text_completion",
+            "created": int(time.time()),
+            "model": original_request["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "text": ollama_response.get("response", ""),
+                    "finish_reason": (
+                        "stop" if ollama_response.get("done") else None
+                    ),
+                }
+            ],
+            "usage": {
+                "prompt_tokens": ollama_response.get("prompt_eval_count", 0),
+                "completion_tokens": ollama_response.get("eval_count", 0),
+                "total_tokens": ollama_response.get("prompt_eval_count", 0)
+                + ollama_response.get("eval_count", 0),
+            },
+        }
+
+    def _translate_ollama_to_openai_completions_chunk(
+        self, ollama_chunk: dict, request_id: str
+    ) -> dict:
+        """Translate Ollama streaming completion chunk to OpenAI format"""
+        return {
+            "id": request_id,
+            "object": "text_completion",
+            "created": int(time.time()),
+            "model": ollama_chunk.get("model", ""),
+            "choices": [
+                {
+                    "index": 0,
+                    "text": ollama_chunk.get("response", ""),
+                    "finish_reason": (
+                        "stop" if ollama_chunk.get("done") else None
+                    ),
+                }
+            ],
+        }
+
+    async def _proxy_native_embeddings(self, request, request_data):
+        """Handle embeddings using native Ollama API with model options"""
+        async with self.pool.use(request.state.model) as backend:
+            # Translate OpenAI request to Ollama format
+            ollama_data = self._translate_openai_to_ollama_embeddings(
+                request_data
+            )
+
+            # Add model configuration options
+            model_id = request_data["model"]
+            model_options = backend.model_config.get(model_id)
+            if model_options:
+                if "options" in ollama_data:
+                    # Merge with existing options, model config takes priority
+                    ollama_data["options"].update(model_options)
+                else:
+                    ollama_data["options"] = model_options
+
+            return await self._non_stream_native_embeddings(
+                backend, ollama_data, request_data
+            )
+
+    def _translate_openai_to_ollama_embeddings(self, openai_data: dict) -> dict:
+        """Translate OpenAI embeddings request to Ollama format"""
+        # Handle both single input and array of inputs
+        input_data = openai_data.get("input", "")
+
+        # Ollama's /api/embed endpoint supports array of inputs in the "input" field
+        ollama_data = {
+            "model": openai_data.get("model"),
+            "input": input_data,  # Keep original format - Ollama handles both string and array
+        }
+
+        return ollama_data
+
+    async def _non_stream_native_embeddings(
+        self, backend, ollama_data, original_request
+    ):
+        """Handle native embeddings"""
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.post(
+                backend.url + "/api/embed", json=ollama_data, timeout=120
+            )
+            r.raise_for_status()
+            ollama_response = r.json()
+
+            # Translate Ollama response back to OpenAI format
+            return self._translate_ollama_to_openai_embeddings(
+                ollama_response, original_request
+            )
+
+    def _translate_ollama_to_openai_embeddings(
+        self, ollama_response: dict, original_request: dict
+    ) -> dict:
+        """Translate Ollama embeddings response to OpenAI format"""
+        # Handle both single embedding and array of embeddings
+        embeddings = ollama_response.get("embeddings", [])
+        if not embeddings:
+            # Fallback to single embedding format
+            single_embedding = ollama_response.get("embedding", [])
+            embeddings = [single_embedding] if single_embedding else []
+
+        data = []
+        for i, embedding in enumerate(embeddings):
+            data.append(
+                {
+                    "object": "embedding",
+                    "index": i,
+                    "embedding": embedding,
+                }
+            )
+
+        return {
+            "object": "list",
+            "data": data,
+            "model": original_request["model"],
+            "usage": {
+                "prompt_tokens": ollama_response.get("prompt_eval_count", 0),
+                "total_tokens": ollama_response.get("prompt_eval_count", 0),
+            },
+        }
 
 
 class ListResponse(BaseModel, Generic[T]):
