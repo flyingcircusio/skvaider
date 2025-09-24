@@ -182,7 +182,7 @@ class Backend:
                 current_models = self.models
                 updated_models = {}
                 for model in known_models:
-                    if model["id"] not in known_models:
+                    if model["id"] not in current_models:
                         model_obj = AIModel(
                             id=model["id"],
                             created=model["created"],
