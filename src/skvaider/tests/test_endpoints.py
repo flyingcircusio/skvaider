@@ -106,7 +106,7 @@ def test_completions_non_streaming(client, auth_header):
     assert response.headers["content-type"] == "application/json"
 
 
-def test_model_context_limit_applied(client, auth_header):
+def test_model_context_limit_applied(client, auth_header, ollama_backend_url):
     """Test that custom context limits are applied when loading models"""
     # First, make a chat completion request to ensure gemma3:1b is loaded with custom options
     payload = {
@@ -127,7 +127,7 @@ def test_model_context_limit_applied(client, auth_header):
     # Make request to Ollama's /api/ps endpoint directly and expect to see model: gemma3:1b loaded
 
     with httpx.Client() as ollama_client:
-        ps_response = ollama_client.get("http://localhost:11434/api/ps")
+        ps_response = ollama_client.get(f"{ollama_backend_url}/api/ps")
     assert ps_response.status_code == 200, ps_response.text
     ps_data = ps_response.json()
     gemma3_entry = None

@@ -86,6 +86,12 @@ async def auth_header(client, auth_token):
 
 
 @pytest.fixture
+def ollama_backend_url():
+    """Return the Ollama backend URL used in tests."""
+    return "http://localhost:11435"
+
+
+@pytest.fixture
 def client():
     with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client
