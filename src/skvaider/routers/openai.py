@@ -414,25 +414,66 @@ class Pool:
 
 
 class OpenAIProxy:
-    """Intermediate the proxy logic between FastAPI and the OpenAI API-compatible backends."""
+    """Base class to implement a translation proxy for specific OpenAI endpoints
+    between FastAPI calls and Ollama backends."""
 
-    def __init__(self, services: svcs.fastapi.DepContainer):
+    def __init__(
+        self, request, services: svcs.fastapi.DepContainer,
+        translator,
+        allow_stream=True
+    ):
+        self.translator = translator
+        self.request = request
         self.services = services
         self.pool = self.services.get(Pool)
 
-    async def proxy(self, request, endpoint, allow_stream=True):
-        request_data = await request.json()
+
+    async def proxy(self):
+        request_data = await self.request.json()
         request_data["store"] = False
-        request.state.model = request_data["model"]
-        request.state.stream = allow_stream and request_data.get(
+        self.request.state.model = request_data["model"]
+        self.request.state.stream = self.allow_stream and request_data.get(
             "stream", False
         )
 
-        if request.state.model not in self.pool.queues:
+        if self.request.state.model not in self.pool.queues:
             raise HTTPException(
                 400,
                 f"The model `{request.state.model}` is currently not available.",
             )
+
+        async with self.pool.use(request.state.model) as backend:
+            ollama_request = self.translate_request(self.request)
+
+            # Add model configuration options
+            model_id = request_data["model"]
+            model_options = backend.model_config.get(model_id)
+            if model_options:
+                if "options" in ollama_data:
+                    # Merge with existing options, model config takes priority
+                    ollama_data["options"].update(model_options)
+                else:
+                    ollama_data["options"] = model_options
+
+            if streaming:
+                return await self._proxy_stream(...)
+            return await self._proxy_nonstream(...)
+
+
+
+class ChatCompletionTranslator:
+
+    def translate_request(self, request):
+        pass
+
+    def translate_response(self, response):
+        pass
+
+    def translate_response_chunk(self, chunk):
+        pass
+
+
+
 
         # Use native Ollama API for supported endpoints to apply model options
         if endpoint == "/v1/chat/completions":
@@ -471,19 +512,9 @@ class OpenAIProxy:
 
     async def _proxy_native_chat(self, request, request_data):
         """Handle chat completions using native Ollama API with model options"""
-        async with self.pool.use(request.state.model) as backend:
             # Translate OpenAI request to Ollama format
             ollama_data = self._translate_openai_to_ollama_chat(request_data)
 
-            # Add model configuration options
-            model_id = request_data["model"]
-            model_options = backend.model_config.get(model_id)
-            if model_options:
-                if "options" in ollama_data:
-                    # Merge with existing options, model config takes priority
-                    ollama_data["options"].update(model_options)
-                else:
-                    ollama_data["options"] = model_options
 
             if request.state.stream:
                 return await self._stream_native_chat(
