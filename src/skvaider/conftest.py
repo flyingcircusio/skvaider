@@ -42,8 +42,12 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
     model_config = skvaider.routers.openai.ModelConfig(
         {"gemma3": {"num_ctx": 3072}}
     )
+    # Add multiple backends as configured in config.toml
     pool.add_backend(
         skvaider.routers.openai.Backend("http://localhost:11435", model_config)
+    )
+    pool.add_backend(
+        skvaider.routers.openai.Backend("http://localhost:11436", model_config)
     )
     registry.register_value(skvaider.routers.openai.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
@@ -83,6 +87,12 @@ async def auth_header(client, auth_token):
     header = {"Authorization": f"Bearer {auth_token}"}
     client.headers.update(header)
     yield
+
+
+@pytest.fixture
+def ollama_backend_urls():
+    """Return the list of Ollama backend URLs used in tests."""
+    return ["http://localhost:11435", "http://localhost:11436"]
 
 
 @pytest.fixture
