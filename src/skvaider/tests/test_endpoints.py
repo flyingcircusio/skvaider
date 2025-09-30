@@ -2,6 +2,8 @@
 """
 Simple test script to verify the OpenAI-compatible endpoints work correctly.
 """
+import time
+
 import httpx
 
 
@@ -134,18 +136,29 @@ def test_unload_load_all_backends(client, auth_header, ollama_backend_urls):
                             unload_data.get("done_reason") == "unload"
                         ), f"Model {model_name} was not properly unloaded"
 
-    # Verify all models are unloaded
+    # Verify all models are unloaded (with timeout)
+    timeout = 30  # 30 seconds timeout
+    start_time = time.time()
+
     with httpx.Client() as ollama_client:
         for backend_url in ollama_backend_urls:
-            ps_response = ollama_client.get(f"{backend_url}/api/ps")
-            assert (
-                ps_response.status_code == 200
-            ), f"Failed to get status from {backend_url}"
-            ps_data = ps_response.json()
-            loaded_models = ps_data.get("models", [])
-            assert (
-                len(loaded_models) == 0
-            ), f"Backend {backend_url} still has loaded models: {loaded_models}"
+            while time.time() - start_time < timeout:
+                ps_response = ollama_client.get(f"{backend_url}/api/ps")
+                assert (
+                    ps_response.status_code == 200
+                ), f"Failed to get status from {backend_url}"
+                ps_data = ps_response.json()
+                loaded_models = ps_data.get("models", [])
+
+                if len(loaded_models) == 0:
+                    break
+
+                time.sleep(1)  # Wait 1 second before retrying
+            else:
+                # Timeout reached
+                assert (
+                    False
+                ), f"Timeout: Backend {backend_url} still has loaded models after {timeout}s: {loaded_models}"
 
     # Load models using requests through the API
     test_models = ["gemma3:1b"]
