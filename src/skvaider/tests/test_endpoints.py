@@ -106,37 +106,97 @@ def test_completions_non_streaming(client, auth_header):
     assert response.headers["content-type"] == "application/json"
 
 
-def test_model_context_limit_applied(client, auth_header, ollama_backend_url):
-    """Test that custom context limits are applied when loading models"""
-    # First, make a chat completion request to ensure gemma3:1b is loaded with custom options
-    payload = {
-        "model": "gemma3:1b",
-        "messages": [{"role": "user", "content": "Hello"}],
-        "stream": False,
-        "max_tokens": 10,
-    }
-    response = client.post(
-        "http://localhost:8000/openai/v1/chat/completions",
-        json=payload,
-        headers={
-            "Content-Type": "application/json",
-        },
-    )
-    assert response.status_code == 200, response.text
+def test_unload_load_all_backends(client, auth_header, ollama_backend_urls):
+    """Test unloading all models from all backends, then loading via requests, and verifying all models are correctly loaded"""
 
-    # Make request to Ollama's /api/ps endpoint directly and expect to see model: gemma3:1b loaded
+    # Unload all models from all backends
+    with httpx.Client() as ollama_client:
+        for backend_url in ollama_backend_urls:
+            ps_response = ollama_client.get(f"{backend_url}/api/ps")
+            if ps_response.status_code == 200:
+                ps_data = ps_response.json()
+                loaded_models = ps_data.get("models", [])
+
+                for model_entry in loaded_models:
+                    model_name = model_entry.get("model") or model_entry.get(
+                        "name"
+                    )
+                    if model_name:
+                        unload_response = ollama_client.post(
+                            f"{backend_url}/api/generate",
+                            json={"model": model_name, "keep_alive": 0},
+                        )
+                        assert (
+                            unload_response.status_code == 200
+                        ), f"Failed to unload {model_name} from {backend_url}: {unload_response.text}"
+                        unload_data = unload_response.json()
+                        assert (
+                            unload_data.get("done_reason") == "unload"
+                        ), f"Model {model_name} was not properly unloaded"
+
+    # Verify all models are unloaded
+    with httpx.Client() as ollama_client:
+        for backend_url in ollama_backend_urls:
+            ps_response = ollama_client.get(f"{backend_url}/api/ps")
+            assert (
+                ps_response.status_code == 200
+            ), f"Failed to get status from {backend_url}"
+            ps_data = ps_response.json()
+            loaded_models = ps_data.get("models", [])
+            assert (
+                len(loaded_models) == 0
+            ), f"Backend {backend_url} still has loaded models: {loaded_models}"
+
+    # Load models using requests through the API
+    test_models = ["gemma3:1b"]
+
+    for model_name in test_models:
+        payload = {
+            "model": model_name,
+            "messages": [{"role": "user", "content": "Hello"}],
+            "stream": False,
+            "max_tokens": 10,
+        }
+        response = client.post(
+            "http://localhost:8000/openai/v1/chat/completions",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+        assert (
+            response.status_code == 200
+        ), f"Failed to make request with model {model_name}: {response.text}"
+
+    # Collect all loaded models from all backends
+    all_loaded_models = {}
 
     with httpx.Client() as ollama_client:
-        ps_response = ollama_client.get(f"{ollama_backend_url}/api/ps")
-    assert ps_response.status_code == 200, ps_response.text
-    ps_data = ps_response.json()
-    gemma3_entry = None
-    for entry in ps_data.get("models", []):
-        if entry.get("model") == "gemma3:1b":
-            gemma3_entry = entry
-            break
-    assert gemma3_entry is not None, "No entry found for model gemma3:1b"
-    # Check if the context_length reflects our custom num_ctx setting
-    assert (
-        gemma3_entry.get("context_length") == 3072
-    ), f"Expected context_length 3072, got {gemma3_entry.get('context_length')}"
+        for backend_url in ollama_backend_urls:
+            ps_response = ollama_client.get(f"{backend_url}/api/ps")
+            assert (
+                ps_response.status_code == 200
+            ), f"Failed to get status from {backend_url}"
+            ps_data = ps_response.json()
+            loaded_models = ps_data.get("models", [])
+
+            for entry in loaded_models:
+                model_name = entry.get("model") or entry.get("name")
+                if model_name:
+                    all_loaded_models[model_name] = (backend_url, entry)
+
+    # Verify each test model is loaded on at least one backend with correct configuration
+    for model_name in test_models:
+        assert (
+            model_name in all_loaded_models
+        ), f"Model {model_name} is not loaded on any backend! Available models: {list(all_loaded_models.keys())}"
+
+        backend_url, model_entry = all_loaded_models[model_name]
+
+        # Verify that custom context length is applied
+        if model_name.startswith("gemma3"):
+            expected_ctx = 3072
+            actual_ctx = model_entry.get("context_length")
+            assert (
+                actual_ctx == expected_ctx
+            ), f"Model {model_name} on {backend_url} has context_length {actual_ctx}, expected {expected_ctx}"
