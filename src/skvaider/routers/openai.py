@@ -458,50 +458,125 @@ class OpenAIProxy:
     ):
         """Handle non-streaming requests."""
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.post(
-                backend.url + self.ollama_endpoint,
-                json=ollama_request,
-                timeout=120,
-            )
-            r.raise_for_status()
-            ollama_response = r.json()
+            try:
+                r = await client.post(
+                    backend.url + self.ollama_endpoint,
+                    json=ollama_request,
+                    timeout=120,
+                )
+                r.raise_for_status()
+                ollama_response = r.json()
 
-            # Translate Ollama response back to OpenAI format
-            return self.translator.translate_response(
-                ollama_response, original_request
-            )
+                # Translate Ollama response back to OpenAI format
+                return self.translator.translate_response(
+                    ollama_response, original_request
+                )
+            except httpx.HTTPStatusError as e:
+                # Convert backend errors to OpenAI-compatible error responses
+                error_message = "Backend error"
+                error_type = "api_error"
+
+                try:
+                    # Extract error message from JSON response
+                    error_data = e.response.json()
+                    error_message = error_data.get("error", e.response.text)
+                except Exception:
+                    # Fallback to raw response text if JSON parsing fails
+                    error_message = e.response.text
+
+                # Handle specific error cases
+                if e.response.status_code == 400:
+                    error_type = "invalid_request_error"
+                elif e.response.status_code == 500:
+                    error_type = "api_error"
+                    # Check if it's related to unsupported multimodal content based on backend error message
+                    if (
+                        "missing data required for image input"
+                        in error_message.lower()
+                    ):
+                        error_message = (
+                            "Model does not support multimodal image inputs"
+                        )
+
+                raise HTTPException(
+                    status_code=400 if e.response.status_code == 400 else 500,
+                    detail={
+                        "error": {
+                            "message": error_message,
+                            "type": error_type,
+                            "code": None,
+                        }
+                    },
+                )
 
     async def _proxy_stream(self, backend, ollama_request, original_request):
         """Handle streaming requests."""
 
         async def stream():
             async with httpx.AsyncClient(follow_redirects=True) as client:
-                async with client.stream(
-                    "POST",
-                    backend.url + self.ollama_endpoint,
-                    json=ollama_request,
-                    timeout=120,
-                ) as response:
-                    response.raise_for_status()
-                    request_id = (
-                        f"chatcmpl-{int(time.time())}"
-                        if self.ollama_endpoint == "/api/chat"
-                        else f"cmpl-{int(time.time())}"
-                    )
+                try:
+                    async with client.stream(
+                        "POST",
+                        backend.url + self.ollama_endpoint,
+                        json=ollama_request,
+                        timeout=120,
+                    ) as response:
+                        response.raise_for_status()
+                        request_id = (
+                            f"chatcmpl-{int(time.time())}"
+                            if self.ollama_endpoint == "/api/chat"
+                            else f"cmpl-{int(time.time())}"
+                        )
 
-                    async for line in response.aiter_lines():
-                        if line.strip():
-                            try:
-                                chunk = json.loads(line)
-                                openai_chunk = (
-                                    self.translator.translate_response_chunk(
+                        async for line in response.aiter_lines():
+                            if line.strip():
+                                try:
+                                    chunk = json.loads(line)
+                                    openai_chunk = self.translator.translate_response_chunk(
                                         chunk, request_id
                                     )
-                                )
-                                yield f"data: {json.dumps(openai_chunk)}\n\n"
-                            except json.JSONDecodeError:
-                                continue
+                                    yield f"data: {json.dumps(openai_chunk)}\n\n"
+                                except json.JSONDecodeError:
+                                    continue
 
+                        yield "data: [DONE]\n\n"
+
+                except httpx.HTTPStatusError as e:
+                    # Convert backend errors to OpenAI-compatible error responses for streaming
+                    error_message = "Backend error"
+                    error_type = "api_error"
+
+                    try:
+                        # Extract error message from JSON response
+                        error_data = e.response.json()
+                        error_message = error_data.get("error", e.response.text)
+                    except Exception:
+                        # Fallback to raw response text if JSON parsing fails
+                        error_message = e.response.text
+
+                    # Handle specific error cases
+                    if e.response.status_code == 400:
+                        error_type = "invalid_request_error"
+                    elif e.response.status_code == 500:
+                        error_type = "api_error"
+                        # Check if it's related to unsupported multimodal content based on backend error message
+                        if (
+                            "missing data required for image input"
+                            in error_message.lower()
+                        ):
+                            error_message = (
+                                "Model does not support multimodal image inputs"
+                            )
+
+                    # Yield error in streaming format
+                    error_chunk = {
+                        "error": {
+                            "message": error_message,
+                            "type": error_type,
+                            "code": None,
+                        }
+                    }
+                    yield f"data: {json.dumps(error_chunk)}\n\n"
                     yield "data: [DONE]\n\n"
 
         return StreamingResponse(

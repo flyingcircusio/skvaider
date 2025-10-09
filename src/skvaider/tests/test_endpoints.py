@@ -318,11 +318,8 @@ def test_openai_parameters_and_formats(client, auth_header):
     assert text_response.status_code == 200
 
 
-@pytest.mark.xfail(
-    reason="AI model (gemma3:1b) doesn't support multimodal image inputs"
-)
 def test_chat_completions_with_multimodal_image_input(client, auth_header):
-    """Test chat completions with multimodal content (text + images) - expected to fail with current model."""
+    """Test chat completions with multimodal content (text + images) - should return error for unsupported model."""
     # Create a simple base64 encoded 1x1 pixel PNG (https://png-pixel.com/)
     base64_image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
@@ -345,9 +342,23 @@ def test_chat_completions_with_multimodal_image_input(client, auth_header):
         "stream": False,
         "max_tokens": 20,
     }
+
     response = client.post(
         "http://localhost:8000/openai/v1/chat/completions",
         json=payload,
         headers={"Content-Type": "application/json"},
     )
-    assert response.status_code == 200, response.text
+
+    # Model doesn't support multimodal image inputs, so expect a proper error response
+    assert (
+        response.status_code == 500
+    )  # API error for unsupported functionality
+    error_data = response.json()
+    assert "detail" in error_data
+    assert "error" in error_data["detail"]
+    # Check that the error message indicates unsupported multimodal/image functionality
+    error_message = error_data["detail"]["error"].get("message", "").lower()
+    assert any(
+        keyword in error_message
+        for keyword in ["multimodal", "image", "vision", "unsupported"]
+    ), f"Error message should indicate multimodal/image not supported: {error_data}"
