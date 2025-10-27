@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import hmac
 import json
+import random
 import time
 import uuid
 from asyncio import CancelledError
@@ -117,10 +118,14 @@ class Manager:
     async def run(self):
         loop = asyncio.get_running_loop()
         log.info("start-manager")
+
+        connection_errors = 0
+
         while True:
             try:
                 log.info("directory-connection", status="connecting")
                 async with websockets.connect(self.url) as websocket:
+                    connection_errors = 0
                     self.websocket = websocket
                     log.info("directory-connection", status="connected")
                     subscription = {
@@ -144,17 +149,23 @@ class Manager:
             except CancelledError:
                 return
             except (WebSocketException, ConnectionError) as e:
+                connection_errors += 1
                 log.error(
                     "connection error", type=str(type(e).__name__), error=str(e)
                 )
             except Exception:
+                connection_errors += 1
                 log.exception("unexpected-exception")
             finally:
                 self.websocket_ready.clear()
                 self.websocket = None
-            # XXX exponential backoff / csmacd
-            log.info("connection lost, backing off")
-            await asyncio.sleep(5)
+            backoff = random.randint(
+                0, int(1.5 ** min([10, connection_errors]))
+            )
+            log.info(
+                "connection lost", backoff=backoff, errors=connection_errors
+            )
+            await asyncio.sleep(backoff)
 
     def start(self):
         self.tasks.add(asyncio.create_task(self.run()))
