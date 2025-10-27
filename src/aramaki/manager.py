@@ -15,6 +15,7 @@ import rfc8785
 import structlog.stdlib
 import websockets
 from websockets import ClientConnection
+from websockets.exceptions import WebSocketException
 
 from aramaki.collection import Collection, ReplicationManager
 from aramaki.db import DBSessionManager
@@ -142,6 +143,10 @@ class Manager:
                         loop.create_task(self.process(message))
             except CancelledError:
                 return
+            except (WebSocketException, ConnectionError) as e:
+                log.error(
+                    "connection error", type=str(type(e).__name__), error=str(e)
+                )
             except Exception:
                 log.exception("unexpected-exception")
             finally:
