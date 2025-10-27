@@ -15,26 +15,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from skvaider import utils
+
 router = APIRouter()
 
 T = TypeVar("T")
 
 log = structlog.stdlib.get_logger()
-
-
-def log_task_exception(task: asyncio.Task) -> None:
-    try:
-        task.result()
-    except asyncio.CancelledError:
-        pass  # Task cancellation should not be logged as an error.
-    except Exception:  # pylint: disable=broad-except
-        log.exception("Exception raised by task = %r", task)
-
-
-def create_logged_task(aw):
-    t = asyncio.create_task(aw)
-    t.add_done_callback(log_task_exception)
-    return t
 
 
 class AIModel(BaseModel):
@@ -256,7 +243,7 @@ class Pool:
     def add_backend(self, backend):
         self.backends.append(backend)
         self.health_check_tasks.append(
-            create_logged_task(backend.monitor_health_and_update_models(self))
+            utils.create_task(backend.monitor_health_and_update_models(self))
         )
 
     def update_model_maps(self):
@@ -272,7 +259,7 @@ class Pool:
             if model_id in self.queues:
                 continue
             self.queues[model_id] = asyncio.Queue()
-            self.queue_tasks[model_id] = create_logged_task(
+            self.queue_tasks[model_id] = utils.create_task(
                 self.assign_backends(model_id)
             )
 
@@ -340,7 +327,7 @@ class Pool:
                 # Need to wait for an idle backend
                 log.debug("waiting for idle backends", model=model_id)
                 backends_to_wait_for = [
-                    create_logged_task(b.models[model_id].wait())
+                    utils.create_task(b.models[model_id].wait())
                     for b in model_backends
                 ]
                 idle_backends, _ = await asyncio.wait(

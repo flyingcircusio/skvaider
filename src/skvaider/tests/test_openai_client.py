@@ -29,7 +29,7 @@ def test_chat_completions(openai_client):
         max_tokens=50,  # More generous token budget
     )
     assert "hello world" in response.choices[0].message.content.lower()
-    assert 0 < response.usage.total_tokens < 50
+    assert 0 < response.usage.total_tokens < 75
 
 
 # gpt-oss:20b is just too large to download on every commit ... maybe

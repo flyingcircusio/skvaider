@@ -8,6 +8,7 @@ from sqlalchemy import JSON, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from aramaki import utils
 from aramaki.db import Base
 
 if TYPE_CHECKING:
@@ -185,7 +186,7 @@ class ReplicationManager:
             self.process_update_buffer,
             self.process_catchup_step_buffer,
         ]:
-            task = asyncio.create_task(t())
+            task = utils.create_task(t())
             self.tasks.add(task)
 
     def stop(self):
@@ -233,7 +234,7 @@ class ReplicationManager:
                     # but then find the old partition again in the higher version numbers, this would trigger multiple catchups
                     # but I think this should settle nicely if the upstream partition assignment hasn't changed, so we'd
                     # basically request more catchups but those will quickly converge and not replay everything ...
-                    asyncio.create_task(self.request_catchup())
+                    utils.create_task(self.request_catchup())
                     self.update_buffer.task_done()
                     continue
 

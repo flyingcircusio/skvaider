@@ -18,6 +18,7 @@ import websockets
 from websockets import ClientConnection
 from websockets.exceptions import WebSocketException
 
+from aramaki import utils
 from aramaki.collection import Collection, ReplicationManager
 from aramaki.db import DBSessionManager
 
@@ -116,7 +117,6 @@ class Manager:
         return manager
 
     async def run(self):
-        loop = asyncio.get_running_loop()
         log.info("start-manager")
 
         connection_errors = 0
@@ -145,7 +145,7 @@ class Manager:
 
                     log.info("Waiting for messages ...")
                     async for message in websocket:
-                        loop.create_task(self.process(message))
+                        utils.create_task(self.process(message))
             except CancelledError:
                 return
             except (WebSocketException, ConnectionError) as e:
@@ -168,7 +168,7 @@ class Manager:
             await asyncio.sleep(backoff)
 
     def start(self):
-        self.tasks.add(asyncio.create_task(self.run()))
+        self.tasks.add(utils.create_task(self.run()))
 
     def stop(self):
         for collection in self.collections.values():
