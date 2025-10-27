@@ -33,13 +33,13 @@ async def verify_token(
             ).decode("utf-8")
         )
     except (binascii.Error, ValueError, JSONDecodeError):
-        raise HTTPException(401, detail="Bad authentification")
+        raise HTTPException(401, detail="Bad authentication")
 
     db_token = await authtokens.get(client_token["id"])
     if not db_token:
-        raise HTTPException(401, detail="Bad authentification")
+        raise HTTPException(401, detail="Bad authentication")
     try:
         hasher.verify(db_token["secret_hash"], client_token["secret"])
     # We could specify explicit exceptions here but go the safe route and just catch all in case the lib addes one
     except Exception:
-        raise HTTPException(401, detail="Bad authentification")
+        raise HTTPException(401, detail="Bad authentication")
