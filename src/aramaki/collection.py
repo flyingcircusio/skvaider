@@ -1,5 +1,4 @@
 import asyncio
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import sqlalchemy
@@ -85,41 +84,43 @@ class Collection:
 
     collection: str  # The identifier for the collection in Aramaki
 
-    def __init__(self, session: AsyncSession):
-        self.session = session
+    def __init__(self, manager: "ReplicationManager"):
+        self.manager = manager
 
     async def get(self, key: str, default=None) -> dict | None:
         assert key  # key must be non-empty - defensive against clients breaking protocol that "" is our internal null record
-        result = (
-            (
-                await self.session.execute(
-                    select(Record).filter_by(
-                        collection=self.collection, record_id=key
+        async with self.manager.aramaki.db.session() as session:
+            result = (
+                (
+                    await session.execute(
+                        select(Record).filter_by(
+                            collection=self.collection, record_id=key
+                        )
                     )
                 )
+                .scalars()
+                .one_or_none()
             )
-            .scalars()
-            .one_or_none()
-        )
-        if not result:
-            return default
-        return result.data
+            if not result:
+                return default
+            return result.data
 
     async def keys(self) -> list[str]:
-        result = (
-            (
-                await self.session.execute(
-                    select(Record)
-                    .filter_by(
-                        collection=self.collection,
+        async with self.manager.aramaki.db.session() as session:
+            result = (
+                (
+                    await session.execute(
+                        select(Record)
+                        .filter_by(
+                            collection=self.collection,
+                        )
+                        .filter(Record.record_id != "")
                     )
-                    .filter(Record.record_id != "")
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-        return [x.record_id for x in result]
+            return [x.record_id for x in result]
 
 
 class ReplicationManager:
@@ -194,10 +195,9 @@ class ReplicationManager:
             task.cancel()
         self.tasks.clear()
 
-    @asynccontextmanager
-    async def get_collection_with_session(self):
-        async with self.aramaki.db.session() as db_session:
-            yield self.collection(db_session)
+    @property
+    def bound_collection(self):
+        return self.collection(self)
 
     async def process_update_message(self, msg: dict):
         log.debug("collection-process-update-message", id=msg.get("@id"))

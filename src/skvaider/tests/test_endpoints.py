@@ -3,6 +3,9 @@
 Simple test script to verify the OpenAI-compatible endpoints work correctly.
 """
 
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 def test_list_models(client, auth_header):
     response = client.get("http://localhost:8000/openai/v1/models")
@@ -108,7 +111,6 @@ def test_completions_non_streaming(client, auth_header):
 def test_model_context_limit_applied(client, auth_header):
     """Test that custom context limits are applied when loading models"""
     import os
-    import time
 
     # First, make a chat completion request to ensure gemma3:1b is loaded with custom options
     payload = {
@@ -175,3 +177,34 @@ def test_model_context_limit_applied(client, auth_header):
         assert (
             response.status_code == 200
         ), "Request should succeed even if we can't verify logs"
+
+
+async def test_parallel_requests(client, auth_header):
+    """Test that custom context limits are applied when loading models"""
+
+    def do_request(x):
+        payload = {
+            "model": "gemma3:1b",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Generate 5 words of lorem ipsum text",
+                }
+            ],
+            "stream": False,
+            "max_tokens": 50,
+        }
+        response = client.post(
+            "http://localhost:8000/openai/v1/chat/completions",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+            },
+        )
+        return response
+
+    with ThreadPoolExecutor(max_workers=50) as executor:
+        tasks = {executor.submit(do_request, x): x for x in range(50)}
+        for future in as_completed(tasks):
+            response = future.result()
+            assert response.status_code == 200, response.text

@@ -12,7 +12,7 @@ def openai_client(client, auth_token):
     yield OpenAI(
         base_url="http://localhost:8000/openai/v1",
         http_client=client,
-        api_key=auth_token,
+        api_key=auth_token[1],
     )
 
 

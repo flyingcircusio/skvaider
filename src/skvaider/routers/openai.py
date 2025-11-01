@@ -161,11 +161,9 @@ class Backend:
         self.log.debug("starting monitor")
         while True:
             try:
-                self.log.debug("probing backend")
                 async with httpx.AsyncClient(follow_redirects=True) as client:
                     r = await client.get(self.url + "/v1/models")
                     known_models = r.json()["data"] or ()
-                self.log.debug("updating backends")
                 current_models = self.models
                 updated_models = {}
                 for model in known_models:
@@ -307,11 +305,8 @@ class Pool:
             ]
 
             if (
-                not idle_backends
-                and len(loaded_backends) < 2
-                and not_loaded_backends
-            ):  # At most 2 instances per model
-                # Load the model on a host with as little used memory as possible
+                not idle_backends and not_loaded_backends
+            ):  # Load the model on a host with as little used memory as possible
                 # if we have spare hosts.
                 not_loaded_backends.sort(key=lambda b: b.memory_usage)
                 new_backend = not_loaded_backends[0]
@@ -334,8 +329,9 @@ class Pool:
                     backends_to_wait_for,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                # the above is a set, we want a list
-                idle_backends = [b for b in idle_backends]
+                # the above is a set, we want a list and we need to unwrap the
+                # tasks/results
+                idle_backends = [b.result().backend for b in idle_backends]
             backend = idle_backends[0]
             model = backend.models[model_id]
             log.debug("got idle backend", backend=backend.url, model=model_id)
@@ -416,7 +412,7 @@ class Pool:
     async def use(self, model_id: str):
         request = ProxyRequest()
         assert model_id in self.queues
-        log.debug("queuing request", model=model_id)
+        log.debug("queueing request", model=model_id)
         queue = self.queues[model_id]
         await queue.put(request)
         log.debug("waiting for backend to become available", model=model_id)

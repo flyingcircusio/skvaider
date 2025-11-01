@@ -6,7 +6,8 @@ import pytest
 from argon2 import PasswordHasher
 from fastapi.security import HTTPAuthorizationCredentials
 
-from skvaider.auth import verify_token
+from aramaki.collection import Record
+from skvaider.auth import AuthTokens, verify_token
 
 hasher = PasswordHasher()
 
@@ -33,9 +34,19 @@ async def test_verify_token_unknown_user(services):
     assert e.value.status_code == 401
 
 
-async def test_verify_token_incorrect_password(services, token_db):
-    secret = "asdf"
-    token_db.data["user"] = {"secret_hash": hasher.hash(secret)}
+async def test_verify_token_incorrect_password(services):
+    secret = "the-secret"
+    authtokens = await services.aget(AuthTokens)
+
+    async with authtokens.manager.aramaki.db.session() as session:
+        await Record.create(
+            session,
+            collection=authtokens.collection,
+            partition="p1",
+            record_id="user",
+            version="1",
+            data=dict(secret_hash=hasher.hash(secret)),
+        )
 
     auth_token = base64.b64encode(
         json.dumps({"id": "user", "secret": secret + "wrong"}).encode("utf-8")
@@ -49,12 +60,23 @@ async def test_verify_token_incorrect_password(services, token_db):
     assert e.value.status_code == 401
 
 
-async def test_verify_token_correct_user_and_password(services, token_db):
-    secret = "asdf"
-    token_db.data["user"] = {"secret_hash": hasher.hash(secret)}
+async def test_verify_token_correct_user_and_password(services):
+    secret = "another-secret"
+
+    authtokens = await services.aget(AuthTokens)
+
+    async with authtokens.manager.aramaki.db.session() as session:
+        await Record.create(
+            session,
+            collection=authtokens.collection,
+            partition="p1",
+            record_id="user",
+            version="1",
+            data=dict(secret_hash=hasher.hash(secret)),
+        )
 
     auth_token = base64.b64encode(
-        json.dumps({"id": "user", "secret": "asdf"}).encode("utf-8")
+        json.dumps({"id": "user", "secret": secret}).encode("utf-8")
     )
     credentials = HTTPAuthorizationCredentials(
         scheme="Bearer", credentials=auth_token
