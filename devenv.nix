@@ -3,6 +3,7 @@
 {
   packages = with pkgs; [
     ollama
+    llama-cpp
   ];
 
   enterTest = ''

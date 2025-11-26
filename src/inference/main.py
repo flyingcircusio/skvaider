@@ -7,18 +7,37 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 
+from inference.routers import models
+from inference.state import manager
+
 log = structlog.get_logger()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Inference host starting...")
-    # Placeholder for dynamic startup of llama.cpp or other code
+    idle_checker = asyncio.create_task(manager.check_idle_models())
     yield
     log.info("Shutting down...")
+    idle_checker.cancel()
+    try:
+        await idle_checker
+    except asyncio.CancelledError:
+        pass
+
+    # Stop all running models
+    for name, model in list(manager.running_models.items()):
+        log.info("Stopping model on shutdown", model=name)
+        try:
+            model.process.terminate()
+            await model.process.wait()
+        except Exception as e:
+            log.error("Error stopping model", model=name, error=str(e))
 
 
 app = FastAPI(lifespan=lifespan)
+
+app.include_router(models.router)
 
 
 @app.get("/health")
