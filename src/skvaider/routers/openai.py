@@ -6,6 +6,7 @@ This uses Ollama-internal APIs for better load-balancing but exposes a pure Open
 
 import asyncio
 import contextlib
+from abc import ABC, abstractmethod
 from typing import Any, AsyncGenerator, Dict, Generic, Optional, TypeVar
 
 import httpx
@@ -16,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from skvaider import utils
+from skvaider.inference.manager import ModelManager
 
 router = APIRouter()
 
@@ -83,7 +85,7 @@ class ModelConfig:
         return {}
 
 
-class Backend:
+class Backend(ABC):
     """Connection to a single backend."""
 
     url: str
@@ -104,6 +106,22 @@ class Backend:
     def memory_usage(self):
         return sum([v.memory_usage for v in self.models.values()])
 
+    @abstractmethod
+    async def post(self, path: str, data: dict): ...
+
+    @abstractmethod
+    async def post_stream(
+        self, path: str, data: dict
+    ) -> AsyncGenerator[str, None]: ...
+
+    @abstractmethod
+    async def load_model_with_options(self, model_id: str) -> bool: ...
+
+    @abstractmethod
+    async def monitor_health_and_update_models(self, pool): ...
+
+
+class OllamaBackend(Backend):
     async def post(self, path: str, data: dict):
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(self.url + path, json=data, timeout=120)
@@ -213,11 +231,101 @@ class Backend:
     #                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 393, in handle_async_request
     #     with map_httpcore_exceptions():
-    #   File "/Users/ctheune/.nix-profile/lib/python3.11/contextlib.py", line 158, in __exit__
-    #     self.gen.throw(typ, value, traceback)
     #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
     #     raise mapped_exc(message) from exc
     # httpx.ConnectError: All connection attempts failed
+
+
+class SkvaiderBackend(Backend):
+    manager: ModelManager
+
+    def __init__(self, url, model_config, manager: ModelManager):
+        super().__init__(url, model_config)
+        self.manager = manager
+
+    async def post(self, path: str, data: dict):
+        model_id = data.get("model")
+        if not model_id:
+            raise HTTPException(status_code=400, detail="Model not specified")
+
+        running_model = await self.manager.get_or_start_model(model_id)
+        if not running_model:
+            raise HTTPException(
+                status_code=404, detail=f"Model {model_id} not found"
+            )
+
+        url = f"http://localhost:{running_model.port}{path}"
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.post(url, json=data, timeout=120)
+            return r.json()
+
+    async def post_stream(
+        self, path: str, data: dict
+    ) -> AsyncGenerator[str, None]:
+        model_id = data.get("model")
+        if not model_id:
+            raise HTTPException(status_code=400, detail="Model not specified")
+
+        running_model = await self.manager.get_or_start_model(model_id)
+        if not running_model:
+            raise HTTPException(
+                status_code=404, detail=f"Model {model_id} not found"
+            )
+
+        url = f"http://localhost:{running_model.port}{path}"
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with client.stream(
+                "POST", url, json=data, timeout=120
+            ) as response:
+                async for chunk in response.aiter_text():
+                    if chunk.strip():
+                        yield chunk
+
+    async def load_model_with_options(self, model_id: str) -> bool:
+        running_model = await self.manager.get_or_start_model(model_id)
+        return running_model is not None
+
+    async def monitor_health_and_update_models(self, pool):
+        self.log.debug("starting monitor")
+        while True:
+            try:
+                known_models = await self.manager.list_models()
+
+                self.log.debug("updating backends")
+                current_models = self.models
+                updated_models = {}
+                for model_name in known_models:
+                    if model_name not in current_models:
+                        model_obj = AIModel(
+                            id=model_name,
+                            created=0,
+                            owned_by="skvaider",
+                            backend=self,
+                        )
+                    else:
+                        model_obj = current_models.get(model_name)
+
+                    updated_models[model_obj.id] = model_obj
+
+                    if model_name in self.manager.running_models:
+                        model_obj.is_loaded = True
+                        model_obj.memory_usage = 0
+                    else:
+                        model_obj.is_loaded = False
+                        model_obj.memory_usage = 0
+
+                self.models = updated_models
+                pool.update_model_maps()
+                self.healthy = True
+
+            except Exception as e:
+                self.log.error("monitor failed", error=str(e))
+                self.healthy = False
+                self.unhealthy_reason = str(e)
+
+            await asyncio.sleep(self.health_interval)
 
 
 class ProxyRequest:
@@ -445,7 +553,7 @@ class OpenAIProxy:
 
         if request.state.model not in self.pool.queues:
             raise HTTPException(
-                400,
+                404,
                 f"The model `{request.state.model}` is currently not available.",
             )
 

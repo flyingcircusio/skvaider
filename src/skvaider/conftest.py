@@ -1,7 +1,10 @@
 import asyncio
 import base64
 import json
+import os
+from pathlib import Path
 
+import httpx
 import pytest
 import svcs
 from argon2 import PasswordHasher
@@ -40,24 +43,57 @@ def services():
 async def test_lifespan(app: FastAPI, registry: svcs.Registry):
     pool = skvaider.routers.openai.Pool()
     model_config = skvaider.routers.openai.ModelConfig(
-        {"gemma3": {"num_ctx": 3072}}
+        {"TinyMistral-248M-v2-Instruct": {"num_ctx": 2048}}
     )
+
+    from skvaider.inference.manager import ModelManager
+
+    manager = ModelManager()
+
+    # Ensure model exists
+    models_dir = Path("models")
+    models_dir.mkdir(exist_ok=True)
+
+    model_name = "TinyMistral-248M-v2-Instruct"
+    filename = "TinyMistral-248M-v2-Instruct.Q2_K.gguf"
+    model_path = models_dir / filename
+    json_path = models_dir / f"{filename}.json"
+
+    if not model_path.exists():
+        url = "https://huggingface.co/M4-ai/TinyMistral-248M-v2-Instruct-GGUF/resolve/main/TinyMistral-248M-v2-Instruct.Q2_K.gguf?download=true"
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with client.stream("GET", url) as response:
+                with open(model_path, "wb") as f:
+                    async for chunk in response.aiter_bytes():
+                        f.write(chunk)
+
+    if not json_path.exists():
+        with open(json_path, "w") as f:
+            json.dump(
+                {
+                    "name": model_name,
+                    "context_size": 2048,
+                    "cmd_args": ["--embedding", "--pooling", "mean"],
+                },
+                f,
+            )
+
     pool.add_backend(
-        skvaider.routers.openai.Backend("http://localhost:11435", model_config)
+        skvaider.routers.openai.SkvaiderBackend(
+            "http://localhost:0", model_config, manager
+        )
     )
     registry.register_value(skvaider.routers.openai.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
 
-    tries = 10
-    while tries := tries - 1:
-        if "gemma3:1b" in pool.models:
-            break
-        await asyncio.sleep(1)
-    else:
-        raise ValueError("Missing sample model")
-
     yield {}
     pool.close()
+    for model in manager.running_models.values():
+        try:
+            model.process.terminate()
+            await model.process.wait()
+        except Exception:
+            pass
 
 
 @pytest.fixture

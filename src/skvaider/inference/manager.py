@@ -38,6 +38,22 @@ class ModelManager:
         self.running_models: Dict[str, RunningModel] = {}
         self._lock = asyncio.Lock()
 
+    async def list_models(self) -> list[str]:
+        models = []
+        if not self.models_dir.exists():
+            return models
+
+        for meta_file in self.models_dir.glob("*.json"):
+            try:
+                async with await anyio.open_file(meta_file, "r") as f:
+                    content = await f.read()
+                data = json.loads(content)
+                if name := data.get("name"):
+                    models.append(name)
+            except Exception:
+                pass
+        return models
+
     async def get_model_config(self, model_name: str) -> Optional[ModelConfig]:
         # Scan models directory for matching metadata
         # This is inefficient for many models, but fine for now.
@@ -84,22 +100,19 @@ class ModelManager:
                 return None
 
             log.info("Starting model", model=model_name)
-
-            # Construct command
-            # Assuming llama-server is in PATH or we need a config for it
-            cmd = [
-                "llama-server",
-                "-m",
-                str(self.models_dir / config.filename),
-                "--port",
-                "0",
-                "-c",
-                str(config.context_size),
-                *config.cmd_args,
-            ]
-
             process = None
             try:
+                # Construct the command to run the model
+                cmd = [
+                    "llama-server",
+                    "--model",
+                    str(self.models_dir / config.filename),
+                    "--port",
+                    str(0),  # 0 means to select a random free port
+                    "--ctx-size",
+                    str(config.context_size),
+                ] + config.cmd_args
+
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -158,10 +171,15 @@ class ModelManager:
                     break
                 line_str = line.decode("utf-8", errors="replace").strip()
                 if line_str:
-                    # log.debug("llama-server", model=model_name, stream="stderr" if is_stderr else "stdout", line=line_str)
+                    log.debug(
+                        "llama-server",
+                        model=model_name,
+                        stream="stderr" if is_stderr else "stdout",
+                        line=line_str,
+                    )
                     if is_stderr and not port_future.done():
                         match = re.search(
-                            r"HTTP server is listening, hostname: .*, port: (\d+)",
+                            r"main: HTTP server is listening, hostname: .*, port: (\d+)",
                             line_str,
                         )
                         if match:
