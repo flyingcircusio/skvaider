@@ -106,9 +106,10 @@ class ModelManager:
                 str(port),
                 "-c",
                 str(config.context_size),
+                *config.cmd_args,
             ]
-            cmd.extend(config.cmd_args)
 
+            process = None
             try:
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -128,12 +129,20 @@ class ModelManager:
                 log.error(
                     "Failed to start model", model=model_name, error=str(e)
                 )
-                if "process" in locals():
+                if process:
+                    log.info(
+                        "Terminating failed model process", model=model_name
+                    )
+                    process.terminate()
+                    # wait with timeout
                     try:
+                        await asyncio.wait_for(process.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        log.info(
+                            "Killing unresponsive model process",
+                            model=model_name,
+                        )
                         process.kill()
-                    except Exception:
-                        pass
-                raise
 
     def _find_free_port(self) -> Optional[int]:
         used_ports = {m.port for m in self.running_models.values()}
