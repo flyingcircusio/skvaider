@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from inference.main import app
-from inference.manager import ModelConfig, ModelManager, RunningModel
+from skvaider.inference.main import app
+from skvaider.inference.manager import ModelConfig, ModelManager, RunningModel
 
 client = TestClient(app)
 
@@ -71,7 +71,7 @@ async def test_manager_start_model(clean_models_dir):
             "asyncio.create_subprocess_exec", return_value=mock_proc
         ) as mock_exec,
         patch(
-            "inference.manager.ModelManager._wait_for_startup",
+            "skvaider.inference.manager.ModelManager._wait_for_startup",
             return_value=None,
         ),
     ):
@@ -105,7 +105,7 @@ async def test_load_model(clean_models_dir):
     mock_running_model.port = 8080
 
     with patch(
-        "inference.main.manager.get_or_start_model",
+        "skvaider.inference.main.manager.get_or_start_model",
         return_value=mock_running_model,
     ) as mock_get_model:
 

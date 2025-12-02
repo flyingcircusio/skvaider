@@ -7,8 +7,8 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 
-from inference.routers import models
-from inference.state import manager
+from skvaider.inference.routers import models
+from skvaider.inference.state import manager
 
 log = structlog.get_logger()
 

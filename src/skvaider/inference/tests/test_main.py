@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from inference.main import app
+from skvaider.inference.main import app
 
 client = TestClient(app)
 
