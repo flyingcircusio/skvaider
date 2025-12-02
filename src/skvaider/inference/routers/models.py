@@ -8,7 +8,7 @@ import structlog
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from inference.state import manager
+from skvaider.inference.state import manager
 
 router = APIRouter()
 log = structlog.get_logger()

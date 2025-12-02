@@ -28,7 +28,7 @@ dependencies = [
 
 [project.scripts]
 skvaider = "skvaider:main"
-inference = "inference.main:main"
+inference = "skvaider.inference.main:main"
 
 [build-system]
 requires = ["uv_build>=0.8.2,<0.9.0"]
@@ -45,7 +45,7 @@ line_length = 80
 concurrency = ["thread", "greenlet"]
 
 [tool.uv.build-backend]
-module-name = ["aramaki", "skvaider", "inference"]
+module-name = ["aramaki", "skvaider"]
 
 [dependency-groups]
 dev = [
