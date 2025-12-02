@@ -18,7 +18,6 @@ class ModelConfig(BaseModel):
     filename: str
     cmd_args: list[str] = []
     context_size: int = 2048
-    idle_timeout: int = 300  # 5 minutes
 
 
 class RunningModel:
@@ -31,10 +30,6 @@ class RunningModel:
         self.config = config
         self.process = process
         self.port = port
-        self.last_access = time.time()
-
-    def touch(self):
-        self.last_access = time.time()
 
 
 class ModelManager:
@@ -66,7 +61,6 @@ class ModelManager:
                         filename=filename,
                         cmd_args=data.get("cmd_args", []),
                         context_size=data.get("context_size", 2048),
-                        idle_timeout=data.get("idle_timeout", 300),
                     )
             except Exception as e:
                 log.warn(
@@ -83,7 +77,6 @@ class ModelManager:
         async with self._lock:
             if model_name in self.running_models:
                 model = self.running_models[model_name]
-                model.touch()
                 return model
 
             config = await self.get_model_config(model_name)
@@ -197,23 +190,16 @@ class ModelManager:
                 await asyncio.sleep(0.5)
         raise RuntimeError(f"Model failed to start on port {port}")
 
-    async def check_idle_models(self):
-        while True:
-            await asyncio.sleep(10)
-            now = time.time()
-            to_remove = []
-            async with self._lock:
-                for name, model in self.running_models.items():
-                    if now - model.last_access > model.config.idle_timeout:
-                        log.info("Unloading idle model", model=name)
-                        try:
-                            model.process.terminate()
-                            await model.process.wait()
-                        except Exception as e:
-                            log.error(
-                                "Error stopping model", model=name, error=str(e)
-                            )
-                        to_remove.append(name)
-
-                for name in to_remove:
-                    del self.running_models[name]
+    async def unload_model(self, model_name: str):
+        async with self._lock:
+            if model_name in self.running_models:
+                model = self.running_models[model_name]
+                log.info("Unloading model", model=model_name)
+                try:
+                    model.process.terminate()
+                    await model.process.wait()
+                except Exception as e:
+                    log.error(
+                        "Error stopping model", model=model_name, error=str(e)
+                    )
+                del self.running_models[model_name]

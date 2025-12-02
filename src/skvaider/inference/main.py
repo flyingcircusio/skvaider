@@ -16,14 +16,8 @@ log = structlog.get_logger()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Inference host starting...")
-    idle_checker = asyncio.create_task(manager.check_idle_models())
     yield
     log.info("Shutting down...")
-    idle_checker.cancel()
-    try:
-        await idle_checker
-    except asyncio.CancelledError:
-        pass
 
     # Stop all running models
     for name, model in list(manager.running_models.items()):
