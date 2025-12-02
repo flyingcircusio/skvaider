@@ -57,6 +57,15 @@ async def test_manager_start_model(clean_models_dir):
     mock_proc = AsyncMock()
     mock_proc.kill = MagicMock()
 
+    # Mock stderr to return the port line
+    mock_proc.stderr.readline.side_effect = [
+        b"some log line\n",
+        b"HTTP server is listening, hostname: 127.0.0.1, port: 8555, http threads: 9\n",
+        b"",
+    ]
+    # Mock stdout to be empty
+    mock_proc.stdout.readline.return_value = b""
+
     with (
         patch(
             "asyncio.create_subprocess_exec", return_value=mock_proc
@@ -71,13 +80,15 @@ async def test_manager_start_model(clean_models_dir):
 
         assert model is not None
         assert model.config.name == "test-model"
-        assert model.port in range(8001, 9000)
+        assert model.port == 8555
 
         mock_exec.assert_called_once()
         args = mock_exec.call_args[0]
         assert args[0] == "llama-server"
         assert "-m" in args
         assert str(Path("models/test_file")) in args
+        assert "--port" in args
+        assert args[args.index("--port") + 1] == "0"
 
 
 @pytest.mark.asyncio
