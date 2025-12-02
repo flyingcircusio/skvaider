@@ -93,3 +93,18 @@ async def download_model(request: DownloadRequest):
         raise HTTPException(status_code=500, detail="File write failed")
 
     return {"status": "downloaded", "path": str(file_path)}
+
+
+@router.post("/unload")
+async def unload_model(request: Request):
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    model_name = body.get("model")
+    if not model_name:
+        raise HTTPException(status_code=400, detail="Model not specified")
+
+    await manager.unload_model(model_name)
+    return {"status": "ok"}

@@ -115,3 +115,42 @@ async def test_load_model(clean_models_dir):
         assert response.json() == {"port": 8080}
 
         mock_get_model.assert_called_with("test-model")
+
+
+@pytest.mark.asyncio
+async def test_unload_model_manager(clean_models_dir):
+    manager = ModelManager()
+
+    # Mock a running model
+    config = ModelConfig(name="test-model", filename="test_file")
+    mock_proc = AsyncMock()
+    mock_proc.terminate = MagicMock()
+    mock_proc.wait = AsyncMock()
+
+    running_model = RunningModel(config, mock_proc, 8080)
+    manager.running_models["test-model"] = running_model
+
+    await manager.unload_model("test-model")
+
+    assert "test-model" not in manager.running_models
+    mock_proc.terminate.assert_called_once()
+    mock_proc.wait.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_unload_model_api(clean_models_dir):
+    # We need to patch the global manager instance used by the router
+    with patch("skvaider.inference.routers.models.manager") as mock_manager:
+        mock_manager.unload_model = AsyncMock()
+
+        response = client.post("/unload", json={"model": "test-model"})
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        mock_manager.unload_model.assert_called_once_with("test-model")
+
+
+@pytest.mark.asyncio
+async def test_unload_model_api_missing_model(clean_models_dir):
+    response = client.post("/unload", json={})
+    assert response.status_code == 400
