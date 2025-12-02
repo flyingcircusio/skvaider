@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -40,7 +41,6 @@ class ModelManager:
     def __init__(self, models_dir: Path = Path("models")):
         self.models_dir = models_dir
         self.running_models: Dict[str, RunningModel] = {}
-        self.port_range = range(8001, 9000)
         self._lock = asyncio.Lock()
 
     async def get_model_config(self, model_name: str) -> Optional[ModelConfig]:
@@ -90,11 +90,7 @@ class ModelManager:
             if not config:
                 return None
 
-            port = self._find_free_port()
-            if not port:
-                raise RuntimeError("No free ports available")
-
-            log.info("Starting model", model=model_name, port=port)
+            log.info("Starting model", model=model_name)
 
             # Construct command
             # Assuming llama-server is in PATH or we need a config for it
@@ -103,7 +99,7 @@ class ModelManager:
                 "-m",
                 str(self.models_dir / config.filename),
                 "--port",
-                str(port),
+                "0",
                 "-c",
                 str(config.context_size),
                 *config.cmd_args,
@@ -117,9 +113,14 @@ class ModelManager:
                     stderr=asyncio.subprocess.PIPE,
                 )
 
-                # Wait a bit for it to start? Or rely on health check?
-                # Let's assume it takes a moment.
-                # A better way is to poll the health endpoint of the new process.
+                port_future = asyncio.get_running_loop().create_future()
+                asyncio.create_task(
+                    self._monitor_output(process, model_name, port_future)
+                )
+
+                port = await asyncio.wait_for(port_future, timeout=30)
+                log.info("Model started", model=model_name, port=port)
+
                 await self._wait_for_startup(port)
 
                 running_model = RunningModel(config, process, port)
@@ -133,7 +134,10 @@ class ModelManager:
                     log.info(
                         "Terminating failed model process", model=model_name
                     )
-                    process.terminate()
+                    try:
+                        process.terminate()
+                    except ProcessLookupError:
+                        pass
                     # wait with timeout
                     try:
                         await asyncio.wait_for(process.wait(), timeout=5)
@@ -142,15 +146,43 @@ class ModelManager:
                             "Killing unresponsive model process",
                             model=model_name,
                         )
-                        process.kill()
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                raise e
 
-    def _find_free_port(self) -> Optional[int]:
-        used_ports = {m.port for m in self.running_models.values()}
-        for port in self.port_range:
-            if port not in used_ports:
-                # TODO: Check if port is actually free on OS level
-                return port
-        return None
+    async def _monitor_output(
+        self,
+        process: asyncio.subprocess.Process,
+        model_name: str,
+        port_future: asyncio.Future,
+    ):
+        async def read_stream(stream, is_stderr):
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if line_str:
+                    # log.debug("llama-server", model=model_name, stream="stderr" if is_stderr else "stdout", line=line_str)
+                    if is_stderr and not port_future.done():
+                        match = re.search(
+                            r"HTTP server is listening, hostname: .*, port: (\d+)",
+                            line_str,
+                        )
+                        if match:
+                            port_future.set_result(int(match.group(1)))
+
+        await asyncio.gather(
+            read_stream(process.stderr, True),
+            read_stream(process.stdout, False),
+        )
+
+        if not port_future.done():
+            port_future.set_exception(
+                RuntimeError("Process exited before port was found")
+            )
 
     async def _wait_for_startup(self, port: int, timeout: int = 30):
         start = time.time()
