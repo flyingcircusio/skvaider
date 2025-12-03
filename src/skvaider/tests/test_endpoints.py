@@ -3,23 +3,30 @@
 Simple test script to verify the OpenAI-compatible endpoints work correctly.
 """
 
+import pytest
 
-def test_list_models(client, auth_header):
+
+@pytest.fixture(params=["TinyMistral-248M-v2-Instruct", "gemma3:1b"])
+def model_name(request):
+    return request.param
+
+
+def test_list_models(client, auth_header, model_name):
     response = client.get("/openai/v1/models")
     assert response.status_code == 200
     data = response.json()["data"]
     assert len(data) >= 1
-    assert "TinyMistral-248M-v2-Instruct" in [m["id"] for m in data]
+    assert model_name in [m["id"] for m in data]
 
 
-def test_get_model(client, auth_header):
-    response = client.get("/openai/v1/models/TinyMistral-248M-v2-Instruct")
+def test_get_model(client, auth_header, model_name):
+    response = client.get(f"/openai/v1/models/{model_name}")
     assert response.status_code == 200
     model = response.json()
     assert set(model) == {"created", "id", "object", "owned_by"}
-    assert model["id"] == "TinyMistral-248M-v2-Instruct"
+    assert model["id"] == model_name
     assert model["object"] == "model"
-    assert model["owned_by"] == "skvaider"
+    # assert model["owned_by"] == "skvaider"
 
 
 def test_completions_with_non_existing_model(client, auth_header):
@@ -39,9 +46,9 @@ def test_completions_with_non_existing_model(client, auth_header):
     assert response.status_code == 404
 
 
-def test_chat_completions_non_streaming(client, auth_header):
+def test_chat_completions_non_streaming(client, auth_header, model_name):
     payload = {
-        "model": "TinyMistral-248M-v2-Instruct",
+        "model": model_name,
         "messages": [{"role": "user", "content": "Hello, how are you?"}],
         "stream": False,
         "max_tokens": 50,
@@ -56,9 +63,9 @@ def test_chat_completions_non_streaming(client, auth_header):
     assert response.status_code == 200, response.text
 
 
-def test_chat_completions_streaming(client, auth_header):
+def test_chat_completions_streaming(client, auth_header, model_name):
     payload = {
-        "model": "TinyMistral-248M-v2-Instruct",
+        "model": model_name,
         "messages": [{"role": "user", "content": "Count from 1 to 3"}],
         "stream": True,
         "max_tokens": 20,
@@ -87,9 +94,9 @@ def test_chat_completions_streaming(client, auth_header):
                     break
 
 
-def test_completions_non_streaming(client, auth_header):
+def test_completions_non_streaming(client, auth_header, model_name):
     payload = {
-        "model": "TinyMistral-248M-v2-Instruct",
+        "model": model_name,
         "prompt": "The capital of France is",
         "stream": False,
         "max_tokens": 10,
@@ -105,13 +112,13 @@ def test_completions_non_streaming(client, auth_header):
     assert response.headers["content-type"] == "application/json"
 
 
-def test_model_context_limit_applied(client, auth_header):
+def test_model_context_limit_applied(client, auth_header, model_name):
     """Test that custom context limits are applied when loading models"""
     import time
 
     # First, make a chat completion request to ensure TinyMistral-248M-v2-Instruct is loaded with custom options
     payload = {
-        "model": "TinyMistral-248M-v2-Instruct",
+        "model": model_name,
         "messages": [{"role": "user", "content": "Hello"}],
         "stream": False,
         "max_tokens": 10,

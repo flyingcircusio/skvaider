@@ -16,15 +16,20 @@ def openai_client(client, auth_token):
     )
 
 
-def test_model_list(openai_client):
+@pytest.fixture(params=["TinyMistral-248M-v2-Instruct", "gemma3:1b"])
+def model_name(request):
+    return request.param
+
+
+def test_model_list(openai_client, model_name):
     models = openai_client.models.list()
     assert len(models.data) >= 1
-    assert "TinyMistral-248M-v2-Instruct" in [x.id for x in models.data]
+    assert model_name in [x.id for x in models.data]
 
 
-def test_chat_completions(openai_client):
+def test_chat_completions(openai_client, model_name):
     response = openai_client.chat.completions.create(
-        model="TinyMistral-248M-v2-Instruct",
+        model=model_name,
         messages=[{"role": "user", "content": "Say 'hello world'"}],
         max_tokens=50,  # More generous token budget
     )
@@ -54,9 +59,9 @@ def test_chat_completions(openai_client):
 #     assert response.usage.total_tokens < 200
 
 
-def test_chat_completions_streaming(openai_client):
+def test_chat_completions_streaming(openai_client, model_name):
     stream = openai_client.chat.completions.create(
-        model="TinyMistral-248M-v2-Instruct",
+        model=model_name,
         messages=[{"role": "user", "content": "Count from 1 to 5"}],
         max_tokens=100,  # More generous for streaming
         stream=True,
@@ -77,9 +82,9 @@ def test_chat_completions_streaming(openai_client):
     assert full_content
 
 
-def test_completions(openai_client):
+def test_completions(openai_client, model_name):
     response = openai_client.completions.create(
-        model="TinyMistral-248M-v2-Instruct",
+        model=model_name,
         prompt="The capital of France is",
         max_tokens=50,  # More generous token budget
     )
@@ -87,9 +92,9 @@ def test_completions(openai_client):
     assert 0 < response.usage.total_tokens <= 100
 
 
-def test_completions_streaming(openai_client):
+def test_completions_streaming(openai_client, model_name):
     stream = openai_client.completions.create(
-        model="TinyMistral-248M-v2-Instruct",
+        model=model_name,
         prompt="The capital of France is",
         max_tokens=50,  # More generous token budget
         stream=True,
