@@ -69,13 +69,7 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
 
     pool = skvaider.routers.openai.Pool()
     for backend_config in config.backend:
-        if backend_config.type == "openai":
-            pool.add_backend(
-                skvaider.routers.openai.OllamaBackend(
-                    backend_config.url, model_config
-                )
-            )
-        elif backend_config.type == "skvaider":
+        if backend_config.type == "skvaider":
             pool.add_backend(
                 skvaider.routers.openai.SkvaiderBackend(
                     backend_config.url, model_config

@@ -43,7 +43,10 @@ def services():
 async def test_lifespan(app: FastAPI, registry: svcs.Registry):
     pool = skvaider.routers.openai.Pool()
     model_config = skvaider.routers.openai.ModelConfig(
-        {"TinyMistral-248M-v2-Instruct": {"num_ctx": 2048}}
+        {
+            "TinyMistral-248M-v2-Instruct": {"num_ctx": 2048},
+            "TinyMistral-248M-v2-Instruct-Embed": {"num_ctx": 2048},
+        }
     )
 
     # Ensure model exists
@@ -51,9 +54,16 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
     models_dir.mkdir(exist_ok=True)
 
     model_name = "TinyMistral-248M-v2-Instruct"
+    model_name_embed = "TinyMistral-248M-v2-Instruct-Embed"
+
     filename = "TinyMistral-248M-v2-Instruct.Q2_K.gguf"
+    filename_embed = "TinyMistral-248M-v2-Instruct-Embed.Q2_K.gguf"
+
     model_path = models_dir / filename
+    model_path_embed = models_dir / filename_embed
+
     json_path = models_dir / f"{filename}.json"
+    json_path_embed = models_dir / f"{filename_embed}.json"
 
     if not model_path.exists():
         url = "https://huggingface.co/M4-ai/TinyMistral-248M-v2-Instruct-GGUF/resolve/main/TinyMistral-248M-v2-Instruct.Q2_K.gguf?download=true"
@@ -63,16 +73,28 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
                     async for chunk in response.aiter_bytes():
                         f.write(chunk)
 
-    if not json_path.exists():
-        with open(json_path, "w") as f:
-            json.dump(
-                {
-                    "name": model_name,
-                    "context_size": 2048,
-                    "cmd_args": ["--embedding", "--pooling", "mean"],
-                },
-                f,
-            )
+    if not model_path_embed.exists():
+        os.symlink(filename, model_path_embed)
+
+    with open(json_path, "w") as f:
+        json.dump(
+            {
+                "name": model_name,
+                "context_size": 2048,
+                "cmd_args": [],
+            },
+            f,
+        )
+
+    with open(json_path_embed, "w") as f:
+        json.dump(
+            {
+                "name": model_name_embed,
+                "context_size": 2048,
+                "cmd_args": ["--embedding", "--pooling", "mean"],
+            },
+            f,
+        )
 
     import subprocess
     import sys
