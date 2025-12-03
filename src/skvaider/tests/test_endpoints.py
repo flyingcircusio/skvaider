@@ -43,7 +43,7 @@ def test_completions_with_non_existing_model(client, auth_header):
             "Content-Type": "application/json",
         },
     )
-    assert response.status_code == 404
+    assert response.status_code == 400
 
 
 def test_chat_completions_non_streaming(client, auth_header, model_name):

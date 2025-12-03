@@ -230,6 +230,8 @@ class OllamaBackend(Backend):
     #                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 393, in handle_async_request
     #     with map_httpcore_exceptions():
+    #   File "/Users/ctheune/.nix-profile/lib/python3.11/contextlib.py", line 158, in __exit__
+    #     self.gen.throw(typ, value, traceback)
     #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
     #     raise mapped_exc(message) from exc
     # httpx.ConnectError: All connection attempts failed
@@ -573,7 +575,7 @@ class OpenAIProxy:
 
         if request.state.model not in self.pool.queues:
             raise HTTPException(
-                404,
+                400,
                 f"The model `{request.state.model}` is currently not available.",
             )
 
