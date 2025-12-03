@@ -138,6 +138,14 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
         )
 
     pool.add_backend(skvaider.routers.openai.SkvaiderBackend(url, model_config))
+
+    if ollama_host := os.environ.get("OLLAMA_HOST"):
+        if not ollama_host.startswith("http"):
+            ollama_host = f"http://{ollama_host}"
+        pool.add_backend(
+            skvaider.routers.openai.OllamaBackend(ollama_host, model_config)
+        )
+
     registry.register_value(skvaider.routers.openai.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
 
