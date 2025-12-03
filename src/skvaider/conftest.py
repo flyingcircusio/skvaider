@@ -96,21 +96,33 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
             f,
         )
 
+    import socket
     import subprocess
     import sys
     import time
 
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        port = s.getsockname()[1]
+
     # Start inference server
     proc = subprocess.Popen(
         [sys.executable, "-m", "skvaider.inference.main"],
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "PORT": str(port)},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
 
-    url = "http://localhost:8000"
+    url = f"http://localhost:{port}"
     start = time.time()
-    while time.time() - start < 10:
+    while time.time() - start < 30:  # Increased timeout to 30s
+        if proc.poll() is not None:
+            # Process exited prematurely
+            stdout, stderr = proc.communicate()
+            raise RuntimeError(
+                f"Inference server exited prematurely with code {proc.returncode}.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
+            )
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(f"{url}/health")
@@ -122,7 +134,7 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
         proc.terminate()
         stdout, stderr = proc.communicate()
         raise RuntimeError(
-            f"Inference server failed to start.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
+            f"Inference server failed to start within timeout.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
         )
 
     pool.add_backend(skvaider.routers.openai.SkvaiderBackend(url, model_config))

@@ -10,7 +10,7 @@ from openai import OpenAI
 @pytest.fixture
 def openai_client(client, auth_token):
     yield OpenAI(
-        base_url="http://localhost:8000/openai/v1",
+        base_url="http://testserver/openai/v1",
         http_client=client,
         api_key=auth_token,
     )

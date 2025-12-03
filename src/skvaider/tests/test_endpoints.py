@@ -5,7 +5,7 @@ Simple test script to verify the OpenAI-compatible endpoints work correctly.
 
 
 def test_list_models(client, auth_header):
-    response = client.get("http://localhost:8000/openai/v1/models")
+    response = client.get("/openai/v1/models")
     assert response.status_code == 200
     data = response.json()["data"]
     assert len(data) >= 1
@@ -13,9 +13,7 @@ def test_list_models(client, auth_header):
 
 
 def test_get_model(client, auth_header):
-    response = client.get(
-        "http://localhost:8000/openai/v1/models/TinyMistral-248M-v2-Instruct"
-    )
+    response = client.get("/openai/v1/models/TinyMistral-248M-v2-Instruct")
     assert response.status_code == 200
     model = response.json()
     assert set(model) == {"created", "id", "object", "owned_by"}
@@ -32,7 +30,7 @@ def test_completions_with_non_existing_model(client, auth_header):
         "max_tokens": 50,
     }
     response = client.post(
-        "http://localhost:8000/openai/v1/chat/completions",
+        "/openai/v1/chat/completions",
         json=payload,
         headers={
             "Content-Type": "application/json",
@@ -49,7 +47,7 @@ def test_chat_completions_non_streaming(client, auth_header):
         "max_tokens": 50,
     }
     response = client.post(
-        "http://localhost:8000/openai/v1/chat/completions",
+        "/openai/v1/chat/completions",
         json=payload,
         headers={
             "Content-Type": "application/json",
@@ -67,7 +65,7 @@ def test_chat_completions_streaming(client, auth_header):
     }
     with client.stream(
         "POST",
-        "http://localhost:8000/openai/v1/chat/completions",
+        "/openai/v1/chat/completions",
         json=payload,
         headers={
             "Content-Type": "application/json",
@@ -97,7 +95,7 @@ def test_completions_non_streaming(client, auth_header):
         "max_tokens": 10,
     }
     response = client.post(
-        "http://localhost:8000/openai/v1/completions",
+        "/openai/v1/completions",
         json=payload,
         headers={
             "Content-Type": "application/json",
@@ -119,7 +117,7 @@ def test_model_context_limit_applied(client, auth_header):
         "max_tokens": 10,
     }
     response = client.post(
-        "http://localhost:8000/openai/v1/chat/completions",
+        "/openai/v1/chat/completions",
         json=payload,
         headers={
             "Content-Type": "application/json",
