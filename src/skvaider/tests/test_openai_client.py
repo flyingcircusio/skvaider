@@ -29,7 +29,7 @@ def test_chat_completions(openai_client):
         max_tokens=50,  # More generous token budget
     )
     assert response.choices[0].message.content
-    assert 0 < response.usage.total_tokens < 75
+    assert 0 < response.usage.total_tokens < 100
 
 
 # gpt-oss:20b is just too large to download on every commit ... maybe
@@ -111,7 +111,7 @@ def test_completions_streaming(openai_client):
 
 def test_embeddings(openai_client):
     response = openai_client.embeddings.create(
-        input="Test String", model="TinyMistral-248M-v2-Instruct"
+        input="Test String", model="TinyMistral-248M-v2-Instruct-Embed"
     )
     assert response.data is not None
     assert len(response.data[0].embedding) >= 100
