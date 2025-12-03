@@ -75,6 +75,13 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
                     backend_config.url, model_config
                 )
             )
+        elif backend_config.type == "ollama":
+            url = backend_config.url
+            if not url.startswith("http"):
+                url = f"http://{url}"
+            pool.add_backend(
+                skvaider.routers.openai.OllamaBackend(url, model_config)
+            )
     registry.register_value(skvaider.routers.openai.Pool, pool)
 
     aramaki = AramakiManager(
