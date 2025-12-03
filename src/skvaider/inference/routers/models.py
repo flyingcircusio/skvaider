@@ -108,3 +108,13 @@ async def unload_model(request: Request):
 
     await manager.unload_model(model_name)
     return {"status": "ok"}
+
+
+@router.get("/models")
+async def list_models():
+    return {"models": await manager.list_models()}
+
+
+@router.get("/running_models")
+async def list_running_models():
+    return {"models": list(manager.running_models.keys())}
