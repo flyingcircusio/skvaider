@@ -11,7 +11,8 @@ from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import skvaider.routers.openai
+import skvaider.proxy.backends
+import skvaider.proxy.pool
 from skvaider import app_factory
 
 hasher = PasswordHasher()
@@ -41,8 +42,8 @@ def services():
 
 @svcs.fastapi.lifespan
 async def test_lifespan(app: FastAPI, registry: svcs.Registry):
-    pool = skvaider.routers.openai.Pool()
-    model_config = skvaider.routers.openai.ModelConfig(
+    pool = skvaider.proxy.pool.Pool()
+    model_config = skvaider.proxy.backends.ModelConfig(
         {
             "TinyMistral-248M-v2-Instruct": {"num_ctx": 2048},
             "TinyMistral-248M-v2-Instruct-Embed": {"num_ctx": 2048},
@@ -137,16 +138,16 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
             f"Inference server failed to start within timeout.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
         )
 
-    pool.add_backend(skvaider.routers.openai.SkvaiderBackend(url, model_config))
+    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url, model_config))
 
     if ollama_host := os.environ.get("OLLAMA_HOST"):
         if not ollama_host.startswith("http"):
             ollama_host = f"http://{ollama_host}"
         pool.add_backend(
-            skvaider.routers.openai.OllamaBackend(ollama_host, model_config)
+            skvaider.proxy.backends.OllamaBackend(ollama_host, model_config)
         )
 
-    registry.register_value(skvaider.routers.openai.Pool, pool)
+    registry.register_value(skvaider.proxy.pool.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
 
     # Wait for backends to become healthy
