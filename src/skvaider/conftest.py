@@ -173,6 +173,14 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
         enter=False,
     )
 
+    # Wait for backends to become healthy
+    timeout = 2 * pool.backends[0].health_interval
+    start = time.time()
+    while time.time() - start < timeout:
+        if all(b.healthy for b in pool.backends):
+            break
+        await asyncio.sleep(0.1)
+
     yield {}
     pool.close()
     proc.terminate()
