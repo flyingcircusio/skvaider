@@ -10,6 +10,8 @@ import svcs
 from fastapi import FastAPI, Request, Security
 from fastapi.responses import JSONResponse
 
+import skvaider.proxy.backends
+import skvaider.proxy.pool
 import skvaider.routers.openai
 from aramaki import Manager as AramakiManager
 from skvaider.auth import verify_token
@@ -65,16 +67,24 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(global_exception_handler)
 
-    model_config = skvaider.routers.openai.ModelConfig(config.openai.models)
+    model_config = skvaider.proxy.backends.ModelConfig(config.openai.models)
 
-    pool = skvaider.routers.openai.Pool()
+    pool = skvaider.proxy.pool.Pool()
     for backend_config in config.backend:
-        if backend_config.type != "openai":
-            continue
-        pool.add_backend(
-            skvaider.routers.openai.Backend(backend_config.url, model_config)
-        )
-    registry.register_value(skvaider.routers.openai.Pool, pool)
+        if backend_config.type == "skvaider":
+            pool.add_backend(
+                skvaider.proxy.backends.SkvaiderBackend(
+                    backend_config.url, model_config
+                )
+            )
+        elif backend_config.type == "ollama":
+            url = backend_config.url
+            if not url.startswith("http"):
+                url = f"http://{url}"
+            pool.add_backend(
+                skvaider.proxy.backends.OllamaBackend(url, model_config)
+            )
+    registry.register_value(skvaider.proxy.pool.Pool, pool)
 
     aramaki = AramakiManager(
         config.aramaki.principal,

@@ -1,14 +1,18 @@
 import asyncio
 import base64
 import json
+import os
+from pathlib import Path
 
+import httpx
 import pytest
 import svcs
 from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import skvaider.routers.openai
+import skvaider.proxy.backends
+import skvaider.proxy.pool
 from skvaider import app_factory
 
 hasher = PasswordHasher()
@@ -38,26 +42,126 @@ def services():
 
 @svcs.fastapi.lifespan
 async def test_lifespan(app: FastAPI, registry: svcs.Registry):
-    pool = skvaider.routers.openai.Pool()
-    model_config = skvaider.routers.openai.ModelConfig(
-        {"gemma3": {"num_ctx": 3072}}
+    pool = skvaider.proxy.pool.Pool()
+    model_config = skvaider.proxy.backends.ModelConfig(
+        {
+            "TinyMistral-248M-v2-Instruct": {"num_ctx": 2048},
+            "TinyMistral-248M-v2-Instruct-Embed": {"num_ctx": 2048},
+        }
     )
-    pool.add_backend(
-        skvaider.routers.openai.Backend("http://localhost:11435", model_config)
+
+    # Ensure model exists
+    models_dir = Path("models")
+    models_dir.mkdir(exist_ok=True)
+
+    model_name = "TinyMistral-248M-v2-Instruct"
+    model_name_embed = "TinyMistral-248M-v2-Instruct-Embed"
+
+    filename = "TinyMistral-248M-v2-Instruct.Q2_K.gguf"
+    filename_embed = "TinyMistral-248M-v2-Instruct-Embed.Q2_K.gguf"
+
+    model_path = models_dir / filename
+    model_path_embed = models_dir / filename_embed
+
+    json_path = models_dir / f"{filename}.json"
+    json_path_embed = models_dir / f"{filename_embed}.json"
+
+    if not model_path.exists():
+        url = "https://huggingface.co/M4-ai/TinyMistral-248M-v2-Instruct-GGUF/resolve/main/TinyMistral-248M-v2-Instruct.Q2_K.gguf?download=true"
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            async with client.stream("GET", url) as response:
+                with open(model_path, "wb") as f:
+                    async for chunk in response.aiter_bytes():
+                        f.write(chunk)
+
+    if not model_path_embed.exists():
+        os.symlink(filename, model_path_embed)
+
+    with open(json_path, "w") as f:
+        json.dump(
+            {
+                "name": model_name,
+                "context_size": 2048,
+                "cmd_args": [],
+            },
+            f,
+        )
+
+    with open(json_path_embed, "w") as f:
+        json.dump(
+            {
+                "name": model_name_embed,
+                "context_size": 2048,
+                "cmd_args": ["--embedding", "--pooling", "mean"],
+            },
+            f,
+        )
+
+    import socket
+    import subprocess
+    import sys
+    import time
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        port = s.getsockname()[1]
+
+    # Start inference server
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "skvaider.inference.main"],
+        env={**os.environ, "PYTHONUNBUFFERED": "1", "PORT": str(port)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    registry.register_value(skvaider.routers.openai.Pool, pool)
+
+    url = f"http://localhost:{port}"
+    start = time.time()
+    while time.time() - start < 30:  # Increased timeout to 30s
+        if proc.poll() is not None:
+            # Process exited prematurely
+            stdout, stderr = proc.communicate()
+            raise RuntimeError(
+                f"Inference server exited prematurely with code {proc.returncode}.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
+            )
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{url}/health")
+                if resp.status_code == 200:
+                    break
+        except Exception:
+            await asyncio.sleep(0.1)
+    else:
+        proc.terminate()
+        stdout, stderr = proc.communicate()
+        raise RuntimeError(
+            f"Inference server failed to start within timeout.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
+        )
+
+    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url, model_config))
+
+    if ollama_host := os.environ.get("OLLAMA_HOST"):
+        if not ollama_host.startswith("http"):
+            ollama_host = f"http://{ollama_host}"
+        pool.add_backend(
+            skvaider.proxy.backends.OllamaBackend(ollama_host, model_config)
+        )
+
+    registry.register_value(skvaider.proxy.pool.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
 
-    tries = 10
-    while tries := tries - 1:
-        if "gemma3:1b" in pool.models:
+    # Wait for backends to become healthy
+    timeout = 2 * pool.backends[0].health_interval
+    start = time.time()
+    while time.time() - start < timeout:
+        if all(b.healthy for b in pool.backends):
             break
-        await asyncio.sleep(1)
-    else:
-        raise ValueError("Missing sample model")
+        await asyncio.sleep(0.1)
 
     yield {}
     pool.close()
+    proc.terminate()
+    proc.wait()
 
 
 @pytest.fixture

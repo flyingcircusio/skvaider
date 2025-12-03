@@ -1,4 +1,4 @@
-from skvaider.routers.openai import ModelConfig
+from skvaider.proxy.backends import ModelConfig
 
 
 def test_model_config():
