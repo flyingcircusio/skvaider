@@ -17,7 +17,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from skvaider import utils
-from skvaider.inference.manager import ModelManager
 
 router = APIRouter()
 
@@ -237,24 +236,29 @@ class OllamaBackend(Backend):
 
 
 class SkvaiderBackend(Backend):
-    manager: ModelManager
-
-    def __init__(self, url, model_config, manager: ModelManager):
+    def __init__(self, url, model_config):
         super().__init__(url, model_config)
-        self.manager = manager
 
     async def post(self, path: str, data: dict):
         model_id = data.get("model")
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
 
-        running_model = await self.manager.get_or_start_model(model_id)
-        if not running_model:
-            raise HTTPException(
-                status_code=404, detail=f"Model {model_id} not found"
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.post(
+                f"{self.url}/load", json={"model": model_id}, timeout=120
             )
+            if r.status_code == 404:
+                raise HTTPException(
+                    status_code=404, detail=f"Model {model_id} not found"
+                )
+            if r.status_code != 200:
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to load model: {r.text}"
+                )
+            port = r.json()["port"]
 
-        url = f"http://localhost:{running_model.port}{path}"
+        url = f"http://localhost:{port}{path}"
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(url, json=data, timeout=120)
@@ -267,13 +271,21 @@ class SkvaiderBackend(Backend):
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
 
-        running_model = await self.manager.get_or_start_model(model_id)
-        if not running_model:
-            raise HTTPException(
-                status_code=404, detail=f"Model {model_id} not found"
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.post(
+                f"{self.url}/load", json={"model": model_id}, timeout=120
             )
+            if r.status_code == 404:
+                raise HTTPException(
+                    status_code=404, detail=f"Model {model_id} not found"
+                )
+            if r.status_code != 200:
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to load model: {r.text}"
+                )
+            port = r.json()["port"]
 
-        url = f"http://localhost:{running_model.port}{path}"
+        url = f"http://localhost:{port}{path}"
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             async with client.stream(
@@ -284,14 +296,22 @@ class SkvaiderBackend(Backend):
                         yield chunk
 
     async def load_model_with_options(self, model_id: str) -> bool:
-        running_model = await self.manager.get_or_start_model(model_id)
-        return running_model is not None
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.post(
+                f"{self.url}/load", json={"model": model_id}, timeout=120
+            )
+            return r.status_code == 200
 
     async def monitor_health_and_update_models(self, pool):
         self.log.debug("starting monitor")
         while True:
             try:
-                known_models = await self.manager.list_models()
+                async with httpx.AsyncClient(follow_redirects=True) as client:
+                    r = await client.get(f"{self.url}/models")
+                    known_models = r.json()["models"]
+
+                    r_running = await client.get(f"{self.url}/running_models")
+                    running_models = r_running.json()["models"]
 
                 self.log.debug("updating backends")
                 current_models = self.models
@@ -309,7 +329,7 @@ class SkvaiderBackend(Backend):
 
                     updated_models[model_obj.id] = model_obj
 
-                    if model_name in self.manager.running_models:
+                    if model_name in running_models:
                         model_obj.is_loaded = True
                         model_obj.memory_usage = 0
                     else:

@@ -46,10 +46,6 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
         {"TinyMistral-248M-v2-Instruct": {"num_ctx": 2048}}
     )
 
-    from skvaider.inference.manager import ModelManager
-
-    manager = ModelManager()
-
     # Ensure model exists
     models_dir = Path("models")
     models_dir.mkdir(exist_ok=True)
@@ -78,22 +74,43 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
                 f,
             )
 
-    pool.add_backend(
-        skvaider.routers.openai.SkvaiderBackend(
-            "http://localhost:0", model_config, manager
-        )
+    import subprocess
+    import sys
+    import time
+
+    # Start inference server
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "skvaider.inference.main"],
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
+
+    url = "http://localhost:8000"
+    start = time.time()
+    while time.time() - start < 10:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{url}/health")
+                if resp.status_code == 200:
+                    break
+        except Exception:
+            await asyncio.sleep(0.1)
+    else:
+        proc.terminate()
+        stdout, stderr = proc.communicate()
+        raise RuntimeError(
+            f"Inference server failed to start.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
+        )
+
+    pool.add_backend(skvaider.routers.openai.SkvaiderBackend(url, model_config))
     registry.register_value(skvaider.routers.openai.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
 
     yield {}
     pool.close()
-    for model in manager.running_models.values():
-        try:
-            model.process.terminate()
-            await model.process.wait()
-        except Exception:
-            pass
+    proc.terminate()
+    proc.wait()
 
 
 @pytest.fixture

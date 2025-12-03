@@ -76,12 +76,9 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
                 )
             )
         elif backend_config.type == "skvaider":
-            from skvaider.inference.manager import ModelManager
-
-            manager = ModelManager()
             pool.add_backend(
                 skvaider.routers.openai.SkvaiderBackend(
-                    backend_config.url, model_config, manager
+                    backend_config.url, model_config
                 )
             )
     registry.register_value(skvaider.routers.openai.Pool, pool)
