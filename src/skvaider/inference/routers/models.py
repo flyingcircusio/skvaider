@@ -20,7 +20,7 @@ class DownloadRequest(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-@router.post("/load")
+@router.post("/get_running_model_or_load")
 async def load_model(request: Request):
     try:
         body = await request.json()

@@ -183,7 +183,9 @@ class SkvaiderBackend(Backend):
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(
-                f"{self.url}/load", json={"model": model_id}, timeout=120
+                f"{self.url}/get_running_model_or_load",
+                json={"model": model_id},
+                timeout=120,
             )
             if r.status_code == 404:
                 raise HTTPException(
@@ -210,7 +212,9 @@ class SkvaiderBackend(Backend):
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(
-                f"{self.url}/load", json={"model": model_id}, timeout=120
+                f"{self.url}/get_running_model_or_load",
+                json={"model": model_id},
+                timeout=120,
             )
             if r.status_code == 404:
                 raise HTTPException(
@@ -235,7 +239,9 @@ class SkvaiderBackend(Backend):
     async def load_model_with_options(self, model_id: str) -> bool:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(
-                f"{self.url}/load", json={"model": model_id}, timeout=120
+                f"{self.url}/get_running_model_or_load",
+                json={"model": model_id},
+                timeout=120,
             )
             return r.status_code == 200
 

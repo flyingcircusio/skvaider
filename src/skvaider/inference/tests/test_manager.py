@@ -109,7 +109,9 @@ async def test_load_model(clean_models_dir):
         return_value=mock_running_model,
     ) as mock_get_model:
 
-        response = client.post("/load", json={"model": "test-model"})
+        response = client.post(
+            "/get_running_model_or_load", json={"model": "test-model"}
+        )
 
         assert response.status_code == 200
         assert response.json() == {"port": 8080}
