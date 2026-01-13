@@ -69,7 +69,9 @@ def test_integration_real_download_and_inference():
     # 2. Inference
     print("[Integration] 2. Running inference...")
     # We don't request streaming, so we expect a full JSON response
-    response = client.post("/load", json={"model": model_name})
+    response = client.post(
+        "/get_running_model_or_load", json={"model": model_name}
+    )
 
     if response.status_code != 200:
         print(f"Load failed: {response.text}")
