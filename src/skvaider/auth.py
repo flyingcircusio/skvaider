@@ -43,3 +43,5 @@ async def verify_token(
     # We could specify explicit exceptions here but go the safe route and just catch all in case the lib addes one
     except Exception:
         raise HTTPException(401, detail="Bad authentication")
+
+    return db_token

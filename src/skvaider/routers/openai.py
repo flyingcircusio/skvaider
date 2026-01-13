@@ -11,17 +11,30 @@ from typing import Any, AsyncGenerator, Dict, Generic, Optional, TypeVar
 import httpx
 import structlog
 import svcs
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Security
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from skvaider import utils
+from skvaider.auth import verify_token
 
 router = APIRouter()
 
 T = TypeVar("T")
 
 log = structlog.stdlib.get_logger()
+
+
+def check_access(token: dict, model_id: str, model_config):
+    model_settings = model_config.get(model_id)
+    allowed_resource_groups = model_settings.get("resource_groups")
+    if allowed_resource_groups:
+        token_rg = token.get("resource_group")
+        if token_rg not in allowed_resource_groups:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Access to model '{model_id}' is restricted.",
+            )
 
 
 class AIModel(BaseModel):
@@ -232,13 +245,17 @@ class Pool:
     backends: list["Backend"]
     health_check_tasks: list[asyncio.Task]
     queues: dict[str, asyncio.Queue]  # one queue per model
+    model_config: ModelConfig
 
-    def __init__(self):
+    def __init__(self, model_config: ModelConfig = None):
+        if model_config is None:
+            model_config = ModelConfig({})
         self.backends = []
         self.health_check_tasks = []
         self.queues = {}
         self.models = {}
         self.queue_tasks = {}
+        self.model_config = model_config
 
     def add_backend(self, backend):
         self.backends.append(backend)
@@ -435,10 +452,13 @@ class OpenAIProxy:
         self.services = services
         self.pool = self.services.get(Pool)
 
-    async def proxy(self, request, endpoint, allow_stream=True):
+    async def proxy(self, request, endpoint, token: dict, allow_stream=True):
         request_data = await request.json()
         request_data["store"] = False
         request.state.model = request_data["model"]
+
+        check_access(token, request.state.model, self.pool.model_config)
+
         request.state.stream = allow_stream and request_data.get(
             "stream", False
         )
@@ -484,34 +504,57 @@ class ListResponse(BaseModel, Generic[T]):
 @router.get("/v1/models")
 async def list_models(
     services: svcs.fastapi.DepContainer,
+    token: dict = Security(verify_token),
 ) -> ListResponse[AIModel]:
     pool = services.get(Pool)
-    return ListResponse[AIModel](data=pool.models.values())
+    models = []
+    for m in pool.models.values():
+        try:
+            check_access(token, m.id, pool.model_config)
+            models.append(m)
+        except HTTPException:
+            pass
+    return ListResponse[AIModel](data=models)
 
 
 @router.get("/v1/models/{model_id}")
 async def get_model(
-    model_id: str, services: svcs.fastapi.DepContainer
+    model_id: str,
+    services: svcs.fastapi.DepContainer,
+    token: dict = Security(verify_token),
 ) -> AIModel:
     pool = services.get(Pool)
+    check_access(token, model_id, pool.model_config)
     return pool.models[model_id]
 
 
 @router.post("/v1/chat/completions")
 async def chat_completions(
-    r: Request, services: svcs.fastapi.DepContainer
+    r: Request,
+    services: svcs.fastapi.DepContainer,
+    token: dict = Security(verify_token),
 ) -> Any:
     proxy = OpenAIProxy(services)
-    return await proxy.proxy(r, "/v1/chat/completions")
+    return await proxy.proxy(r, "/v1/chat/completions", token=token)
 
 
 @router.post("/v1/completions")
-async def completions(r: Request, services: svcs.fastapi.DepContainer) -> Any:
+async def completions(
+    r: Request,
+    services: svcs.fastapi.DepContainer,
+    token: dict = Security(verify_token),
+) -> Any:
     proxy = OpenAIProxy(services)
-    return await proxy.proxy(r, "/v1/completions")
+    return await proxy.proxy(r, "/v1/completions", token=token)
 
 
 @router.post("/v1/embeddings")
-async def embeddings(r: Request, services: svcs.fastapi.DepContainer) -> Any:
+async def embeddings(
+    r: Request,
+    services: svcs.fastapi.DepContainer,
+    token: dict = Security(verify_token),
+) -> Any:
     proxy = OpenAIProxy(services)
-    return await proxy.proxy(r, "/v1/embeddings", allow_stream=False)
+    return await proxy.proxy(
+        r, "/v1/embeddings", token=token, allow_stream=False
+    )
