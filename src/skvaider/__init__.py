@@ -67,7 +67,7 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
 
     model_config = skvaider.routers.openai.ModelConfig(config.openai.models)
 
-    pool = skvaider.routers.openai.Pool()
+    pool = skvaider.routers.openai.Pool(model_config)
     for backend_config in config.backend:
         if backend_config.type != "openai":
             continue
