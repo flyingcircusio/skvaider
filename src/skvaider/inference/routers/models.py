@@ -16,7 +16,7 @@ log = structlog.get_logger()
 
 class DownloadRequest(BaseModel):
     url: str
-    filename: str
+    model_name: str
     metadata: dict[str, Any] | None = None
 
 
@@ -56,24 +56,43 @@ async def download_model(request: DownloadRequest):
             status_code=500, detail="Could not create models directory"
         )
 
-    file_path = models_dir / request.filename
+    filename = f"{request.model_name}.gguf"
+    file_path = models_dir / filename
 
     # Basic security check to prevent directory traversal
     if not file_path.resolve().is_relative_to(models_dir.resolve()):
-        raise HTTPException(status_code=400, detail="Invalid filename")
+        raise HTTPException(status_code=400, detail="Invalid model name")
 
-    if request.metadata:
-        metadata_path = models_dir / (request.filename + ".json")
-        try:
-            async with await anyio.open_file(metadata_path, "w") as f:
-                await f.write(json.dumps(request.metadata))
-        except OSError as e:
-            log.error("Failed to write metadata", error=str(e))
-            # We continue even if metadata fails? Or fail?
-            # Let's fail for now as it seems important.
-            raise HTTPException(
-                status_code=500, detail="Failed to write metadata"
-            )
+    # Enforce max one layer of hierarchy
+    # We strip the models_dir prefix to check the relative path depth
+    rel_path = file_path.resolve().relative_to(models_dir.resolve())
+    # .gguf files are flat or one dir deep. rel_path parts include filename.
+    # "model.gguf" -> 1 part. "org/model.gguf" -> 2 parts.
+    if len(rel_path.parts) > 2:
+        raise HTTPException(status_code=400, detail="Model hierarchy too deep")
+
+    # Ensure parent directory exists (for nested models)
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log.error("Failed to create model directory", error=str(e))
+        raise HTTPException(
+            status_code=500, detail="Could not create model directory"
+        )
+
+    metadata = request.metadata or {}
+    metadata["name"] = request.model_name
+    metadata["filename"] = filename
+
+    metadata_path = models_dir / (request.model_name + ".json")
+    try:
+        async with await anyio.open_file(metadata_path, "w") as f:
+            await f.write(json.dumps(metadata))
+    except OSError as e:
+        log.error("Failed to write metadata", error=str(e))
+        # We continue even if metadata fails? Or fail?
+        # Let's fail for now as it seems important.
+        raise HTTPException(status_code=500, detail="Failed to write metadata")
 
     try:
         # Disable timeout for large downloads

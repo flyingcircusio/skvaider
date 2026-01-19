@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import json
 import re
 import time
@@ -43,7 +44,13 @@ class ModelManager:
         if not self.models_dir.exists():
             return models
 
-        for meta_file in self.models_dir.glob("*.json"):
+        # Allow max one layer of hierarchy
+        files = itertools.chain(
+            self.models_dir.glob("*.json"),
+            self.models_dir.glob("*/*.json"),
+        )
+
+        for meta_file in files:
             try:
                 async with await anyio.open_file(meta_file, "r") as f:
                     content = await f.read()
@@ -61,7 +68,13 @@ class ModelManager:
         if not self.models_dir.exists():
             return None
 
-        for meta_file in self.models_dir.glob("*.json"):
+        # Allow max one layer of hierarchy
+        files = itertools.chain(
+            self.models_dir.glob("*.json"),
+            self.models_dir.glob("*/*.json"),
+        )
+
+        for meta_file in files:
             try:
                 async with await anyio.open_file(meta_file, "r") as f:
                     content = await f.read()
@@ -71,7 +84,7 @@ class ModelManager:
                 if data.get("name") == model_name:
                     # Found it. Now we need the filename.
                     # The metadata file is <filename>.json, so filename is stem
-                    filename = meta_file.stem
+                    filename = data.get("filename", meta_file.stem)
                     return ModelConfig(
                         name=model_name,
                         filename=filename,
