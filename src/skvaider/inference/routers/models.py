@@ -47,7 +47,7 @@ async def load_model(request: Request):
 
 @router.post("/download")
 async def download_model(request: DownloadRequest):
-    models_dir = Path("models")
+    models_dir = manager.models_dir
     try:
         models_dir.mkdir(exist_ok=True)
     except OSError as e:
