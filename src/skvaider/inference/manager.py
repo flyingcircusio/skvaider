@@ -18,7 +18,7 @@ class ModelConfig(BaseModel):
     name: str
     filename: str
     cmd_args: list[str] = []
-    context_size: int = 2048
+    context_size: Optional[int] = None
 
 
 class RunningModel:
@@ -82,14 +82,11 @@ class ModelManager:
                 # Check if this metadata corresponds to the requested model name
                 # We assume the metadata has a "name" field which is the public ID
                 if data.get("name") == model_name:
-                    # Found it. Now we need the filename.
-                    # The metadata file is <filename>.json, so filename is stem
-                    filename = data.get("filename", meta_file.stem)
                     return ModelConfig(
                         name=model_name,
-                        filename=filename,
+                        filename=data.get("filename", meta_file.stem),
                         cmd_args=data.get("cmd_args", []),
-                        context_size=data.get("context_size", 2048),
+                        context_size=data.get("context_size", None),
                     )
             except Exception as e:
                 log.warn(
@@ -122,9 +119,10 @@ class ModelManager:
                     str(self.models_dir / config.filename),
                     "--port",
                     str(0),  # 0 means to select a random free port
-                    "--ctx-size",
-                    str(config.context_size),
-                ] + config.cmd_args
+                ]
+                if config.context_size:
+                    cmd += ["--ctx-size", str(config.context_size)]
+                cmd += config.cmd_args
 
                 process = await asyncio.create_subprocess_exec(
                     *cmd,
