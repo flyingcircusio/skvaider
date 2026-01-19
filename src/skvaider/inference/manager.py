@@ -37,6 +37,7 @@ class RunningModel:
 
     process: asyncio.subprocess.Process | None = None
     port: int | None = None
+    _monitor_task: asyncio.Task | None = None
 
     def __init__(self, config: ModelConfig, models_dir: Path):
         self.config = config
@@ -63,7 +64,9 @@ class RunningModel:
             )
 
             port_future = asyncio.get_running_loop().create_future()
-            asyncio.create_task(self._monitor_output(port_future))
+            self._monitor_task = asyncio.create_task(
+                self._monitor_output(port_future)
+            )
 
             self.port = await asyncio.wait_for(port_future, timeout=30)
             log.info("Model started", model=self.config.name, port=self.port)
@@ -74,12 +77,19 @@ class RunningModel:
                 "Failed to start model", model=self.config.name, error=str(e)
             )
             if self.process:
-                await self._terminate_process()
+                await self.terminate()
             raise e
 
-    async def _terminate_process(self):
+    async def terminate(self):
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model process", model=self.config.name)
+        if self._monitor_task:
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._monitor_task = None
         try:
             self.process.terminate()
         except ProcessLookupError:
@@ -141,19 +151,6 @@ class RunningModel:
                     pass
                 await asyncio.sleep(0.5)
         raise RuntimeError(f"Model failed to start on port {self.port}")
-
-    async def terminate(self):
-        """Terminate this model's process."""
-        log.info("Unloading model", model=self.config.name)
-        try:
-            self.process.terminate()
-            await self.process.wait()
-        except Exception as e:
-            # XXX well ... this likely needs more recovery code. Is the process
-            # still running? are we hogging/leaking GPU memory now?
-            log.error(
-                "Error stopping model", model=self.config.name, error=str(e)
-            )
 
 
 class ModelManager:
