@@ -15,7 +15,7 @@ from pydantic import BaseModel
 log = structlog.get_logger()
 
 
-def with_lock(func: Callable) -> Callable:
+def locked(func: Callable) -> Callable:
     """Decorator that acquires self._lock before executing an async method."""
 
     @functools.wraps(func)
@@ -34,11 +34,13 @@ class ModelConfig(BaseModel):
 
 
 class RunningModel:
+
+    process: asyncio.subprocess.Process | None = None
+    port: int | None = None
+
     def __init__(self, config: ModelConfig, models_dir: Path):
         self.config = config
         self.models_dir = models_dir
-        self.process: Optional[asyncio.subprocess.Process] = None
-        self.port: Optional[int] = None
 
     async def start(self):
         """Start the model process."""
@@ -218,7 +220,7 @@ class ModelManager:
                 continue
         return None
 
-    @with_lock
+    @locked
     async def get_or_start_model(
         self, model_name: str
     ) -> Optional[RunningModel]:
@@ -234,7 +236,7 @@ class ModelManager:
         self.running_models[model_name] = model
         return model
 
-    @with_lock
+    @locked
     async def unload_model(self, model_name: str):
         if model_name in self.running_models:
             model = self.running_models[model_name]
