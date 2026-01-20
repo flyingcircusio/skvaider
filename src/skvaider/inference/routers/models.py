@@ -97,6 +97,9 @@ async def download_model(request: DownloadRequest):
 
     try:
         # Disable timeout for large downloads
+        # XXX that shouldn't be necessary. Timeouts should only
+        # happen if nothing is progressing. we could increase this
+        # but should not have it unlimited.
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
                 "GET", request.url, follow_redirects=True

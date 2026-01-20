@@ -16,6 +16,7 @@ client = TestClient(app)
 
 @pytest.fixture
 def clean_models_dir():
+    # XXX this is bad form
     if os.path.exists("models"):
         shutil.rmtree("models")
     os.makedirs("models", exist_ok=True)
