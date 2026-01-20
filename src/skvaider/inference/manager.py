@@ -52,6 +52,7 @@ class RunningModel:
         # fmt: off
         cmd = [
             "llama-server",
+            "--no-webui",
             "--model", str(self.models_dir / self.config.filename),
             "--host", self._host,
             "--port", "0",  # let the kernel select a free port
