@@ -94,6 +94,7 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
                 "name": model_name_embed,
                 "context_size": 2048,
                 "cmd_args": ["--embedding", "--pooling", "mean"],
+                "filename": filename_embed,
             },
             f,
         )
