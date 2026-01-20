@@ -83,6 +83,7 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
                 "name": model_name,
                 "context_size": 2048,
                 "cmd_args": [],
+                "filename": filename,
             },
             f,
         )
