@@ -18,6 +18,7 @@ result
 # test generated files
 .coverage*
 htmlcov
+.models
 
 # Devenv
 .devenv*

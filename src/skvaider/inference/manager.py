@@ -3,7 +3,6 @@ import functools
 import itertools
 import json
 import re
-import time
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
@@ -36,121 +35,121 @@ class ModelConfig(BaseModel):
 class RunningModel:
 
     process: asyncio.subprocess.Process | None = None
-    port: int | None = None
-    _monitor_task: asyncio.Task | None = None
+    endpoint: str | None = None
+    _port_found: asyncio.Event
+    _tasks: list[asyncio.Task]
+    _host = "127.0.0.1"
 
     def __init__(self, config: ModelConfig, models_dir: Path):
         self.config = config
         self.models_dir = models_dir
+        self._port_found = asyncio.Event()
+        self._tasks = []
 
     async def start(self):
         """Start the model process."""
         log.info("Starting model", model=self.config.name)
+        # fmt: off
+        cmd = [
+            "llama-server",
+            "--model", str(self.models_dir / self.config.filename),
+            "--host", self._host,
+            "--port", "0",  # let the kernel select a free port
+        ]
+        cmd += [
+            "--ctx-size", str(self.config.context_size),
+        ]
+        cmd += self.config.cmd_args
+        # fmt: on
+        log.debug("cli", argv=" ".join(cmd))
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
-            # fmt: off
-            cmd = [
-                "llama-server",
-                "--model", str(self.models_dir / self.config.filename),
-                "--port", str(0),  # 0 means to select a random free port
-            ]
-            if self.config.context_size:
-                cmd += ["--ctx-size", str(config.context_size)]
-            cmd += self.config.cmd_args
-            # fmt: on
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            port_future = asyncio.get_running_loop().create_future()
-            self._monitor_task = asyncio.create_task(
-                self._monitor_output(port_future)
-            )
-
-            self.port = await asyncio.wait_for(port_future, timeout=30)
-            log.info("Model started", model=self.config.name, port=self.port)
-
+            self._monitor_output()
             await self._wait_for_startup()
-        except Exception as e:
-            log.error(
-                "Failed to start model", model=self.config.name, error=str(e)
-            )
-            if self.process:
-                await self.terminate()
-            raise e
+        except Exception:
+            await self.terminate()
+            raise
+        log.info(
+            "Model started", model=self.config.name, endpoint=self.endpoint
+        )
 
     async def terminate(self):
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model process", model=self.config.name)
-        if self._monitor_task:
-            self._monitor_task.cancel()
+        for task in self._tasks:
+            task.cancel()
             try:
-                await self._monitor_task
+                await task
             except asyncio.CancelledError:
                 pass
-            self._monitor_task = None
-        try:
-            self.process.terminate()
-        except ProcessLookupError:
-            return
-        try:
-            await asyncio.wait_for(self.process.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            log.info(
-                "Killing unresponsive model process", model=self.config.name
-            )
-            try:
-                self.process.kill()
-            except ProcessLookupError:
-                pass
+        self._tasks.clear()
 
-    async def _monitor_output(self, port_future: asyncio.Future):
+        if self.process:
+            try:
+                self.process.terminate()
+            except ProcessLookupError:
+                return
+
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                log.info(
+                    "Killing unresponsive model process",
+                    model=self.config.name,
+                )
+                try:
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
+
+    def _monitor_output(self):
         async def read_stream(stream, is_stderr):
+            stream_name = "stderr" if is_stderr else "stdout"
             while True:
                 line = await stream.readline()
                 if not line:
                     break
                 line_str = line.decode("utf-8", errors="replace").strip()
-                if line_str:
-                    log.debug(
-                        "llama-server",
-                        model=self.config.name,
-                        stream="stderr" if is_stderr else "stdout",
-                        line=line_str,
+                if not line_str:
+                    continue
+                log.debug(
+                    "llama-server",
+                    model=self.config.name,
+                    stream=stream_name,
+                    line=line_str,
+                )
+                if is_stderr and self.endpoint is None:
+                    match = re.search(
+                        r"main: HTTP server is listening, hostname: .*, port: (\d+)",
+                        line_str,
                     )
-                    if is_stderr and not port_future.done():
-                        match = re.search(
-                            r"main: HTTP server is listening, hostname: .*, port: (\d+)",
-                            line_str,
-                        )
-                        if match:
-                            port_future.set_result(int(match.group(1)))
+                    if match:
+                        port = int(match.group(1))
+                        self.endpoint = f"http://{self._host}:{port}"
+                        self._port_found.set()
 
-        await asyncio.gather(
-            read_stream(self.process.stderr, True),
-            read_stream(self.process.stdout, False),
+        self._tasks.append(
+            asyncio.create_task(read_stream(self.process.stderr, True))
+        )
+        self._tasks.append(
+            asyncio.create_task(read_stream(self.process.stdout, False))
         )
 
-        if not port_future.done():
-            port_future.set_exception(
-                RuntimeError("Process exited before port was found")
-            )
-
-    async def _wait_for_startup(self, timeout: int = 30):
-        start = time.time()
+    async def _wait_for_startup(self):
+        await self._port_found.wait()
         async with httpx.AsyncClient() as client:
-            while time.time() - start < timeout:
+            while True:
                 try:
-                    resp = await client.get(
-                        f"http://localhost:{self.port}/health"
-                    )
+                    resp = await client.get(f"{self.endpoint}/health")
                     if resp.status_code == 200:
                         return
                 except Exception:
                     pass
                 await asyncio.sleep(0.5)
-        raise RuntimeError(f"Model failed to start on port {self.port}")
 
 
 class ModelManager:
@@ -185,16 +184,7 @@ class ModelManager:
         # Scan models directory for matching metadata
         # This is inefficient for many models, but fine for now.
         # We assume metadata files are named <filename>.json
-        if not self.models_dir.exists():
-            return None
-
-        # Allow max one layer of hierarchy
-        files = itertools.chain(
-            self.models_dir.glob("*.json"),
-            self.models_dir.glob("*/*.json"),
-        )
-
-        for meta_file in files:
+        for meta_file in self.models_dir.glob("*/*.json"):
             try:
                 async with await anyio.open_file(meta_file, "r") as f:
                     content = await f.read()
@@ -204,9 +194,9 @@ class ModelManager:
                 if data.get("name") == model_name:
                     return ModelConfig(
                         name=model_name,
-                        filename=data.get("filename", meta_file.stem),
+                        filename=data["filename"],
                         cmd_args=data.get("cmd_args", []),
-                        context_size=data.get("context_size", None),
+                        context_size=data["context_size"],
                     )
             except Exception as e:
                 log.warn(
@@ -215,11 +205,11 @@ class ModelManager:
                     error=str(e),
                 )
                 continue
-        return None
+        raise KeyError(model_name)
 
     @locked
     async def get_or_start_model(
-        self, model_name: str
+        self, model_name: str, timeout: int = 60
     ) -> Optional[RunningModel]:
         if model_name in self.running_models:
             return self.running_models[model_name]
@@ -229,7 +219,14 @@ class ModelManager:
             return None
 
         model = RunningModel(config, self.models_dir)
-        await model.start()
+        try:
+            await asyncio.wait_for(model.start(), timeout=timeout)
+        except (
+            asyncio.TimeoutError
+        ):  # XXX the timeout might need to be model specific?
+            log.error("Timeout starting model", model=model_name)
+            await model.terminate()
+            raise
         self.running_models[model_name] = model
         return model
 

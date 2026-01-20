@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,13 +16,43 @@ client = TestClient(app)
 
 
 @pytest.fixture
-def clean_models_dir():
-    if os.path.exists("models"):
-        shutil.rmtree("models")
-    os.makedirs("models", exist_ok=True)
-    yield
-    if os.path.exists("models"):
-        shutil.rmtree("models")
+def model_config_path(tmp_path):
+    p = tmp_path / "models"
+    p.mkdir()
+    return p
+
+
+@pytest.fixture
+def models_cache():
+    cache_dir = Path(".models")
+    if not cache_dir.exists():
+        cache_dir.mkdir()
+    return cache_dir
+
+
+@pytest.fixture
+def gemma(models_cache, model_config_path):
+    filename = "gemma-3-270m-it-UD-IQ2_XXS.gguf"
+    gemma_url = f"https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/{filename}?download=true"
+    target = (models_cache / filename).absolute()
+
+    if not target.exists():
+        with target.open("wb") as f:
+            with httpx.stream("GET", gemma_url, follow_redirects=True) as r:
+                for data in r.iter_bytes():
+                    f.write(data)
+
+    config_file = model_config_path / "gemma.json"
+    with config_file.open("w", encoding="utf-8") as f:
+        config = {
+            "name": "gemma",
+            "filename": str(target),
+            "cmd_args": [],
+            "context_size": 4096,
+        }
+        json.dump(config, f)
+
+    return config_file, target
 
 
 @pytest.mark.asyncio
@@ -42,57 +73,67 @@ async def test_manager_get_config(clean_models_dir):
 
 
 @pytest.mark.asyncio
-async def test_manager_start_model(clean_models_dir):
-    manager = ModelManager()
+async def test_manager_start_model(gemma, model_config_path):
+    manager = ModelManager(model_config_path)
 
-    # Create a dummy metadata file
-    meta = {
-        "name": "test-model",
-        "cmd_args": [],
-    }
-    with open("models/test_file.json", "w") as f:
-        json.dump(meta, f)
+    with pytest.raises(KeyError):
+        await manager.get_or_start_model("unknown-model")
 
-    # Mock subprocess and httpx
-    mock_proc = AsyncMock()
-    mock_proc.kill = MagicMock()
+    model = await manager.get_or_start_model("gemma")
+    assert model.config.name == "gemma"
+    assert model.endpoint
 
-    # Mock stderr to return the port line
-    mock_proc.stderr.readline.side_effect = [
-        b"some log line\n",
-        b"main: HTTP server is listening, hostname: 127.0.0.1, port: 62550, http threads: 9\n",
-        b"",
-    ]
-    # Mock stdout to be empty
-    mock_proc.stdout.readline.return_value = b""
+    async with httpx.AsyncClient() as client:
+        # Check health
+        r = await client.get(f"{model.endpoint}/health")
+        r.raise_for_status()
+        assert r.json() == {"status": "ok"}
 
-    with (
-        patch(
-            "asyncio.create_subprocess_exec", return_value=mock_proc
-        ) as mock_exec,
-        patch(
-            "skvaider.inference.manager.ModelManager._wait_for_startup",
-            return_value=None,
-        ),
-    ):
+        # Get model info via OpenAI-compatible endpoint
+        r = await client.get(f"{model.endpoint}/v1/models")
+        r.raise_for_status()
+        models = r.json()
+        del models["data"][0]["created"]
+        assert models == {
+            "data": [
+                {
+                    "id": str(gemma[1]),
+                    "meta": {
+                        "n_ctx_train": 32768,
+                        "n_embd": 640,
+                        "n_params": 268098176,
+                        "n_vocab": 262144,
+                        "size": 173576704,
+                        "vocab_type": 1,
+                    },
+                    "object": "model",
+                    "owned_by": "llamacpp",
+                },
+            ],
+            "object": "list",
+        }
 
-        model = await manager.get_or_start_model("test-model")
+        # Run a simple completion via OpenAI-compatible chat API
+        r = await client.post(
+            f"{model.endpoint}/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "Say hello world"}],
+                "max_tokens": 1000,
+            },
+        )
+        r.raise_for_status()
+        chat = r.json()
+        assert "choices" in chat
+        assert len(chat["choices"]) > 0
+        assert "message" in chat["choices"][0]
+        content = chat["choices"][0]["message"]["content"]
+        assert len(content) > 0  # Got some response
 
-        assert model is not None
-        assert model.config.name == "test-model"
-        assert model.port == 62550
-
-        mock_exec.assert_called_once()
-        args = mock_exec.call_args[0]
-        assert args[0] == "llama-server"
-        assert "--model" in args
-        assert "models/test_file" in args
-        assert "--port" in args
-        assert args[args.index("--port") + 1] == "0"
+    await manager.unload_model("gemma")
 
 
 @pytest.mark.asyncio
-async def test_load_model(clean_models_dir):
+async def test_load_model(gemma):
     # Setup metadata
     meta = {
         "name": "test-model",
@@ -125,11 +166,11 @@ async def test_unload_model_manager(clean_models_dir):
 
     # Mock a running model
     config = ModelConfig(name="test-model", filename="test_file")
-    mock_proc = AsyncMock()
+    running_model = RunningModel(config, clean_models_dir)
+    running_model.process = mock_proc = AsyncMock()
     mock_proc.terminate = MagicMock()
     mock_proc.wait = AsyncMock()
 
-    running_model = RunningModel(config, mock_proc, 8080)
     manager.running_models["test-model"] = running_model
 
     await manager.unload_model("test-model")
