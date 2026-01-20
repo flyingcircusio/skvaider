@@ -6,6 +6,7 @@ import anyio
 import httpx
 import structlog
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from skvaider.inference.state import manager
@@ -137,3 +138,51 @@ async def list_models():
 @router.get("/running_models")
 async def list_running_models():
     return {"models": list(manager.running_models.keys())}
+
+
+@router.api_route(
+    "/model/{model_name}/proxy/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE"],
+)
+async def proxy_request(model_name: str, path: str, request: Request):
+    model = await manager.get_or_start_model(model_name)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    url = f"http://localhost:{model.port}/{path}"
+    if request.query_params:
+        url += f"?{request.query_params}"
+
+    client = httpx.AsyncClient()
+
+    # Exclude headers that might cause issues
+    headers = dict(request.headers)
+    headers.pop("host", None)
+    headers.pop("content-length", None)
+
+    req = client.build_request(
+        request.method,
+        url,
+        headers=headers,
+        content=await request.body(),
+    )
+
+    try:
+        rp = await client.send(req, stream=True)
+    except Exception as e:
+        await client.aclose()
+        raise HTTPException(status_code=500, detail=f"Proxy error: {e}")
+
+    async def streaming_content():
+        try:
+            async for chunk in rp.aiter_raw():
+                yield chunk
+        finally:
+            await rp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        streaming_content(),
+        status_code=rp.status_code,
+        headers=dict(rp.headers),
+    )
