@@ -211,7 +211,9 @@ class ModelManager:
         async with httpx.AsyncClient() as client:
             while time.time() - start < timeout:
                 try:
-                    resp = await client.get(f"http://localhost:{port}/health")
+                    resp = await client.get(
+                        f"http://localhost:{port}/manager/health"
+                    )
                     if resp.status_code == 200:
                         return
                 except Exception:

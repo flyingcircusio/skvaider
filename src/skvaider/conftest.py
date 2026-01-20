@@ -125,10 +125,7 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
     import sys
     import time
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("", 0))
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        port = s.getsockname()[1]
+    port = 12233
 
     # Start inference server
     proc = subprocess.Popen(
@@ -149,7 +146,7 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
             )
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get(f"{url}/health")
+                resp = await client.get(f"{url}/manager/health")
                 if resp.status_code == 200:
                     break
         except Exception:
