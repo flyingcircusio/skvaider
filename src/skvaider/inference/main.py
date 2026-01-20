@@ -15,7 +15,7 @@ log = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Inference host starting...")
+    log.info("Inference manager starting...")
     yield
     log.info("Shutting down...")
 
