@@ -9,22 +9,12 @@ secret_salt = ""
 principal = "kyle00"
 
 [[backend]]
-type = "ollama"
-url = "http://127.0.0.1:11435"
-
-[[backend]]
-type = "ollama"
-url = "http://127.0.0.1:11436"
-
-[[backend]]
 type = "skvaider"
 url = "http://127.0.0.1:12233"
 
-[openai.models."gpt-oss:20b"]
-num_ctx = 65536
-
-[openai.models."gpt-oss:120b"]
-num_ctx = 65536
+[[backend]]
+type = "skvaider"
+url = "http://127.0.0.1:12234"
 
 [logging]
 log_level = "DEBUG"

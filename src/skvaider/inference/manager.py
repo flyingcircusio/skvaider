@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import hashlib
 import itertools
 import json
 import re
@@ -9,7 +10,9 @@ from typing import Callable, Dict, Optional
 import anyio
 import httpx
 import structlog
-from pydantic import BaseModel
+
+import skvaider.inference.config
+from skvaider.utils import slugify
 
 log = structlog.get_logger()
 
@@ -25,47 +28,108 @@ def locked(func: Callable) -> Callable:
     return wrapper
 
 
-class ModelConfig(BaseModel):
-    name: str
-    filename: str
-    cmd_args: list[str] = []
-    context_size: Optional[int] = None
-
-
-class RunningModel:
+class Model:
     process: asyncio.subprocess.Process | None = None
     endpoint: str | None = None
+    config: "skvaider.inference.config.Model"
+    datadir: Path
 
     _shutdown = False
     _port_found: asyncio.Event
     _tasks: list[asyncio.Task]
     _host = "127.0.0.1"
 
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config):
         self.config = config
+
         self._port_found = asyncio.Event()
         self._tasks = []
 
+    @property
+    def slug(self):
+        slug = slugify(self.config.id, 64)
+        # The hash as suffix to assist auto-completion in shells
+        slug += "-" + self.config.hash[:8]
+        return slug
+
+    @property
+    def model_file(self):
+        return self.datadir / "model.gguf"
+
+    @property
+    def integrity_marker_file(self):
+        return self.datadir / "integrity.ok"
+
+    async def download(self):
+        assert self.datadir
+        if self.integrity_marker_file.exists():
+            log.info(
+                f"{self.slug}: found valid cached data, no download needed."
+            )
+            return
+
+        if self.model_file.exists():
+            self.model_file.unlink()
+
+        log.info(f"Downloading {self.config.url} ...")
+        got_hash_ = hashlib.sha256()
+        async with httpx.AsyncClient(timeout=30) as client:
+            async with client.stream(
+                "GET", self.config.url, follow_redirects=True
+            ) as response:
+                download_size = int(response.headers["content-length"])
+                download_status = 0
+                response.raise_for_status()
+
+                async def log_progress():
+                    while True:
+                        progress = int((download_status / download_size) * 100)
+                        log.info(f"{self.slug}: {progress}%")
+                        await asyncio.sleep(1)
+
+                status_task = asyncio.create_task(log_progress())
+                try:
+                    async with await anyio.open_file(
+                        self.model_file, "wb"
+                    ) as f:
+                        async for chunk in response.aiter_bytes():
+                            download_status += len(chunk)
+                            got_hash_.update(chunk)
+                            await f.write(chunk)
+                finally:
+                    status_task.cancel()
+
+        got_hash = got_hash_.hexdigest()
+
+        if self.config.hash != got_hash:
+            log.error(
+                f"Hash error downloading {self.config.id}: expected {self.config.hash}, got {got_hash}."
+            )
+            raise ValueError(got_hash)
+
+        self.integrity_marker_file.touch()
+        log.info(f"{self.slug}: success")
+
     async def start(self):
         """Start the model process."""
-        log.info("Starting model", model=self.config.name)
+        log.info("Starting model", model=self.config.id)
         # fmt: off
         cmd = [
-            "llama-server",
-            "--no-webui",
-            "-a", self.config.name,
-            "--model", str(self.config.filename),
-            "--jinja", # XXX per model?
-            "--host", self._host,
-            "--port", "0",  # let the kernel select a free port
-            # Monitoring
-            "--metrics",
-            "--slots",
-        ]
+                "llama-server",
+                "--no-webui",
+                "-a", self.config.id,
+                "--model", str(self.model_file),
+                "--jinja", # XXX per model?
+                "--host", self._host,
+                "--port", "0",  # let the kernel select a free port
+                # Monitoring
+                "--metrics",
+                "--slots",
+            ]
         if self.config.context_size:
             cmd += [
-                "--ctx-size", str(self.config.context_size),
-            ]
+                    "--ctx-size", str(self.config.context_size),
+                ]
         cmd += self.config.cmd_args
         # fmt: on
         log.debug("cli", argv=" ".join(cmd))
@@ -85,9 +149,7 @@ class RunningModel:
         except Exception:
             await self.terminate()
             raise
-        log.info(
-            "Model started", model=self.config.name, endpoint=self.endpoint
-        )
+        log.info("Model started", model=self.config.id, endpoint=self.endpoint)
 
     def _create_task(self, awaitable):
         t = asyncio.create_task(awaitable)
@@ -96,7 +158,7 @@ class RunningModel:
 
     async def terminate(self):
         """Terminate the process, escalating to kill if necessary."""
-        log.info("Terminating model process", model=self.config.name)
+        log.info("Terminating model process", model=self.config.id)
         self._shutdown = True
         for task in self._tasks:
             task.cancel()
@@ -117,7 +179,7 @@ class RunningModel:
             except asyncio.TimeoutError:
                 log.info(
                     "Killing unresponsive model process",
-                    model=self.config.name,
+                    model=self.config.id,
                 )
                 try:
                     self.process.kill()
@@ -132,7 +194,7 @@ class RunningModel:
             return
         log.error(
             "Process exited unexpectedly",
-            model=self.config.name,
+            model=self.config.id,
             returncode=self.process.returncode,
         )
         # Clean up
@@ -149,7 +211,7 @@ class RunningModel:
                 continue
             log.debug(
                 "llama-server",
-                model=self.config.name,
+                model=self.config.id,
                 stream=stream_name,
                 line=line_str,
             )
@@ -176,74 +238,31 @@ class RunningModel:
                 await asyncio.sleep(0.5)
 
 
-class ModelManager:
-    def __init__(self, models_dir: Path = Path("models")):
+class Manager:
+    models_dir: Path
+    models: Dict[str, Model]
+
+    def __init__(self, models_dir):
         self.models_dir = models_dir
-        self.running_models: Dict[str, RunningModel] = {}
+        self.models = {}
         self._lock = asyncio.Lock()
 
+    def add_model(self, model):
+        assert model.config.id not in self.models
+        self.models[model.config.id] = model
+        model.datadir = self.models_dir / model.slug
+        model.datadir.mkdir(exist_ok=True)
+
     async def list_models(self) -> list[str]:
-        models = []
-        if not self.models_dir.exists():
-            return models
-
-        # Allow max one layer of hierarchy
-        files = itertools.chain(
-            self.models_dir.glob("*.json"),
-            self.models_dir.glob("*/*.json"),
-        )
-
-        for meta_file in files:
-            try:
-                async with await anyio.open_file(meta_file, "r") as f:
-                    content = await f.read()
-                data = json.loads(content)
-                if name := data.get("name"):
-                    models.append(name)
-            except Exception:
-                pass
-        return models
-
-    async def get_model_config(self, model_name: str) -> Optional[ModelConfig]:
-        # Scan models directory for matching metadata
-        # This is inefficient for many models, but fine for now.
-        # We assume metadata files are named <filename>.json
-        for meta_file in self.models_dir.glob("*/*.json"):
-            try:
-                async with await anyio.open_file(meta_file, "r") as f:
-                    content = await f.read()
-                data = json.loads(content)
-                # Check if this metadata corresponds to the requested model name
-                # We assume the metadata has a "name" field which is the public ID
-                if data.get("name") == model_name:
-                    return ModelConfig(
-                        name=model_name,
-                        filename=data["filename"],
-                        cmd_args=data.get("cmd_args", []),
-                        context_size=data["context_size"],
-                    )
-            except Exception as e:
-                log.warn(
-                    "Failed to read metadata file",
-                    file=str(meta_file),
-                    error=str(e),
-                )
-                raise
-        raise KeyError(model_name)
+        return list(self.models.keys())
 
     @locked
     async def get_or_start_model(
-        self, model_name: str, timeout: int = 60
-    ) -> Optional[RunningModel]:
-        if model_name in self.running_models:
-            model = self.running_models[model_name]
-            if not model._shutdown:
-                return model
-            else:
-                self.running_models.pop(model_name)
-
-        config = await self.get_model_config(model_name)
-        model = RunningModel(config)
+        self,
+        model_name: str,
+        timeout: int = 60,
+    ) -> Optional[Model]:
+        model = self.models[model_name]
         try:
             await asyncio.wait_for(model.start(), timeout=timeout)
         except (
@@ -252,18 +271,15 @@ class ModelManager:
             log.error("Timeout starting model", model=model_name)
             await model.terminate()
             raise
-        self.running_models[model_name] = model
         return model
 
     @locked
     async def unload_model(self, model_name: str):
-        if model_name in self.running_models:
-            model = self.running_models[model_name]
-            await model.terminate()
-            del self.running_models[model_name]
+        model = self.models[model_name]
+        await model.terminate()
 
     @locked
     async def shutdown(self):
-        for model in self.running_models.values():
+        for model in self.models.values():
             await model.terminate()
-        self.running_models.clear()
+        self.models.clear()

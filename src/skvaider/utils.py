@@ -1,4 +1,6 @@
 import asyncio
+import re
+import unicodedata
 
 import structlog.stdlib
 
@@ -18,3 +20,52 @@ def create_task(aw):
     t = asyncio.create_task(aw)
     t.add_done_callback(log_task_exception)
     return t
+
+
+def slugify(text: str, max_length: int = 255) -> str:
+    """
+    Convert text to a slug safe for Linux, Windows, and URL path components.
+
+    - Normalizes unicode and converts to ASCII
+    - Lowercases everything
+    - Replaces spaces/separators with hyphens
+    - Removes unsafe characters
+    - Avoids Windows reserved names
+
+    """
+    # Normalize unicode to ASCII equivalents (é -> e, etc.)
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    # Lowercase
+    text = text.lower()
+
+    # Replace common separators with hyphens
+    text = re.sub(r"[\s:_./\\]+", "-", text)
+
+    # Remove anything that isn't alphanumeric or hyphen
+    text = re.sub(r"[^a-z0-9-]", "", text)
+
+    # Collapse multiple hyphens
+    text = re.sub(r"-+", "-", text)
+
+    text = text.strip("-")
+
+    input_len = len(text)
+    if (overflow := input_len - max_length) > 0:
+        # This is tricky: the rounding works out exactly so
+        # that on uneven numbers we'll remove (one more) character on the middle
+        # or left and on even numbers one more to the right
+        # fmt: off
+        text = (text[:int(input_len/2-overflow/2)] +
+                text[int(input_len/2+overflow/2):])
+        # fmt: on
+
+    # Collapse multiple hyphens again
+    text = re.sub(r"-+", "-", text)
+
+    # Handle empty result
+    if not text:
+        text = "unnamed"
+
+    return text

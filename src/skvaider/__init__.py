@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
         config_data = tomllib.load(f)
     config = Config.model_validate(config_data)
 
-    dictConfig(logging_config(config))
+    dictConfig(logging_config(config.logging))
 
     cr = structlog.dev.ConsoleRenderer.get_active()
     cr.exception_formatter = structlog.dev.plain_traceback
@@ -77,13 +77,8 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
                     backend_config.url, model_config
                 )
             )
-        elif backend_config.type == "ollama":
-            url = backend_config.url
-            if not url.startswith("http"):
-                url = f"http://{url}"
-            pool.add_backend(
-                skvaider.proxy.backends.OllamaBackend(url, model_config)
-            )
+        else:
+            raise TypeError(backend_config.type)
     registry.register_value(skvaider.proxy.pool.Pool, pool)
 
     aramaki = AramakiManager(

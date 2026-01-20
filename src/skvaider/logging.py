@@ -7,7 +7,7 @@ import structlog
 from fastapi import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from skvaider import Config
+from skvaider.config import LoggingConfig
 
 log = structlog.stdlib.get_logger()
 
@@ -92,7 +92,7 @@ class LoggingMiddleware:
             )
 
 
-def logging_config(config: Config) -> dict:
+def logging_config(config: LoggingConfig) -> dict:
     return {
         "version": 1,
         "handlers": {
@@ -101,7 +101,7 @@ def logging_config(config: Config) -> dict:
             },
             "accesslog": {
                 "class": "logging.FileHandler",
-                "filename": config.logging.access_log_path,
+                "filename": config.access_log_path,
                 "formatter": "accesslog",
             },
         },
@@ -116,11 +116,11 @@ def logging_config(config: Config) -> dict:
         },
         "loggers": {
             "skvaider": {
-                "level": config.logging.log_level,
+                "level": config.log_level,
                 "handlers": ["console"],
             },
             "aramaki": {
-                "level": config.logging.log_level,
+                "level": config.log_level,
                 "handlers": ["console"],
             },
             "skvaider.accesslog": {
