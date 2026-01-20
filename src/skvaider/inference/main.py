@@ -34,7 +34,7 @@ app = FastAPI(lifespan=lifespan)
 app.include_router(models.router)
 
 
-@app.get("/health")
+@app.get("/manager/health")
 async def health():
     return {"status": "ok"}
 

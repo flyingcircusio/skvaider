@@ -25,7 +25,7 @@ def clean_models_dir():
 
 
 def test_health():
-    response = client.get("/health")
+    response = client.get("/manager/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
@@ -41,7 +41,7 @@ def test_integration_real_download_and_inference():
     client = TestClient(app)
 
     model_url = "https://huggingface.co/M4-ai/TinyMistral-248M-v2-Instruct-GGUF/resolve/main/TinyMistral-248M-v2-Instruct.Q2_K.gguf?download=true"
-    filename = "TinyMistral-248M-v2-Instruct.Q2_K.gguf"
+    filename = "TinyMistral-248M-v2-Instruct.gguf"
     model_name = "TinyMistral-248M-v2-Instruct"
 
     print("\n[Integration] 1. Downloading model... this may take a while.")
@@ -49,7 +49,7 @@ def test_integration_real_download_and_inference():
         "/download",
         json={
             "url": model_url,
-            "filename": filename,
+            "model_name": model_name,
             "metadata": {
                 "name": model_name,
                 "context_size": 2048,
