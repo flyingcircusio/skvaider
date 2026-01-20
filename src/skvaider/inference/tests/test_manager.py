@@ -1,68 +1,13 @@
 import asyncio
 import json
-import os
-import shutil
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
 
-from skvaider.inference.main import app
-from skvaider.inference.manager import ModelConfig, ModelManager, RunningModel
-
-client = TestClient(app)
+from skvaider.inference.config import ModelConfig
+from skvaider.inference.manager import Manager, Model
 
 
-@pytest.fixture
-def model_config_path(tmp_path):
-    p = tmp_path / "models"
-    p.mkdir()
-    return p
-
-
-@pytest.fixture
-def models_cache():
-    cache_dir = Path(".models")
-    if not cache_dir.exists():
-        cache_dir.mkdir()
-    return cache_dir
-
-
-@pytest.fixture
-async def manager(model_config_path):
-    m = ModelManager(model_config_path)
-    yield m
-    await m.shutdown()
-
-
-@pytest.fixture
-def gemma(models_cache, model_config_path):
-    filename = "gemma-3-270m-it-UD-Q4_K_XL.gguf"
-    gemma_url = f"https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/{filename}?download=true"
-    target = (models_cache / filename).absolute()
-
-    if not target.exists():
-        with target.open("wb") as f:
-            with httpx.stream("GET", gemma_url, follow_redirects=True) as r:
-                for data in r.iter_bytes():
-                    f.write(data)
-
-    config_file = model_config_path / "gemma.json"
-    with config_file.open("w", encoding="utf-8") as f:
-        config = {
-            "name": "gemma",
-            "filename": str(target),
-            "cmd_args": [],
-            "context_size": 4096,
-        }
-        json.dump(config, f)
-
-    return config_file, target
-
-
-@pytest.mark.asyncio
 async def test_manager_get_config(manager):
     meta = {
         "name": "test-model",
@@ -70,7 +15,8 @@ async def test_manager_get_config(manager):
         "filename": "test_file",
         "context_size": 1024,
     }
-    with (manager.models_dir / "test_file.json").open("w") as f:
+    (manager.models_dir / "test").mkdir()
+    with (manager.models_dir / "test" / "test_file.json").open("w") as f:
         json.dump(meta, f)
 
     config = await manager.get_model_config("test-model")
@@ -81,9 +27,8 @@ async def test_manager_get_config(manager):
     assert config.context_size == 1024
 
 
-@pytest.mark.asyncio
 async def test_manager_start_crash_quick_return(gemma, model_config_path):
-    manager = ModelManager(model_config_path)
+    manager = Manager(model_config_path)
 
     config = json.loads(gemma[0].read_text())
     config["cmd_args"] = ["--asdf"]
@@ -93,7 +38,37 @@ async def test_manager_start_crash_quick_return(gemma, model_config_path):
         await asyncio.wait_for(manager.get_or_start_model("gemma"), timeout=5)
 
 
-@pytest.mark.asyncio
+async def test_download_model_success(tmp_path):
+    config = ModelConfig(
+        id="gemma",
+        url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
+        hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
+    )
+    model = Model(config)
+    model.datadir = tmp_path
+    await model.download()
+    assert model.model_file.exists()
+    assert model.integrity_marker_file.exists()
+
+
+async def test_download_model_wrong_hash(tmp_path):
+    config = ModelConfig(
+        id="gemma",
+        url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
+        hash="foobar",
+    )
+    model = Model(config)
+    model.datadir = tmp_path
+    with pytest.raises(ValueError) as e:
+        await model.download()
+    assert (
+        e.value.args[0]
+        == "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
+    )
+    assert model.model_file.exists()
+    assert not model.integrity_marker_file.exists()
+
+
 async def test_manager_start_model(gemma, manager):
     with pytest.raises(KeyError):
         await manager.get_or_start_model("unknown-model")

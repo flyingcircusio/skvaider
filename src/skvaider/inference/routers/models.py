@@ -5,11 +5,12 @@ from typing import Any
 import anyio
 import httpx
 import structlog
+import svcs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from skvaider.inference.state import manager
+from skvaider.inference.manager import Manager
 
 router = APIRouter()
 log = structlog.get_logger()
@@ -22,7 +23,12 @@ class DownloadRequest(BaseModel):
 
 
 @router.post("/get_running_model_or_load")
-async def load_model(request: Request):
+async def load_model(
+    request: Request,
+    services: svcs.fastapi.DepContainer,
+):
+    manager = services.get(Manager)
+
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -44,78 +50,6 @@ async def load_model(request: Request):
         raise HTTPException(status_code=404, detail="Model not found")
 
     return {"port": running_model.port}
-
-
-@router.post("/download")
-async def download_model(request: DownloadRequest):
-    models_dir = manager.models_dir
-    try:
-        models_dir.mkdir(exist_ok=True)
-    except OSError as e:
-        log.error("Failed to create models directory", error=str(e))
-        raise HTTPException(
-            status_code=500, detail="Could not create models directory"
-        )
-
-    filename = f"{request.model_name}.gguf"
-    file_path = models_dir / filename
-
-    # Basic security check to prevent directory traversal
-    if not file_path.resolve().is_relative_to(models_dir.resolve()):
-        raise HTTPException(status_code=400, detail="Invalid model name")
-
-    # Enforce max one layer of hierarchy
-    # We strip the models_dir prefix to check the relative path depth
-    rel_path = file_path.resolve().relative_to(models_dir.resolve())
-    # .gguf files are flat or one dir deep. rel_path parts include filename.
-    # "model.gguf" -> 1 part. "org/model.gguf" -> 2 parts.
-    if len(rel_path.parts) > 2:
-        raise HTTPException(status_code=400, detail="Model hierarchy too deep")
-
-    # Ensure parent directory exists (for nested models)
-    try:
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        log.error("Failed to create model directory", error=str(e))
-        raise HTTPException(
-            status_code=500, detail="Could not create model directory"
-        )
-
-    metadata = request.metadata or {}
-    metadata["name"] = request.model_name
-    metadata["filename"] = filename
-
-    metadata_path = models_dir / (request.model_name + ".json")
-    try:
-        async with await anyio.open_file(metadata_path, "w") as f:
-            await f.write(json.dumps(metadata))
-    except OSError as e:
-        log.error("Failed to write metadata", error=str(e))
-        # We continue even if metadata fails? Or fail?
-        # Let's fail for now as it seems important.
-        raise HTTPException(status_code=500, detail="Failed to write metadata")
-
-    try:
-        # Disable timeout for large downloads
-        # XXX that shouldn't be necessary. Timeouts should only
-        # happen if nothing is progressing. we could increase this
-        # but should not have it unlimited.
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "GET", request.url, follow_redirects=True
-            ) as response:
-                response.raise_for_status()
-                async with await anyio.open_file(file_path, "wb") as f:
-                    async for chunk in response.aiter_bytes():
-                        await f.write(chunk)
-    except httpx.HTTPError as e:
-        log.error("Download failed", error=str(e))
-        raise HTTPException(status_code=502, detail="Download failed")
-    except OSError as e:
-        log.error("File write failed", error=str(e))
-        raise HTTPException(status_code=500, detail="File write failed")
-
-    return {"status": "downloaded", "path": str(file_path)}
 
 
 @router.post("/unload")

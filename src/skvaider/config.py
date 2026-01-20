@@ -29,4 +29,4 @@ class BackendConfig(BaseModel):
 
 class LoggingConfig(BaseModel):
     log_level: str = "INFO"
-    access_log_path: Path = "/var/log/skvaider/access.log"
+    access_log_path: Path = Path("/var/log/skvaider/access.log")
