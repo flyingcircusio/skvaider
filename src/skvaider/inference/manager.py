@@ -33,16 +33,16 @@ class ModelConfig(BaseModel):
 
 
 class RunningModel:
-
     process: asyncio.subprocess.Process | None = None
     endpoint: str | None = None
+
+    _shutdown = False
     _port_found: asyncio.Event
     _tasks: list[asyncio.Task]
     _host = "127.0.0.1"
 
-    def __init__(self, config: ModelConfig, models_dir: Path):
+    def __init__(self, config: ModelConfig):
         self.config = config
-        self.models_dir = models_dir
         self._port_found = asyncio.Event()
         self._tasks = []
 
@@ -53,13 +53,19 @@ class RunningModel:
         cmd = [
             "llama-server",
             "--no-webui",
-            "--model", str(self.models_dir / self.config.filename),
+            "-a", self.config.name,
+            "--model", str(self.config.filename),
+            "--jinja", # XXX per model?
             "--host", self._host,
             "--port", "0",  # let the kernel select a free port
+            # Monitoring
+            "--metrics",
+            "--slots",
         ]
-        cmd += [
-            "--ctx-size", str(self.config.context_size),
-        ]
+        if self.config.context_size:
+            cmd += [
+                "--ctx-size", str(self.config.context_size),
+            ]
         cmd += self.config.cmd_args
         # fmt: on
         log.debug("cli", argv=" ".join(cmd))
@@ -69,8 +75,13 @@ class RunningModel:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            self._monitor_output()
-            await self._wait_for_startup()
+            self._monitor_process_task = asyncio.create_task(
+                self._monitor_process()
+            )
+            self._create_task(self._monitor_output(self.process.stderr, True))
+            self._create_task(self._monitor_output(self.process.stdout, False))
+            startup_task = self._create_task(self._wait_for_startup())
+            await startup_task
         except Exception:
             await self.terminate()
             raise
@@ -78,9 +89,15 @@ class RunningModel:
             "Model started", model=self.config.name, endpoint=self.endpoint
         )
 
+    def _create_task(self, awaitable):
+        t = asyncio.create_task(awaitable)
+        self._tasks.append(t)
+        return t
+
     async def terminate(self):
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model process", model=self.config.name)
+        self._shutdown = True
         for task in self._tasks:
             task.cancel()
             try:
@@ -107,38 +124,44 @@ class RunningModel:
                 except ProcessLookupError:
                     pass
 
-    def _monitor_output(self):
-        async def read_stream(stream, is_stderr):
-            stream_name = "stderr" if is_stderr else "stdout"
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-                line_str = line.decode("utf-8", errors="replace").strip()
-                if not line_str:
-                    continue
-                log.debug(
-                    "llama-server",
-                    model=self.config.name,
-                    stream=stream_name,
-                    line=line_str,
-                )
-                if is_stderr and self.endpoint is None:
-                    match = re.search(
-                        r"main: HTTP server is listening, hostname: .*, port: (\d+)",
-                        line_str,
-                    )
-                    if match:
-                        port = int(match.group(1))
-                        self.endpoint = f"http://{self._host}:{port}"
-                        self._port_found.set()
+    async def _monitor_process(self):
+        """Monitor whether our process has exited."""
+        assert self.process is not None
+        await self.process.wait()
+        if self._shutdown:
+            return
+        log.error(
+            "Process exited unexpectedly",
+            model=self.config.name,
+            returncode=self.process.returncode,
+        )
+        # Clean up
+        await self.terminate()
 
-        self._tasks.append(
-            asyncio.create_task(read_stream(self.process.stderr, True))
-        )
-        self._tasks.append(
-            asyncio.create_task(read_stream(self.process.stdout, False))
-        )
+    async def _monitor_output(self, stream, is_stderr: bool):
+        stream_name = "stderr" if is_stderr else "stdout"
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            line_str = line.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                continue
+            log.debug(
+                "llama-server",
+                model=self.config.name,
+                stream=stream_name,
+                line=line_str,
+            )
+            if is_stderr and self.endpoint is None:
+                match = re.search(
+                    r"main: HTTP server is listening, hostname: .*, port: (\d+)",
+                    line_str,
+                )
+                if match:
+                    port = int(match.group(1))
+                    self.endpoint = f"http://{self._host}:{port}"
+                    self._port_found.set()
 
     async def _wait_for_startup(self):
         await self._port_found.wait()
@@ -205,7 +228,7 @@ class ModelManager:
                     file=str(meta_file),
                     error=str(e),
                 )
-                continue
+                raise
         raise KeyError(model_name)
 
     @locked
@@ -213,13 +236,14 @@ class ModelManager:
         self, model_name: str, timeout: int = 60
     ) -> Optional[RunningModel]:
         if model_name in self.running_models:
-            return self.running_models[model_name]
+            model = self.running_models[model_name]
+            if not model._shutdown:
+                return model
+            else:
+                self.running_models.pop(model_name)
 
         config = await self.get_model_config(model_name)
-        if not config:
-            return None
-
-        model = RunningModel(config, self.models_dir)
+        model = RunningModel(config)
         try:
             await asyncio.wait_for(model.start(), timeout=timeout)
         except (
@@ -237,3 +261,9 @@ class ModelManager:
             model = self.running_models[model_name]
             await model.terminate()
             del self.running_models[model_name]
+
+    @locked
+    async def shutdown(self):
+        for model in self.running_models.values():
+            await model.terminate()
+        self.running_models.clear()
