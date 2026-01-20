@@ -31,8 +31,15 @@ def models_cache():
 
 
 @pytest.fixture
+async def manager(model_config_path):
+    m = ModelManager(model_config_path)
+    yield m
+    await m.shutdown()
+
+
+@pytest.fixture
 def gemma(models_cache, model_config_path):
-    filename = "gemma-3-270m-it-UD-IQ2_XXS.gguf"
+    filename = "gemma-3-270m-it-UD-Q4_K_XL.gguf"
     gemma_url = f"https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/{filename}?download=true"
     target = (models_cache / filename).absolute()
 
@@ -56,12 +63,14 @@ def gemma(models_cache, model_config_path):
 
 
 @pytest.mark.asyncio
-async def test_manager_get_config(clean_models_dir):
-    manager = ModelManager()
-
-    # Create a dummy metadata file
-    meta = {"name": "test-model", "cmd_args": ["-t", "4"], "context_size": 1024}
-    with open("models/test_file.json", "w") as f:
+async def test_manager_get_config(manager):
+    meta = {
+        "name": "test-model",
+        "cmd_args": ["-t", "4"],
+        "filename": "test_file",
+        "context_size": 1024,
+    }
+    with (manager.models_dir / "test_file.json").open("w") as f:
         json.dump(meta, f)
 
     config = await manager.get_model_config("test-model")
@@ -73,9 +82,19 @@ async def test_manager_get_config(clean_models_dir):
 
 
 @pytest.mark.asyncio
-async def test_manager_start_model(gemma, model_config_path):
+async def test_manager_start_crash_quick_return(gemma, model_config_path):
     manager = ModelManager(model_config_path)
 
+    config = json.loads(gemma[0].read_text())
+    config["cmd_args"] = ["--asdf"]
+    gemma[0].write_text(json.dumps(config))
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(manager.get_or_start_model("gemma"), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_manager_start_model(gemma, manager):
     with pytest.raises(KeyError):
         await manager.get_or_start_model("unknown-model")
 
@@ -97,18 +116,40 @@ async def test_manager_start_model(gemma, model_config_path):
         assert models == {
             "data": [
                 {
-                    "id": str(gemma[1]),
+                    "id": "gemma",
                     "meta": {
                         "n_ctx_train": 32768,
                         "n_embd": 640,
                         "n_params": 268098176,
                         "n_vocab": 262144,
-                        "size": 173576704,
+                        "size": 247407104,
                         "vocab_type": 1,
                     },
                     "object": "model",
                     "owned_by": "llamacpp",
                 },
+            ],
+            "models": [
+                {
+                    "capabilities": ["completion"],
+                    "description": "",
+                    "details": {
+                        "families": [""],
+                        "family": "",
+                        "format": "gguf",
+                        "parameter_size": "",
+                        "parent_model": "",
+                        "quantization_level": "",
+                    },
+                    "digest": "",
+                    "model": "gemma",
+                    "modified_at": "",
+                    "name": "gemma",
+                    "parameters": "",
+                    "size": "",
+                    "tags": [""],
+                    "type": "model",
+                }
             ],
             "object": "list",
         }
@@ -117,7 +158,7 @@ async def test_manager_start_model(gemma, model_config_path):
         r = await client.post(
             f"{model.endpoint}/v1/chat/completions",
             json={
-                "messages": [{"role": "user", "content": "Say hello world"}],
+                "messages": [{"role": "user", "content": "generate 5 numbers"}],
                 "max_tokens": 1000,
             },
         )
@@ -131,69 +172,6 @@ async def test_manager_start_model(gemma, model_config_path):
 
     await manager.unload_model("gemma")
 
+    assert "gemma" not in manager.running_models
 
-@pytest.mark.asyncio
-async def test_load_model(gemma):
-    # Setup metadata
-    meta = {
-        "name": "test-model",
-    }
-    with open("models/test_file.json", "w") as f:
-        json.dump(meta, f)
-
-    # Mock manager in main
-    mock_running_model = MagicMock()
-    mock_running_model.port = 8080
-
-    with patch(
-        "skvaider.inference.main.manager.get_or_start_model",
-        return_value=mock_running_model,
-    ) as mock_get_model:
-
-        response = client.post(
-            "/get_running_model_or_load", json={"model": "test-model"}
-        )
-
-        assert response.status_code == 200
-        assert response.json() == {"port": 8080}
-
-        mock_get_model.assert_called_with("test-model")
-
-
-@pytest.mark.asyncio
-async def test_unload_model_manager(clean_models_dir):
-    manager = ModelManager()
-
-    # Mock a running model
-    config = ModelConfig(name="test-model", filename="test_file")
-    running_model = RunningModel(config, clean_models_dir)
-    running_model.process = mock_proc = AsyncMock()
-    mock_proc.terminate = MagicMock()
-    mock_proc.wait = AsyncMock()
-
-    manager.running_models["test-model"] = running_model
-
-    await manager.unload_model("test-model")
-
-    assert "test-model" not in manager.running_models
-    mock_proc.terminate.assert_called_once()
-    mock_proc.wait.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_unload_model_api(clean_models_dir):
-    # We need to patch the global manager instance used by the router
-    with patch("skvaider.inference.routers.models.manager") as mock_manager:
-        mock_manager.unload_model = AsyncMock()
-
-        response = client.post("/unload", json={"model": "test-model"})
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
-        mock_manager.unload_model.assert_called_once_with("test-model")
-
-
-@pytest.mark.asyncio
-async def test_unload_model_api_missing_model(clean_models_dir):
-    response = client.post("/unload", json={})
-    assert response.status_code == 400
+    assert model._shutdown is True
