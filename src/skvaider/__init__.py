@@ -59,8 +59,6 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
         config_data = tomllib.load(f)
     config = Config.model_validate(config_data)
 
-    dictConfig(logging_config(config.logging))
-
     cr = structlog.dev.ConsoleRenderer.get_active()
     cr.exception_formatter = structlog.dev.plain_traceback
 
@@ -93,6 +91,11 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
     registry.register_factory(
         skvaider.auth.AuthTokens, auth_tokens.get_collection_with_session
     )
+
+    dictConfig(
+        logging_config(config.logging)
+    )  # XXX makes us swallow lifespan errors?
+
     yield {}
     aramaki.stop()
     pool.close()
