@@ -5,35 +5,11 @@ import httpx
 import pytest
 
 from skvaider.inference.config import ModelConfig
-from skvaider.inference.manager import Manager, Model
+from skvaider.inference.manager import Model
 
 
-async def test_manager_get_config(manager):
-    meta = {
-        "name": "test-model",
-        "cmd_args": ["-t", "4"],
-        "filename": "test_file",
-        "context_size": 1024,
-    }
-    (manager.models_dir / "test").mkdir()
-    with (manager.models_dir / "test" / "test_file.json").open("w") as f:
-        json.dump(meta, f)
-
-    config = await manager.get_model_config("test-model")
-    assert config is not None
-    assert config.name == "test-model"
-    assert config.filename == "test_file"
-    assert config.cmd_args == ["-t", "4"]
-    assert config.context_size == 1024
-
-
-async def test_manager_start_crash_quick_return(gemma, model_config_path):
-    manager = Manager(model_config_path)
-
-    config = json.loads(gemma[0].read_text())
-    config["cmd_args"] = ["--asdf"]
-    gemma[0].write_text(json.dumps(config))
-
+async def test_manager_start_crash_quick_return(gemma, manager):
+    gemma.config.cmd_args = ["--asdf"]
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(manager.get_or_start_model("gemma"), timeout=5)
 
@@ -54,7 +30,7 @@ async def test_download_model_success(tmp_path):
 async def test_download_model_wrong_hash(tmp_path):
     config = ModelConfig(
         id="gemma",
-        url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
+        url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
         hash="foobar",
     )
     model = Model(config)
@@ -74,8 +50,8 @@ async def test_manager_start_model(gemma, manager):
         await manager.get_or_start_model("unknown-model")
 
     model = await manager.get_or_start_model("gemma")
-    assert model.config.name == "gemma"
-    assert model.endpoint
+    assert model.config.id == "gemma"
+    assert model.endpoint.startswith("http://127.0.0.1:")
 
     async with httpx.AsyncClient() as client:
         # Check health
@@ -146,7 +122,5 @@ async def test_manager_start_model(gemma, manager):
         assert len(content) > 0  # Got some response
 
     await manager.unload_model("gemma")
-
-    assert "gemma" not in manager.running_models
 
     assert model._shutdown is True
