@@ -113,7 +113,7 @@ async def proxy_request(
     if request.query_params:
         url += f"?{request.query_params}"
 
-    client = httpx.AsyncClient()
+    client = httpx.AsyncClient(timeout=60)  # LLM requests may take time
 
     req = client.build_request(
         request.method,
@@ -125,7 +125,13 @@ async def proxy_request(
         rp = await client.send(req, stream=True)
     except Exception as e:
         await client.aclose()
-        raise HTTPException(status_code=500, detail=f"Proxy error: {e}")
+        import traceback
+
+        e_tb = traceback.format_exc()
+        log.error("Proxy request failed", error=str(e), traceback=e_tb)
+        raise HTTPException(
+            status_code=500, detail=f"Error in model '{model_name}' request"
+        )
 
     async def streaming_content():
         try:
