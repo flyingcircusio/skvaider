@@ -1,8 +1,4 @@
-"""Open-AI compatible API based on Ollama.
-
-This uses Ollama-internal APIs for better load-balancing but exposes a pure OpenAI-compatible API.
-
-"""
+"""Open-AI compatible API."""
 
 from typing import Any
 
