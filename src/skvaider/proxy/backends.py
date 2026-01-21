@@ -36,15 +36,13 @@ class Backend(ABC):
     url: str
 
     health_interval: int = 15
-    healthy: bool = None
+    healthy: bool = False
     unhealthy_reason: str = ""
     models: dict[str, "AIModel"]
-    model_config: ModelConfig
 
-    def __init__(self, url, model_config):
+    def __init__(self, url):
         self.url = url
         self.models = {}
-        self.model_config = model_config
         self.log = structlog.stdlib.get_logger().bind(backend=self.url)
 
     @property
@@ -67,9 +65,6 @@ class Backend(ABC):
 
 
 class SkvaiderBackend(Backend):
-    def __init__(self, url, model_config):
-        super().__init__(url, model_config)
-
     async def post(self, path: str, data: dict):
         model_id = data.get("model")
         if not model_id:
@@ -89,9 +84,9 @@ class SkvaiderBackend(Backend):
                 raise HTTPException(
                     status_code=500, detail=f"Failed to load model: {r.text}"
                 )
-            port = r.json()["port"]
+            endpoint = r.json()["endpoint"]
 
-        url = f"http://localhost:{port}{path}"
+        url = f"{endpoint}{path}"
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(url, json=data, timeout=120)
@@ -118,9 +113,9 @@ class SkvaiderBackend(Backend):
                 raise HTTPException(
                     status_code=500, detail=f"Failed to load model: {r.text}"
                 )
-            port = r.json()["port"]
+            endpoint = r.json()["endpoint"]
 
-        url = f"http://localhost:{port}{path}"
+        url = f"{endpoint}{path}"
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             async with client.stream(

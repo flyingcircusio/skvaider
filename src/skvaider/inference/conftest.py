@@ -1,7 +1,5 @@
-import json
 from pathlib import Path
 
-import httpx
 import pytest
 import svcs.fastapi
 from fastapi import FastAPI
@@ -31,7 +29,7 @@ def client():
 
 
 @pytest.fixture
-def model_config_path(tmp_path):
+def model_path(tmp_path):
     p = tmp_path / "models"
     p.mkdir()
     return p
@@ -39,21 +37,21 @@ def model_config_path(tmp_path):
 
 @pytest.fixture
 def models_cache():
-    cache_dir = Path(".models")
+    cache_dir = Path(".models").absolute()
     if not cache_dir.exists():
         cache_dir.mkdir()
     return cache_dir
 
 
 @pytest.fixture
-async def manager(model_config_path):
-    m = Manager(model_config_path)
+async def manager(model_path):
+    m = Manager(model_path)
     yield m
     await m.shutdown()
 
 
 @pytest.fixture
-async def gemma(models_cache, model_config_path, manager):
+async def gemma(models_cache, manager):
     config = ModelConfig(
         id="gemma",
         url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
@@ -65,12 +63,14 @@ async def gemma(models_cache, model_config_path, manager):
     model = Model(config)
     manager.add_model(model)
 
-    cache = Path(".models").absolute()
-    cache.mkdir(exist_ok=True)
-    cache_file = cache / model.slug
+    cache_file = models_cache / model.slug
     if not cache_file.exists():
         await model.download()
         model.model_file.rename(cache_file)
+    # We had data in the cache. The download method is unaware of the test-fixture
+    # caching. Maybe there could be a real world use case to make download() smarter.
+    # The test harness needs to ensure that we restore the data from the cache as expected.
     model.model_file.symlink_to(cache_file)
+    model.integrity_marker_file.touch()
 
     return model

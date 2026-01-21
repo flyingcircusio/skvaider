@@ -14,23 +14,16 @@ async def test_manager_start_crash_quick_return(gemma, manager):
         await asyncio.wait_for(manager.get_or_start_model("gemma"), timeout=5)
 
 
-async def test_download_model_success(tmp_path):
-    config = ModelConfig(
-        id="gemma",
-        url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
-        hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
-    )
-    model = Model(config)
-    model.datadir = tmp_path
-    await model.download()
-    assert model.model_file.exists()
-    assert model.integrity_marker_file.exists()
+async def test_download_model_success(gemma):
+    await gemma.download()
+    assert gemma.model_file.exists()
+    assert gemma.integrity_marker_file.exists()
 
 
 async def test_download_model_wrong_hash(tmp_path):
     config = ModelConfig(
         id="gemma",
-        url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
+        url="https://downloads.fcio.net",  # use a small download we know exists.
         hash="foobar",
     )
     model = Model(config)
@@ -39,7 +32,7 @@ async def test_download_model_wrong_hash(tmp_path):
         await model.download()
     assert (
         e.value.args[0]
-        == "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
+        == "f670df141ead7ea89bcb20cf9bb5c798c301c267fd531d01477decfd1acb8b4f"
     )
     assert model.model_file.exists()
     assert not model.integrity_marker_file.exists()
@@ -123,4 +116,5 @@ async def test_manager_start_model(gemma, manager):
 
     await manager.unload_model("gemma")
 
-    assert model._shutdown is True
+    assert model.running is False
+    assert model.status == "stopped"

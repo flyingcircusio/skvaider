@@ -1,8 +1,6 @@
 import asyncio
 import base64
 import json
-import os
-from pathlib import Path
 
 import httpx
 import pytest
@@ -11,6 +9,7 @@ from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import skvaider.auth
 import skvaider.proxy.backends
 import skvaider.proxy.pool
 from skvaider import app_factory
@@ -40,127 +39,65 @@ def services():
         yield container
 
 
+def wait_for_condition(interval=0.1, timeout=30):
+    def decorator(async_condition):
+        async def wrapped():
+            async def loop():
+                result = False
+                while True:
+                    try:
+                        result = await async_condition()
+                    except Exception:
+                        pass
+
+                    if result:
+                        return
+
+                    await asyncio.sleep(interval)
+
+            try:
+                await asyncio.wait_for(loop(), timeout=5)
+            except asyncio.TimeoutError as e:
+                raise asyncio.TimeoutError(async_condition.__name__) from e
+
+        return wrapped
+
+    return decorator
+
+
 @svcs.fastapi.lifespan
 async def test_lifespan(app: FastAPI, registry: svcs.Registry):
     pool = skvaider.proxy.pool.Pool()
-    model_config = skvaider.proxy.backends.ModelConfig(
-        {
-            "TinyMistral-248M-v2-Instruct": {"num_ctx": 2048},
-            "TinyMistral-248M-v2-Instruct-Embed": {"num_ctx": 2048},
-        }
-    )
 
-    # Ensure model exists
-    models_dir = Path("models")
-    models_dir.mkdir(exist_ok=True)
+    url = "http://127.0.0.1:8001"
 
-    model_name = "TinyMistral-248M-v2-Instruct"
-    model_name_embed = "TinyMistral-248M-v2-Instruct-Embed"
+    @wait_for_condition()
+    async def backend_connection_is_up():
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{url}/manager/health")
+            if resp.status_code == 200:
+                return True
 
-    filename = "TinyMistral-248M-v2-Instruct.Q2_K.gguf"
-    filename_embed = "TinyMistral-248M-v2-Instruct-Embed.Q2_K.gguf"
+    await backend_connection_is_up()
 
-    model_path = models_dir / filename
-    model_path_embed = models_dir / filename_embed
-
-    json_path = models_dir / f"{filename}.json"
-    json_path_embed = models_dir / f"{filename_embed}.json"
-
-    if not model_path.exists():
-        url = "https://huggingface.co/M4-ai/TinyMistral-248M-v2-Instruct-GGUF/resolve/main/TinyMistral-248M-v2-Instruct.Q2_K.gguf?download=true"
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            async with client.stream("GET", url) as response:
-                with open(model_path, "wb") as f:
-                    async for chunk in response.aiter_bytes():
-                        f.write(chunk)
-
-    if not model_path_embed.exists():
-        os.symlink(filename, model_path_embed)
-
-    with open(json_path, "w") as f:
-        json.dump(
-            {
-                "name": model_name,
-                "context_size": 2048,
-                "cmd_args": [],
-                "filename": filename,
-            },
-            f,
-        )
-
-    with open(json_path_embed, "w") as f:
-        json.dump(
-            {
-                "name": model_name_embed,
-                "context_size": 2048,
-                "cmd_args": ["--embedding", "--pooling", "mean"],
-                "filename": filename_embed,
-            },
-            f,
-        )
-
-    import socket
-    import subprocess
-    import sys
-    import time
-
-    port = 12233
-
-    # Start inference server
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "skvaider.inference.main"],
-        env={**os.environ, "PYTHONUNBUFFERED": "1", "PORT": str(port)},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    url = f"http://localhost:{port}"
-    start = time.time()
-    while time.time() - start < 30:  # Increased timeout to 30s
-        if proc.poll() is not None:
-            # Process exited prematurely
-            stdout, stderr = proc.communicate()
-            raise RuntimeError(
-                f"Inference server exited prematurely with code {proc.returncode}.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
-            )
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(f"{url}/manager/health")
-                if resp.status_code == 200:
-                    break
-        except Exception:
-            await asyncio.sleep(0.1)
-    else:
-        proc.terminate()
-        stdout, stderr = proc.communicate()
-        raise RuntimeError(
-            f"Inference server failed to start within timeout.\nStdout: {stdout.decode()}\nStderr: {stderr.decode()}"
-        )
-
-    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url, model_config))
-
-    if ollama_host := os.environ.get("OLLAMA_HOST"):
-        if not ollama_host.startswith("http"):
-            ollama_host = f"http://{ollama_host}"
-        pool.add_backend(
-            skvaider.proxy.backends.OllamaBackend(ollama_host, model_config)
-        )
+    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url))
 
     registry.register_value(skvaider.proxy.pool.Pool, pool)
     registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
 
-    # Wait for backends to become healthy
-    timeout = 2 * pool.backends[0].health_interval
-    start = time.time()
-    while time.time() - start < timeout:
-        if all(b.healthy for b in pool.backends):
-            break
-        await asyncio.sleep(0.1)
+    @wait_for_condition()
+    async def wait_for_healthy_backends():
+        return all(b.healthy for b in pool.backends)
+
+    await wait_for_healthy_backends()
 
     yield {}
     pool.close()
-    proc.terminate()
-    proc.wait()
+
+
+@pytest.fixture(params=["gemma"])
+def llm_model_name(request):
+    return request.param
 
 
 @pytest.fixture

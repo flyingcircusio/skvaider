@@ -49,11 +49,16 @@ async def load_model(
     if not running_model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    return {"port": running_model.port}
+    return {"endpoint": running_model.endpoint}
 
 
 @router.post("/unload")
-async def unload_model(request: Request):
+async def unload_model(
+    request: Request,
+    services: svcs.fastapi.DepContainer,
+):
+    manager = services.get(Manager)
+
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -68,25 +73,43 @@ async def unload_model(request: Request):
 
 
 @router.get("/models")
-async def list_models():
+async def list_models(
+    services: svcs.fastapi.DepContainer,
+):
+    manager = services.get(Manager)
+
     return {"models": await manager.list_models()}
 
 
 @router.get("/running_models")
-async def list_running_models():
-    return {"models": list(manager.running_models.keys())}
+async def list_running_models(
+    services: svcs.fastapi.DepContainer,
+):
+    manager = services.get(Manager)
+    return {
+        "models": list(
+            m.config.id for m in manager.models.values() if m.running
+        )
+    }
 
 
 @router.api_route(
     "/model/{model_name}/proxy/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE"],
 )
-async def proxy_request(model_name: str, path: str, request: Request):
+async def proxy_request(
+    model_name: str,
+    path: str,
+    request: Request,
+    services: svcs.fastapi.DepContainer,
+):
+    manager = services.get(Manager)
+
     model = await manager.get_or_start_model(model_name)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    url = f"http://localhost:{model.port}/{path}"
+    url = f"{model.endpoint}/{path}"
     if request.query_params:
         url += f"?{request.query_params}"
 

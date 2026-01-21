@@ -30,7 +30,6 @@ devenv.local.nix
 .aramaki-workdir
 
 .DS_store
-.access_log
-access_log
+.access_log*
 
-models
+models*

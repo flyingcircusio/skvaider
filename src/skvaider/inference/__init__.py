@@ -20,12 +20,6 @@ from skvaider.inference.manager import Manager
 from skvaider.inference.routers import models
 from skvaider.logging import LoggingMiddleware, logging_config
 
-# Configure basic logging early so lifespan errors are visible
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-
 log = structlog.stdlib.get_logger()
 
 
