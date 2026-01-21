@@ -70,23 +70,7 @@ class SkvaiderBackend(Backend):
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.post(
-                f"{self.url}/get_running_model_or_load",
-                json={"model": model_id},
-                timeout=120,
-            )
-            if r.status_code == 404:
-                raise HTTPException(
-                    status_code=404, detail=f"Model {model_id} not found"
-                )
-            if r.status_code != 200:
-                raise HTTPException(
-                    status_code=500, detail=f"Failed to load model: {r.text}"
-                )
-            endpoint = r.json()["endpoint"]
-
-        url = f"{endpoint}{path}"
+        url = f"{self.url}/model/{model_id}/proxy{path}"
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(url, json=data, timeout=120)
@@ -99,23 +83,7 @@ class SkvaiderBackend(Backend):
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.post(
-                f"{self.url}/get_running_model_or_load",
-                json={"model": model_id},
-                timeout=120,
-            )
-            if r.status_code == 404:
-                raise HTTPException(
-                    status_code=404, detail=f"Model {model_id} not found"
-                )
-            if r.status_code != 200:
-                raise HTTPException(
-                    status_code=500, detail=f"Failed to load model: {r.text}"
-                )
-            endpoint = r.json()["endpoint"]
-
-        url = f"{endpoint}{path}"
+        url = f"{self.url}/model/{model_id}/proxy{path}"
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             async with client.stream(

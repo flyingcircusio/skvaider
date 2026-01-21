@@ -115,15 +115,9 @@ async def proxy_request(
 
     client = httpx.AsyncClient()
 
-    # Exclude headers that might cause issues
-    headers = dict(request.headers)
-    headers.pop("host", None)
-    headers.pop("content-length", None)
-
     req = client.build_request(
         request.method,
         url,
-        headers=headers,
         content=await request.body(),
     )
 
