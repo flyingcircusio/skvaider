@@ -10,11 +10,11 @@ principal = "kyle00"
 
 [[backend]]
 type = "skvaider"
-url = "http://127.0.0.1:12233"
+url = "http://127.0.0.1:8001"
 
 [[backend]]
 type = "skvaider"
-url = "http://127.0.0.1:12234"
+url = "http://127.0.0.1:8002"
 
 [logging]
 log_level = "DEBUG"

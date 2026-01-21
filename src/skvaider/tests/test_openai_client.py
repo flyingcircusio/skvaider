@@ -16,20 +16,15 @@ def openai_client(client, auth_token):
     )
 
 
-@pytest.fixture(params=["TinyMistral-248M-v2-Instruct", "gemma3:1b"])
-def model_name(request):
-    return request.param
-
-
-def test_model_list(openai_client, model_name):
+def test_model_list(openai_client, llm_model_name):
     models = openai_client.models.list()
     assert len(models.data) >= 1
-    assert model_name in [x.id for x in models.data]
+    assert llm_model_name in [x.id for x in models.data]
 
 
-def test_chat_completions(openai_client, model_name):
+def test_chat_completions(openai_client, llm_model_name):
     response = openai_client.chat.completions.create(
-        model=model_name,
+        model=llm_model_name,
         messages=[{"role": "user", "content": "Say 'hello world'"}],
         max_tokens=50,  # More generous token budget
     )
@@ -37,12 +32,9 @@ def test_chat_completions(openai_client, model_name):
     assert 0 < response.usage.total_tokens < 100
 
 
-# gpt-oss:20b is just too large to download on every commit ... maybe
-# rather use a fake backend for this?
-#
 # def test_chat_completions_nonstreaming_reasoning(openai_client):
 #     response = openai_client.chat.completions.create(
-#         model="gpt-oss:20b",
+#         model="gpt-oss",
 #         messages=[
 #             {
 #                 "role": "user",
@@ -59,9 +51,9 @@ def test_chat_completions(openai_client, model_name):
 #     assert response.usage.total_tokens < 200
 
 
-def test_chat_completions_streaming(openai_client, model_name):
+def test_chat_completions_streaming(openai_client, llm_model_name):
     stream = openai_client.chat.completions.create(
-        model=model_name,
+        model=llm_model_name,
         messages=[{"role": "user", "content": "Count from 1 to 5"}],
         max_tokens=100,  # More generous for streaming
         stream=True,
@@ -82,9 +74,9 @@ def test_chat_completions_streaming(openai_client, model_name):
     assert full_content
 
 
-def test_completions(openai_client, model_name):
+def test_completions(openai_client, llm_model_name):
     response = openai_client.completions.create(
-        model=model_name,
+        model=llm_model_name,
         prompt="The capital of France is",
         max_tokens=50,  # More generous token budget
     )
@@ -92,9 +84,9 @@ def test_completions(openai_client, model_name):
     assert 0 < response.usage.total_tokens <= 100
 
 
-def test_completions_streaming(openai_client, model_name):
+def test_completions_streaming(openai_client, llm_model_name):
     stream = openai_client.completions.create(
-        model=model_name,
+        model=llm_model_name,
         prompt="The capital of France is",
         max_tokens=50,  # More generous token budget
         stream=True,
@@ -116,7 +108,7 @@ def test_completions_streaming(openai_client, model_name):
 
 def test_embeddings(openai_client):
     response = openai_client.embeddings.create(
-        input="Test String", model="TinyMistral-248M-v2-Instruct-Embed"
+        input="Test String", model="embeddinggemma"
     )
     assert response.data is not None
     assert len(response.data[0].embedding) >= 100

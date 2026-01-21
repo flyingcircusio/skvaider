@@ -1,11 +1,9 @@
 import asyncio
 import functools
 import hashlib
-import itertools
-import json
 import re
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Literal, Optional
 
 import anyio
 import httpx
@@ -31,10 +29,10 @@ def locked(func: Callable) -> Callable:
 class Model:
     process: asyncio.subprocess.Process | None = None
     endpoint: str | None = None
-    config: "skvaider.inference.config.Model"
+    config: "skvaider.inference.config.ModelConfig"
     datadir: Path
+    status: Literal["stopped", "running", "starting", "stopping"] = "stopped"
 
-    _shutdown = False
     _port_found: asyncio.Event
     _tasks: list[asyncio.Task]
     _host = "127.0.0.1"
@@ -44,6 +42,10 @@ class Model:
 
         self._port_found = asyncio.Event()
         self._tasks = []
+
+    @property
+    def running(self):
+        return self.status == "running"
 
     @property
     def slug(self):
@@ -77,15 +79,22 @@ class Model:
             async with client.stream(
                 "GET", self.config.url, follow_redirects=True
             ) as response:
-                download_size = int(response.headers["content-length"])
+                download_size = int(response.headers.get("content-length", 0))
                 download_status = 0
                 response.raise_for_status()
 
                 async def log_progress():
                     while True:
-                        progress = int((download_status / download_size) * 100)
-                        log.info(f"{self.slug}: {progress}%")
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(5)
+                        if download_size:
+                            progress = int(
+                                (download_status / download_size) * 100
+                            )
+                            log.info(f"{self.slug}: {progress}%")
+                        else:
+                            log.info(
+                                f"{self.slug}: {download_status:,d} (unknown size)"
+                            )
 
                 status_task = asyncio.create_task(log_progress())
                 try:
@@ -113,6 +122,7 @@ class Model:
     async def start(self):
         """Start the model process."""
         log.info("Starting model", model=self.config.id)
+        self.status = "starting"
         # fmt: off
         cmd = [
                 "llama-server",
@@ -150,6 +160,7 @@ class Model:
             await self.terminate()
             raise
         log.info("Model started", model=self.config.id, endpoint=self.endpoint)
+        self.status = "running"
 
     def _create_task(self, awaitable):
         t = asyncio.create_task(awaitable)
@@ -159,7 +170,8 @@ class Model:
     async def terminate(self):
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model process", model=self.config.id)
-        self._shutdown = True
+        self.status = "stopping"
+
         for task in self._tasks:
             task.cancel()
             try:
@@ -172,25 +184,27 @@ class Model:
             try:
                 self.process.terminate()
             except ProcessLookupError:
-                return
-
-            try:
-                await asyncio.wait_for(self.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                log.info(
-                    "Killing unresponsive model process",
-                    model=self.config.id,
-                )
+                pass
+            else:
                 try:
-                    self.process.kill()
-                except ProcessLookupError:
-                    pass
+                    await asyncio.wait_for(self.process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    log.info(
+                        "Killing unresponsive model process",
+                        model=self.config.id,
+                    )
+                    try:
+                        self.process.kill()
+                    except ProcessLookupError:
+                        pass
+
+        self.status = "stopped"
 
     async def _monitor_process(self):
         """Monitor whether our process has exited."""
         assert self.process is not None
         await self.process.wait()
-        if self._shutdown:
+        if self.status in ["stopped", "stopping"]:
             return
         log.error(
             "Process exited unexpectedly",
@@ -263,14 +277,15 @@ class Manager:
         timeout: int = 60,
     ) -> Optional[Model]:
         model = self.models[model_name]
-        try:
-            await asyncio.wait_for(model.start(), timeout=timeout)
-        except (
-            asyncio.TimeoutError
-        ):  # XXX the timeout might need to be model specific?
-            log.error("Timeout starting model", model=model_name)
-            await model.terminate()
-            raise
+        if not model.running:
+            try:
+                await asyncio.wait_for(model.start(), timeout=timeout)
+            except (
+                asyncio.TimeoutError
+            ):  # XXX the timeout might need to be model specific?
+                log.error("Timeout starting model", model=model_name)
+                await model.terminate()
+                raise
         return model
 
     @locked
