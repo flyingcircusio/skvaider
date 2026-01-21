@@ -38,8 +38,6 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
         config_data = tomllib.load(f)
     config = Config.model_validate(config_data)
 
-    dictConfig(logging_config(config.logging))
-
     cr = structlog.dev.ConsoleRenderer.get_active()
     cr.exception_formatter = structlog.dev.plain_traceback
 
@@ -87,6 +85,9 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
 
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(global_exception_handler)
+    dictConfig(
+        logging_config(config.logging)
+    )  # XXX makes us swallow lifespan errors?
 
     yield
     log.info("Shutting down...")
