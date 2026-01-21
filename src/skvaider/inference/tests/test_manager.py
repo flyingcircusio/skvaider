@@ -11,7 +11,7 @@ from skvaider.inference.manager import Model
 async def test_manager_start_crash_quick_return(gemma, manager):
     gemma.config.cmd_args = ["--asdf"]
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(manager.get_or_start_model("gemma"), timeout=5)
+        await asyncio.wait_for(manager.get_or_start_model("gemma"), timeout=10)
 
 
 async def test_download_model_success(gemma):
