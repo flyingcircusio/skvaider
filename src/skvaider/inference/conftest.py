@@ -8,7 +8,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skvaider.inference import app_factory
-from skvaider.inference.manager import Manager
+from skvaider.inference.config import ModelConfig
+from skvaider.inference.manager import Manager, Model
 
 
 @pytest.fixture
@@ -52,29 +53,24 @@ async def manager(model_config_path):
 
 
 @pytest.fixture
-def gemma(models_cache, model_config_path, manager):
-    # XXX this should be a cached gemma instance -> prepare the
-    # target and avoid downloads
-    filename = "gemma-3-270m-it-UD-Q4_K_XL.gguf"
-    gemma_url = f"https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/{filename}?download=true"
-    target = (models_cache / filename).absolute()
+async def gemma(models_cache, model_config_path, manager):
+    config = ModelConfig(
+        id="gemma",
+        url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
+        hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
+        context_size=4096,
+        cmd_args=[],
+    )
 
-    if not target.exists():
-        with target.open("wb") as f:
-            with httpx.stream("GET", gemma_url, follow_redirects=True) as r:
-                for data in r.iter_bytes():
-                    f.write(data)
+    model = Model(config)
+    manager.add_model(model)
 
-    config_file = model_config_path / "gemma" / "model.json"
-    config_file.parent.mkdir()
+    cache = Path(".models").absolute()
+    cache.mkdir(exist_ok=True)
+    cache_file = cache / model.slug
+    if not cache_file.exists():
+        await model.download()
+        model.model_file.rename(cache_file)
+    model.model_file.symlink_to(cache_file)
 
-    with config_file.open("w", encoding="utf-8") as f:
-        config = {
-            "name": "gemma",
-            "filename": str(target),
-            "cmd_args": [],
-            "context_size": 4096,
-        }
-        json.dump(config, f)
-
-    return config_file, target
+    return model
