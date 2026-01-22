@@ -87,6 +87,67 @@ def test_chat_completions_streaming(client, auth_header, llm_model_name):
                     break
 
 
+def test_multiple_streaming_requests(client, auth_header, llm_model_name):
+    """
+    Test multiple concurrent streaming requests to verify pool management.
+
+    Each request asks the model to count from 1 to 5, and we stagger the start times slightly. (0.2s apart, because batching waits up to 0.1s)
+    5 requests are made in total, and we verify that all complete successfully.
+    """
+    import threading
+    import time
+
+    results = []
+    lock = threading.Lock()
+
+    def make_request(index):
+        payload = {
+            "model": llm_model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Count from 1 to 5, request {index}",
+                }
+            ],
+            "stream": True,
+            "max_tokens": 50,
+        }
+        with client.stream(
+            "POST",
+            "/openai/v1/chat/completions",
+            json=payload,
+            headers={
+                "Content-Type": "application/json",
+            },
+        ) as response:
+            if response.status_code != 200:
+                with lock:
+                    results.append(
+                        (index, False, f"Status code: {response.status_code}")
+                    )
+                return
+            # Read the streamed response
+            content = ""
+            for chunk in response.iter_text():
+                if chunk.strip():
+                    content += chunk
+            with lock:
+                results.append((index, True, content))
+
+    threads = []
+    for i in range(5):
+        t = threading.Thread(target=make_request, args=(i,))
+        threads.append(t)
+        t.start()
+        time.sleep(0.2)  # Stagger the start times slightly
+
+    for t in threads:
+        t.join()
+
+    for index, success, content in results:
+        assert success, f"Request {index} failed: {content}"
+
+
 def test_completions_non_streaming(client, auth_header, llm_model_name):
     payload = {
         "model": llm_model_name,
