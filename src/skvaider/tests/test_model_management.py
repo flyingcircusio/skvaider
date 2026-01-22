@@ -3,12 +3,9 @@
 import asyncio
 
 import httpx
-import svcs
-from fastapi.testclient import TestClient
 
 import skvaider.proxy.backends
-from skvaider.conftest import test_lifespan, wait_for_condition
-from skvaider.inference import app_factory
+from skvaider.conftest import wait_for_condition
 
 
 async def test_backend_model_warmup(llm_model_name, services):
