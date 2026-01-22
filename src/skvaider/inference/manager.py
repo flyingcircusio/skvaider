@@ -125,7 +125,7 @@ class Model:
         self.status = "starting"
         # fmt: off
         cmd = [
-                "llama-server",
+                str(self.config.llama_server),
                 "--no-webui",
                 "-a", self.config.id,
                 "--model", str(self.model_file),
