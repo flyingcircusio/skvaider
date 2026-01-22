@@ -16,25 +16,32 @@ router = APIRouter()
 log = structlog.get_logger()
 
 
-class DownloadRequest(BaseModel):
-    url: str
-    model_name: str
-    metadata: dict[str, Any] | None = None
+@router.get("/models/{model_name}")
+async def get_model_info(
+    model_name: str,
+    services: svcs.fastapi.DepContainer,
+):
+    manager = services.get(Manager)
+
+    model = manager.models.get(model_name)
+    if not model:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    return {
+        "id": model.config.id,
+        "status": model.status,
+        "endpoint": model.endpoint,
+    }
 
 
-@router.post("/get_running_model_or_load")
+@router.post("/models/{model_name}/load")
 async def load_model(
+    model_name: str,
     request: Request,
     services: svcs.fastapi.DepContainer,
 ):
     manager = services.get(Manager)
 
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    model_name = body.get("model")
     if not model_name:
         raise HTTPException(status_code=400, detail="Model not specified")
 
@@ -52,19 +59,13 @@ async def load_model(
     return {"endpoint": running_model.endpoint}
 
 
-@router.post("/unload")
+@router.post("/models/{model_name}/unload")
 async def unload_model(
-    request: Request,
+    model_name: str,
     services: svcs.fastapi.DepContainer,
 ):
     manager = services.get(Manager)
 
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON")
-
-    model_name = body.get("model")
     if not model_name:
         raise HTTPException(status_code=400, detail="Model not specified")
 
@@ -78,23 +79,14 @@ async def list_models(
 ):
     manager = services.get(Manager)
 
-    return {"models": await manager.list_models()}
-
-
-@router.get("/running_models")
-async def list_running_models(
-    services: svcs.fastapi.DepContainer,
-):
-    manager = services.get(Manager)
     return {
-        "models": list(
-            m.config.id for m in manager.models.values() if m.running
-        )
+        "models": await manager.list_models(),
+        "running": [m.config.id for m in manager.models.values() if m.running],
     }
 
 
 @router.api_route(
-    "/model/{model_name}/proxy/{path:path}",
+    "/models/{model_name}/proxy/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE"],
 )
 async def proxy_request(

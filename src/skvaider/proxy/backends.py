@@ -70,7 +70,7 @@ class SkvaiderBackend(Backend):
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
 
-        url = f"{self.url}/model/{model_id}/proxy{path}"
+        url = f"{self.url}/models/{model_id}/proxy{path}"
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(url, json=data, timeout=120)
@@ -83,7 +83,7 @@ class SkvaiderBackend(Backend):
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
 
-        url = f"{self.url}/model/{model_id}/proxy{path}"
+        url = f"{self.url}/models/{model_id}/proxy{path}"
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             async with client.stream(
@@ -96,8 +96,7 @@ class SkvaiderBackend(Backend):
     async def load_model_with_options(self, model_id: str) -> bool:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(
-                f"{self.url}/get_running_model_or_load",
-                json={"model": model_id},
+                f"{self.url}/models/{model_id}/load",
                 timeout=120,
             )
             return r.status_code == 200
@@ -112,8 +111,8 @@ class SkvaiderBackend(Backend):
                     r = await client.get(f"{self.url}/models")
                     known_models = r.json()["models"]
 
-                    r_running = await client.get(f"{self.url}/running_models")
-                    running_models = r_running.json()["models"]
+                    r_running = await client.get(f"{self.url}/models")
+                    running_models = r_running.json()["running"]
 
                 self.log.debug("updating backends")
                 current_models = self.models
