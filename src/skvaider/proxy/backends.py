@@ -1,15 +1,14 @@
 import asyncio
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 import httpx
 import structlog
 from fastapi import HTTPException
 
 if TYPE_CHECKING:
+    from ..typing import ConfigDict, ConfigValue, JSONObject
     from .models import AIModel
-
-if TYPE_CHECKING:
     from .pool import Pool
 
 
@@ -17,12 +16,12 @@ class ModelConfig:
     """Configuration for model-specific options"""
 
     # map model names (including or excluding tags) to dicts containing model-specific settings
-    config: Dict[str, Dict[str, Any]]
+    config: ConfigDict
 
-    def __init__(self, config):
+    def __init__(self, config: ConfigDict):
         self.config = config
 
-    def get(self, model_id: str) -> Optional[Dict[str, Any]]:
+    def get(self, model_id: str) -> ConfigValue:
         """Get custom options for a specific model"""
         for candidate in [model_id, model_id.split(":")[0], "__default__"]:
             if candidate in self.config:
@@ -40,7 +39,7 @@ class Backend(ABC):
     unhealthy_reason: str = ""
     models: dict[str, "AIModel"]
 
-    def __init__(self, url):
+    def __init__(self, url: str):
         self.url = url
         self.models = {}
         self.log = structlog.stdlib.get_logger().bind(backend=self.url)
@@ -50,11 +49,11 @@ class Backend(ABC):
         return sum([v.memory_usage for v in self.models.values()])
 
     @abstractmethod
-    async def post(self, path: str, data: dict): ...
+    async def post(self, path: str, data: dict[str, Any]): ...
 
     @abstractmethod
-    async def post_stream(
-        self, path: str, data: dict
+    def post_stream(
+        self, path: str, data: JSONObject
     ) -> AsyncGenerator[str, None]: ...
 
     @abstractmethod
@@ -65,7 +64,7 @@ class Backend(ABC):
 
 
 class SkvaiderBackend(Backend):
-    async def post(self, path: str, data: dict):
+    async def post(self, path: str, data: dict[str, Any]):
         model_id = data.get("model")
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
@@ -77,7 +76,7 @@ class SkvaiderBackend(Backend):
             return r.json()
 
     async def post_stream(
-        self, path: str, data: dict
+        self, path: str, data: JSONObject
     ) -> AsyncGenerator[str, None]:
         model_id = data.get("model")
         if not model_id:
@@ -125,7 +124,7 @@ class SkvaiderBackend(Backend):
                             backend=self,
                         )
                     else:
-                        model_obj = current_models.get(model_name)
+                        model_obj = current_models[model_name]
 
                     updated_models[model_obj.id] = model_obj
 
