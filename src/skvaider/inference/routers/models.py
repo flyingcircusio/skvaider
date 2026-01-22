@@ -123,12 +123,12 @@ async def proxy_request(
 
     try:
         rp = await client.send(req, stream=True)
-    except Exception as e:
+    except Exception:
         await client.aclose()
-        import traceback
 
-        e_tb = traceback.format_exc()
-        log.error("Proxy request failed", error=str(e), traceback=e_tb)
+        log.exception(
+            "Error in model request {model_name}", model_name=model_name
+        )
         raise HTTPException(
             status_code=500, detail=f"Error in model '{model_name}' request"
         )
