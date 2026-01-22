@@ -109,10 +109,9 @@ class SkvaiderBackend(Backend):
             try:
                 async with httpx.AsyncClient(follow_redirects=True) as client:
                     r = await client.get(f"{self.url}/models")
-                    known_models = r.json()["models"]
-
-                    r_running = await client.get(f"{self.url}/models")
-                    running_models = r_running.json()["running"]
+                    r_json = r.json()
+                    known_models = r_json["models"]
+                    running_models = r_json["running"]
 
                 self.log.debug("updating backends")
                 current_models = self.models
