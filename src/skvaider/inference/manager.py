@@ -197,7 +197,9 @@ class Model:
                         self.process.kill()
                     except ProcessLookupError:
                         pass
-
+        self._port_found.clear()
+        self.process = None
+        self.endpoint = None
         self.status = "stopped"
 
     async def _monitor_process(self):
@@ -291,7 +293,8 @@ class Manager:
     @locked
     async def unload_model(self, model_name: str):
         model = self.models[model_name]
-        await model.terminate()
+        if model.status in ["running", "starting"]:  # idempotent
+            await model.terminate()
 
     @locked
     async def shutdown(self):

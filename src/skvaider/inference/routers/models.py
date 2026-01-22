@@ -48,7 +48,7 @@ async def load_model(
     try:
         running_model = await manager.get_or_start_model(model_name)
     except Exception as e:
-        log.error("Failed to start model", model=model_name, error=str(e))
+        log.exception("Failed to start model", model=model_name)
         raise HTTPException(
             status_code=500, detail=f"Failed to start model: {e}"
         )

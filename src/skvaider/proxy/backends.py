@@ -18,7 +18,7 @@ class ModelConfig:
     """Configuration for model-specific options"""
 
     # map model names (including or excluding tags) to dicts containing model-specific settings
-    config: ConfigDict
+    config: "ConfigDict"
 
     def __init__(self, config: ConfigDict):
         self.config = config

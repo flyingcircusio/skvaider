@@ -44,6 +44,7 @@ class Pool:
         # XXX the same model must not be owned by different organizations!
         # This requires a bit more thought how to handle consistency if
         # backends answer with conflicting/differing model data.
+        # XXX The models in self.models in pool still have backreferences to individual backends
         self.models.clear()
         for backend in self.backends:
             self.models.update(backend.models)
@@ -52,10 +53,15 @@ class Pool:
         for model_id in self.models:
             if model_id in self.queues:
                 continue
+            # Here, a new model appeared
             self.queues[model_id] = asyncio.Queue()
             self.queue_tasks[model_id] = utils.create_task(
                 self.assign_backends(model_id)
             )
+
+        # ensure model is loaded on at least one backend
+        for model_id in self.models:
+            utils.create_task(self.warm_up_model(model_id))
 
         # Remove outdated model queues and tasks
         for model_id, task in self.queue_tasks.items():
@@ -68,6 +74,27 @@ class Pool:
             if model_id in self.models:
                 continue
             del self.queues[model_id]
+
+    async def warm_up_model(self, model_id: str):
+        if any(
+            model_id in b.models and b.models[model_id].is_loaded
+            for b in self.backends
+        ):
+            return
+        # load model on backend with least memory usage
+        candidate_backends = [b for b in self.backends if model_id in b.models]
+        if not candidate_backends:
+            log.error(
+                "trying to load model not present on any backend {model}, are the backends flapping?",
+                model=model_id,
+            )
+            return
+        candidate_backends.sort(key=lambda b: b.memory_usage)
+        backend = candidate_backends[0]
+        log.info(
+            "loading model on backend", model=model_id, backend=backend.url
+        )
+        await backend.load_model_with_options(model_id)
 
     async def assign_backends(self, model_id: str):
         """Continuously assign requests to backends.
@@ -94,7 +121,7 @@ class Pool:
                 b for b in model_backends if b.models[model_id].is_loaded
             ]
             idle_backends = [
-                b for b in loaded_backends if b.models[model_id].idle.is_set()
+                b for b in loaded_backends if b.models[model_id].idle
             ]
             not_loaded_backends = [
                 b for b in model_backends if not b.models[model_id].is_loaded
@@ -162,7 +189,7 @@ class Pool:
                 model.in_progress += 1
                 request.model = model
                 request.backend_available.set()
-            model.idle.clear()
+            model.idle = False
 
     def close(self):
         for task in self.health_check_tasks:

@@ -78,7 +78,7 @@ def wait_for_condition(interval=0.1, timeout=30):
                     await asyncio.sleep(interval)
 
             try:
-                await asyncio.wait_for(loop(), timeout=5)
+                await asyncio.wait_for(loop(), timeout=timeout)
             except asyncio.TimeoutError as e:
                 raise asyncio.TimeoutError(async_condition.__name__) from e
 
