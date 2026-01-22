@@ -51,12 +51,25 @@ class Model:
     def slug(self):
         slug = slugify(self.config.id, 64)
         # The hash as suffix to assist auto-completion in shells
-        slug += "-" + self.config.hash[:8]
+        slug += "-" + self.config.files[0].hash[:8]
+        # if we have multiple hashes, add hash of hashes
+        if len(self.config.files) > 1:
+            hash_of_hashes = hashlib.sha256()
+            for f in self.config.files:
+                hash_of_hashes.update(bytes.fromhex(f.hash))
+            slug += f"-{hash_of_hashes.hexdigest()[:8]}"
         return slug
 
+    def url_to_filename(self, url: str) -> str:
+        # parse the url to get the last path component
+        parsed = httpx.URL(url)
+        path = parsed.path
+        last_component = path.split("/")[-1]
+        return self.datadir / last_component
+
     @property
-    def model_file(self):
-        return self.datadir / "model.gguf"
+    def model_files(self):
+        return [self.url_to_filename(file.url) for file in self.config.files]
 
     @property
     def integrity_marker_file(self):
@@ -64,57 +77,62 @@ class Model:
 
     async def download(self):
         assert self.datadir
-        if self.integrity_marker_file.exists():
+        if self.integrity_marker_file.exists() and all(
+            f.exists() for f in self.model_files
+        ):
             log.info(
                 f"{self.slug}: found valid cached data, no download needed."
             )
             return
 
-        if self.model_file.exists():
-            self.model_file.unlink()
+        verify_got_hashes = []
+        for model_file in self.config.files:
+            url = model_file.url
+            log.info(f"{self.slug}: Downloading {url} ...")
+            if (model_file := self.url_to_filename(url)).exists():
+                model_file.unlink()
+            got_hash_ = hashlib.sha256()
+            async with httpx.AsyncClient(timeout=30) as client:
+                async with client.stream(
+                    "GET", url, follow_redirects=True
+                ) as response:
+                    download_size = int(
+                        response.headers.get("content-length", 0)
+                    )
+                    download_status = 0
+                    response.raise_for_status()
 
-        log.info(f"Downloading {self.config.url} ...")
-        got_hash_ = hashlib.sha256()
-        async with httpx.AsyncClient(timeout=30) as client:
-            async with client.stream(
-                "GET", self.config.url, follow_redirects=True
-            ) as response:
-                download_size = int(response.headers.get("content-length", 0))
-                download_status = 0
-                response.raise_for_status()
+                    async def log_progress():
+                        while True:
+                            await asyncio.sleep(5)
+                            if download_size:
+                                progress = int(
+                                    (download_status / download_size) * 100
+                                )
+                                log.info(f"{self.slug}: {progress}%")
+                            else:
+                                log.info(
+                                    f"{self.slug}: {download_status:,d} (unknown size)"
+                                )
 
-                async def log_progress():
-                    while True:
-                        await asyncio.sleep(5)
-                        if download_size:
-                            progress = int(
-                                (download_status / download_size) * 100
-                            )
-                            log.info(f"{self.slug}: {progress}%")
-                        else:
-                            log.info(
-                                f"{self.slug}: {download_status:,d} (unknown size)"
-                            )
+                    status_task = asyncio.create_task(log_progress())
+                    try:
+                        async with await anyio.open_file(model_file, "ab") as f:
+                            async for chunk in response.aiter_bytes():
+                                download_status += len(chunk)
+                                got_hash_.update(chunk)
+                                await f.write(chunk)
+                    finally:
+                        status_task.cancel()
 
-                status_task = asyncio.create_task(log_progress())
-                try:
-                    async with await anyio.open_file(
-                        self.model_file, "wb"
-                    ) as f:
-                        async for chunk in response.aiter_bytes():
-                            download_status += len(chunk)
-                            got_hash_.update(chunk)
-                            await f.write(chunk)
-                finally:
-                    status_task.cancel()
+            got_hash = got_hash_.hexdigest()
+            verify_got_hashes.append(got_hash)
 
-        got_hash = got_hash_.hexdigest()
-
-        if self.config.hash != got_hash:
-            log.error(
-                f"Hash error downloading {self.config.id}: expected {self.config.hash}, got {got_hash}."
-            )
-            raise ValueError(got_hash)
+        for expected, got in zip(
+            [file.hash for file in self.config.files], verify_got_hashes
+        ):
+            if expected != got:
+                raise ValueError(got)
 
         self.integrity_marker_file.touch()
         log.info(f"{self.slug}: success")
@@ -128,7 +146,7 @@ class Model:
                 str(self.config.llama_server),
                 "--no-webui",
                 "-a", self.config.id,
-                "--model", str(self.model_file),
+                "--model", str(self.model_files[0]),
                 "--jinja", # XXX per model?
                 "--host", self._host,
                 "--port", "0",  # let the kernel select a free port

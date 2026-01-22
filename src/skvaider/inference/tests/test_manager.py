@@ -4,7 +4,7 @@ import json
 import httpx
 import pytest
 
-from skvaider.inference.config import ModelConfig
+from skvaider.inference.config import ModelConfig, ModelFile
 from skvaider.inference.manager import Model
 
 
@@ -16,15 +16,19 @@ async def test_manager_start_crash_quick_return(gemma, manager):
 
 async def test_download_model_success(gemma):
     await gemma.download()
-    assert gemma.model_file.exists()
+    assert gemma.model_files[0].exists()
     assert gemma.integrity_marker_file.exists()
 
 
-async def test_download_model_wrong_hash(tmp_path):
+async def test_download_model_wrong_hash(tmp_path, gguf_http_server):
     config = ModelConfig(
         id="gemma",
-        url="https://downloads.fcio.net",  # use a small download we know exists.
-        hash="foobar",
+        files=[
+            ModelFile(
+                url=f"{gguf_http_server}/not-a-model.gguf",
+                hash="foobar",
+            )
+        ],
     )
     model = Model(config)
     model.datadir = tmp_path
@@ -32,9 +36,9 @@ async def test_download_model_wrong_hash(tmp_path):
         await model.download()
     assert (
         e.value.args[0]
-        == "f670df141ead7ea89bcb20cf9bb5c798c301c267fd531d01477decfd1acb8b4f"
+        == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     )
-    assert model.model_file.exists()
+    assert model.model_files[0].exists()
     assert not model.integrity_marker_file.exists()
 
 
