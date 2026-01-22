@@ -1,3 +1,4 @@
+import http.server
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skvaider.inference import app_factory
-from skvaider.inference.config import ModelConfig
+from skvaider.inference.config import ModelConfig, ModelFile
 from skvaider.inference.manager import Manager, Model
 
 
@@ -54,8 +55,12 @@ async def manager(model_path):
 async def gemma(models_cache, manager):
     config = ModelConfig(
         id="gemma",
-        url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
-        hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
+        files=[
+            ModelFile(
+                url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
+                hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
+            )
+        ],
         context_size=4096,
         cmd_args=[],
     )
@@ -63,14 +68,53 @@ async def gemma(models_cache, manager):
     model = Model(config)
     manager.add_model(model)
 
-    cache_file = models_cache / model.slug
-    if not cache_file.exists():
+    cache_dir = models_cache / model.slug
+    if cache_dir.exists() and cache_dir.is_file():
+        cache_dir.unlink()
+    if not cache_dir.exists():
         await model.download()
-        model.model_file.rename(cache_file)
+        cache_dir.mkdir()
+        for f in model.model_files:
+            f.rename(cache_dir / f.name)
     # We had data in the cache. The download method is unaware of the test-fixture
     # caching. Maybe there could be a real world use case to make download() smarter.
     # The test harness needs to ensure that we restore the data from the cache as expected.
-    model.model_file.symlink_to(cache_file)
+    for f in model.model_files:
+        f.symlink_to(cache_dir / f.name)
     model.integrity_marker_file.touch()
 
     return model
+
+
+# should load tests/fixtures/gguf_http_server_files/*
+@pytest.fixture
+def gguf_http_server():
+    server_address = ("localhost", 0)  # let the OS pick an available port
+    MY_FILE_DIR = Path(__file__).parent.resolve()
+
+    class CustomHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(
+                *args,
+                directory=str(
+                    MY_FILE_DIR
+                    / "tests"
+                    / "fixtures"
+                    / "gguf_http_server_files"
+                ),
+                **kwargs,
+            )
+
+    httpd = http.server.HTTPServer(server_address, CustomHandler)
+    port = httpd.server_address[1]
+
+    import threading
+
+    thread = threading.Thread(target=httpd.serve_forever)
+    thread.daemon = True
+    thread.start()
+
+    yield f"http://localhost:{port}"
+
+    httpd.shutdown()
+    thread.join()

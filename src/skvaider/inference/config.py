@@ -21,8 +21,12 @@ class LoggingConfig(BaseLoggingConfig):
 
 class ModelConfig(BaseModel):
     id: str | None = None
-    url: str
-    hash: str
+    files: list["ModelFile"]
     cmd_args: list[str] = []
     context_size: int | None = None
     llama_server: Path = Path("llama-server")
+
+
+class ModelFile(BaseModel):
+    url: str
+    hash: str
