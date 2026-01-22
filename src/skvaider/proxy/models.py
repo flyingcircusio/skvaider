@@ -43,7 +43,9 @@ class AIModel(BaseModel):
 
     @idle.setter
     def idle(self, value: bool) -> None:
-        if not value:
+        if value:
+            self.__idle.set()
+        else:
             self.__idle.clear()
 
     @contextlib.asynccontextmanager
@@ -55,7 +57,7 @@ class AIModel(BaseModel):
             self.log.debug("done", in_progress=self.in_progress)
             if not self.in_progress:
                 self.log.debug("idling")
-                self.__idle.set()
+                self.idle = True
 
     async def wait(self):
         await self.__idle.wait()
