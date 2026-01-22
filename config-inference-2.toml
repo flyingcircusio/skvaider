@@ -5,19 +5,18 @@ models_dir = "models-2"
 log_level = "DEBUG"
 access_log_path = ".access_log-inference"
 
-[openai.models."unsloth/gemma-3-270m-it-GGUF:gemma-3-270m-it-UD-Q4_K_XL"]
-# aliases = ["gemma3-270m"] XXX?
+[[openai.models]]
 id = "gemma"
 context_size = 4096
 cmd_args = []
-[[openai.models."unsloth/gemma-3-270m-it-GGUF:gemma-3-270m-it-UD-Q4_K_XL".files]]
+[[openai.models.files]]
 url = "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true"
 hash = "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
 
-[openai.models."unsloth/embeddinggemma-300m-GGUF/embeddinggemma-300m-Q4_0"]
+[[openai.models]]
 id = "embeddinggemma"
 cmd_args = ["--embeddings"]
-[[openai.models."unsloth/embeddinggemma-300m-GGUF/embeddinggemma-300m-Q4_0".files]]
+[[openai.models.files]]
 url = "https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/6661a6504c30d8304af13455cb4a5d4f5bc6011f/embeddinggemma-300m-Q4_0.gguf?download=true"
 hash = "edc6015cb15694c27be7d1d33f1bc015db9a358ff51ed524628c027504907ba9"
 
