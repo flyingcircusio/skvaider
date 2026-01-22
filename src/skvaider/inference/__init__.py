@@ -47,9 +47,7 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
     registry.register_value(Manager, manager)
 
     model_downloads = []
-    for model_id, model_config in config.openai.models.items():
-        if not model_config.id:
-            model_config.id = model_id
+    for model_config in config.openai.models:
         model = skvaider.inference.manager.Model(model_config)
         manager.add_model(model)
         model_downloads.append(model.download())

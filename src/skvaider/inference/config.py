@@ -12,7 +12,7 @@ class Config(BaseModel):
 
 
 class OpenAIConfig(BaseModel):
-    models: dict[str, "ModelConfig"]
+    models: list["ModelConfig"]
 
 
 class LoggingConfig(BaseLoggingConfig):
@@ -21,10 +21,10 @@ class LoggingConfig(BaseLoggingConfig):
 
 class ModelConfig(BaseModel):
     id: str | None = None
-    files: list["ModelFile"]
     cmd_args: list[str] = []
     context_size: int | None = None
     llama_server: Path = Path("llama-server")
+    files: list["ModelFile"]
 
 
 class ModelFile(BaseModel):
