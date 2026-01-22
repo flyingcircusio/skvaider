@@ -25,7 +25,7 @@ class ProxyRequest:
 class Pool:
     backends: list["Backend"]
     health_check_tasks: list[asyncio.Task]
-    queues: dict[str, asyncio.Queue]  # one queue per model
+    queues: dict[str, asyncio.Queue[ProxyRequest]]  # one queue per model
 
     def __init__(self):
         self.backends = []
@@ -120,16 +120,15 @@ class Pool:
             if not idle_backends:
                 # Need to wait for an idle backend
                 log.debug("waiting for idle backends", model=model_id)
-                backends_to_wait_for = [
+                tasks = [
                     utils.create_task(b.models[model_id].wait())
                     for b in model_backends
                 ]
-                idle_backends, _ = await asyncio.wait(
-                    backends_to_wait_for,
+                ready_tasks, _ = await asyncio.wait(
+                    tasks,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                # the above is a set, we want a list
-                idle_backends = [b for b in idle_backends]
+                idle_backends = [t.result().backend for t in ready_tasks]
             backend = idle_backends[0]
             model = backend.models[model_id]
             log.debug("got idle backend", backend=backend.url, model=model_id)
@@ -148,7 +147,11 @@ class Pool:
                 return_exceptions=True,
             )
             request_batch.extend(
-                [t for t in more_request_tasks if not isinstance(t, Exception)]
+                [
+                    t
+                    for t in more_request_tasks
+                    if not isinstance(t, BaseException)
+                ]
             )
             for request in request_batch:
                 log.debug(

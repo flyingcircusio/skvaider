@@ -1,8 +1,12 @@
 import asyncio
 import re
 import unicodedata
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 import structlog.stdlib
+
+T = TypeVar("T")
 
 log = structlog.stdlib.get_logger()
 
@@ -16,7 +20,7 @@ def log_task_exception(task: asyncio.Task) -> None:
         log.exception("Exception raised by task = %r", task)
 
 
-def create_task(aw):
+def create_task(aw: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
     t = asyncio.create_task(aw)
     t.add_done_callback(log_task_exception)
     return t
