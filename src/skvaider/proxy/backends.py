@@ -6,8 +6,10 @@ import httpx
 import structlog
 from fastapi import HTTPException
 
+from ..typing import ConfigDict, ConfigValue, JSONObject
+
 if TYPE_CHECKING:
-    from ..typing import ConfigDict, ConfigValue, JSONObject
+    # Avoid circular imports
     from .models import AIModel
     from .pool import Pool
 
