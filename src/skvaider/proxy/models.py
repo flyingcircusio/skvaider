@@ -1,6 +1,6 @@
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import Any
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -8,8 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from .backends import Backend
 
 log = structlog.stdlib.get_logger()
-
-T = TypeVar("T")
 
 
 class AIModel(BaseModel):
@@ -26,12 +24,12 @@ class AIModel(BaseModel):
     last_used: float = Field(default=0, exclude=True)
     in_progress: int = Field(default=0, exclude=True)
     limit: int = Field(default=5, exclude=True)
-    idle: asyncio.Event = Field(default=True, exclude=True)
+    idle: asyncio.Event = Field(exclude=True)
     is_loaded: bool = Field(default=False, exclude=True)
     memory_usage: int = Field(default=0, exclude=True)
     log: Any = Field(default=None, exclude=True)
 
-    def __init__(self, *args, **kw):
+    def __init__(self, *args: Any, **kw: Any) -> None:
         super().__init__(*args, **kw)
         self.idle = asyncio.Event()
         self.idle.set()
@@ -52,8 +50,3 @@ class AIModel(BaseModel):
     async def wait(self):
         await self.idle.wait()
         return self
-
-
-class ListResponse(BaseModel, Generic[T]):
-    object: str = "list"
-    data: list[T]

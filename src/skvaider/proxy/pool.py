@@ -16,7 +16,7 @@ log = structlog.stdlib.get_logger()
 
 class ProxyRequest:
     backend_available: asyncio.Event
-    model: AIModel = None
+    model: AIModel | None = None
 
     def __init__(self):
         self.backend_available = asyncio.Event()
@@ -24,15 +24,15 @@ class ProxyRequest:
 
 class Pool:
     backends: list["Backend"]
-    health_check_tasks: list[asyncio.Task]
+    health_check_tasks: list[asyncio.Task[None]]
     queues: dict[str, asyncio.Queue[ProxyRequest]]  # one queue per model
 
     def __init__(self):
         self.backends = []
         self.health_check_tasks = []
         self.queues = {}
-        self.models = {}
-        self.queue_tasks = {}
+        self.models: dict[str, AIModel] = {}
+        self.queue_tasks: dict[str, asyncio.Task[None]] = {}
 
     def add_backend(self, backend: "Backend"):
         self.backends.append(backend)

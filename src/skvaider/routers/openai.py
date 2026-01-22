@@ -1,14 +1,23 @@
 """Open-AI compatible API."""
 
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 import structlog
 import svcs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
-from skvaider.proxy.models import AIModel, ListResponse
+from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
+
+T = TypeVar("T")
+
+
+class ListResponse(BaseModel, Generic[T]):
+    object: str = "list"
+    data: list[T]
+
 
 router = APIRouter()
 
