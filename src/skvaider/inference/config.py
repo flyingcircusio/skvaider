@@ -25,3 +25,4 @@ class ModelConfig(BaseModel):
     hash: str
     cmd_args: list[str] = []
     context_size: int | None = None
+    llama_server: Path = Path("llama-server")
