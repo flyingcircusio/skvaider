@@ -3,7 +3,7 @@
 
 We've compared the numerical stability of an embedding model to get an impression how big the impact is when changing inference runtimes, parameters, quantization, and hardware backends.
 
-## Chosen model
+# Chosen model
 
 We used embeddinggemma:300m.
 
@@ -26,7 +26,7 @@ curl http://127.0.0.1:8000/models/embeddinggemma:300m/proxy/v1/embeddings   -H "
   }'
 
 
-## Results
+# Results
 
 ## Euclidean Distance
 
@@ -49,3 +49,4 @@ curl http://127.0.0.1:8000/models/embeddinggemma:300m/proxy/v1/embeddings   -H "
 | 4-m4-metal-Q4_0      |                      |                      |                      |                      |               0.9220 |               0.9220 |
 | 5-W7900-rocm-F32     |                      |                      |                      |                      |                      |               1.0000 |
 | 6-W7900-rocm_mmq-F32 |                      |                      |                      |                      |                      |                      |
+ls.
