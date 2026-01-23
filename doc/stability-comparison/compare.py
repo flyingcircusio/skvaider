@@ -7,6 +7,7 @@
 #
 import itertools
 import json
+import re
 from pathlib import Path
 
 import sklearn.metrics.pairwise
@@ -18,6 +19,14 @@ for file in sorted(Path(".").glob("*.json")):
     data[file.stem] = f_data["data"][0]["embedding"]
 
 names = list(data.keys())
+
+PRECISIONS = re.compile(r"(Q[0-9]+_[0-9A-Za-z_]+|F[0-9]+)")
+
+
+def precision(name: str) -> str | None:
+    m = PRECISIONS.search(name)
+    return m.group(1) if m else None
+
 
 euclidean: dict[tuple[str, str], float] = {}
 cosine: dict[tuple[str, str], float] = {}
@@ -33,11 +42,12 @@ for a, b in itertools.combinations(names, 2):
 
 
 def print_table(title: str, values: dict[tuple[str, str], float]) -> None:
+    # Bold adds 4 chars of non-visible width
     col_width = max(len(n) for n in names)
-    col_width = max(col_width, 6)  # at least wide enough for "0.0000"
+    col_width = max(col_width, 10)  # wide enough for "**0.0000**"
 
-    def pad(s: str) -> str:
-        return s.rjust(col_width)
+    def pad(s: str, extra: int = 0) -> str:
+        return s.rjust(col_width + extra)
 
     print(f"## {title}\n")
     header = (
@@ -56,7 +66,14 @@ def print_table(title: str, values: dict[tuple[str, str], float]) -> None:
             if j <= i:
                 cells.append(pad(""))
             else:
-                cells.append(pad(f"{values[row, col]:.4f}"))
+                val = f"{values[row, col]:.4f}"
+                rp = precision(row)
+                cp = precision(col)
+                if rp and cp and rp == cp:
+                    val = f"**{val}**"
+                    cells.append(pad(val, 4))
+                else:
+                    cells.append(pad(val))
         print(f"| {row.ljust(col_width)} | " + " | ".join(cells) + " |")
     print()
 
