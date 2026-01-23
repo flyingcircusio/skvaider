@@ -17,7 +17,10 @@ data: dict[str, list[float]] = {}
 
 for file in sorted(Path(".").glob("*.json")):
     f_data = json.loads(file.read_text(encoding="utf-8"))
-    data[file.stem] = f_data["data"][0]["embedding"]
+    vec = f_data["data"][0]["embedding"]
+    norm = math.sqrt(sum(x * x for x in vec))
+    print(f"{file.stem}: L2 norm = {norm:.6f}")
+    data[file.stem] = [x / norm for x in vec]
 
 names = list(data.keys())
 
@@ -70,7 +73,7 @@ def print_table(
     )
     output.append(header)
     output.append(separator)
-    for i, row in enumerate(names):
+    for i, row in enumerate(names[:-1]):
         cells = []
         for j, col in enumerate(names):
             if j <= i:
