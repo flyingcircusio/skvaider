@@ -47,6 +47,7 @@ module-name = ["aramaki", "skvaider"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
+exclude = ["doc/**"]
 
 [dependency-groups]
 dev = [
