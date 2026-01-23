@@ -2,6 +2,7 @@ import asyncio
 import functools
 import hashlib
 import re
+import shutil
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, Concatenate, Literal, ParamSpec, Protocol, TypeVar
@@ -156,9 +157,14 @@ class Model:
         assert self.config.id is not None
         log.info("Starting model", model=self.config.id)
         self.status = "starting"
+        llama_server = self.config.llama_server
+        if len(llama_server.parts) == 1:
+            resolved = shutil.which(str(llama_server))
+            assert resolved
+            llama_server = Path(resolved)
         # fmt: off
         cmd: list[str] = [
-                str(self.config.llama_server),
+                str(llama_server),
                 # Keep the alias as first argument to make ps output
                 # easier to read.
                 "-a", self.config.id,
