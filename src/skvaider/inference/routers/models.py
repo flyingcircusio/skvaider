@@ -28,6 +28,7 @@ async def get_model_info(
         "id": model.config.id,
         "status": model.status,
         "endpoint": model.endpoint,
+        "healthy": model.is_healthy,
     }
 
 
