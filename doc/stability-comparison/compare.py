@@ -19,38 +19,47 @@ for file in sorted(Path(".").glob("*.json")):
 
 names = list(data.keys())
 
-distances: dict[tuple[str, str], float] = {}
+euclidean: dict[tuple[str, str], float] = {}
+cosine: dict[tuple[str, str], float] = {}
 for a, b in itertools.combinations(names, 2):
-    dist = sklearn.metrics.pairwise.euclidean_distances([data[a]], [data[b]])[
+    ed = sklearn.metrics.pairwise.euclidean_distances([data[a]], [data[b]])[0][
         0
-    ][0]
-    distances[a, b] = dist
-    distances[b, a] = dist
-
-# Render markdown table with aligned columns
-col_width = max(len(n) for n in names)
-col_width = max(col_width, 6)  # at least wide enough for "0.0000"
-
-
-def pad(s: str) -> str:
-    return s.rjust(col_width)
+    ]
+    euclidean[a, b] = ed
+    euclidean[b, a] = ed
+    cs = sklearn.metrics.pairwise.cosine_similarity([data[a]], [data[b]])[0][0]
+    cosine[a, b] = cs
+    cosine[b, a] = cs
 
 
-header = (
-    f"| {''.ljust(col_width)} | " + " | ".join(pad(n) for n in names) + " |"
-)
-separator = (
-    f"| {'-' * col_width} | "
-    + " | ".join("-" * (col_width - 1) + ":" for _ in names)
-    + " |"
-)
-print(header)
-print(separator)
-for i, row in enumerate(names):
-    cells = []
-    for j, col in enumerate(names):
-        if j <= i:
-            cells.append(pad(""))
-        else:
-            cells.append(pad(f"{distances[row, col]:.4f}"))
-    print(f"| {row.ljust(col_width)} | " + " | ".join(cells) + " |")
+def print_table(title: str, values: dict[tuple[str, str], float]) -> None:
+    col_width = max(len(n) for n in names)
+    col_width = max(col_width, 6)  # at least wide enough for "0.0000"
+
+    def pad(s: str) -> str:
+        return s.rjust(col_width)
+
+    print(f"## {title}\n")
+    header = (
+        f"| {''.ljust(col_width)} | " + " | ".join(pad(n) for n in names) + " |"
+    )
+    separator = (
+        f"| {'-' * col_width} | "
+        + " | ".join("-" * (col_width - 1) + ":" for _ in names)
+        + " |"
+    )
+    print(header)
+    print(separator)
+    for i, row in enumerate(names):
+        cells = []
+        for j, col in enumerate(names):
+            if j <= i:
+                cells.append(pad(""))
+            else:
+                cells.append(pad(f"{values[row, col]:.4f}"))
+        print(f"| {row.ljust(col_width)} | " + " | ".join(cells) + " |")
+    print()
+
+
+print_table("Euclidean Distance", euclidean)
+print_table("Cosine Similarity", cosine)
