@@ -122,3 +122,25 @@ async def test_manager_start_model(gemma, manager):
 
     assert model.running is False
     assert model.status == "stopped"
+
+
+async def test_download_split_model(tmp_path, gguf_http_server):
+    config = ModelConfig(
+        id="split-gemma",
+        files=[
+            ModelFile(
+                url=f"{gguf_http_server}/split-gguf-1.gguf",
+                hash="4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+            ),
+            ModelFile(
+                url=f"{gguf_http_server}/split-gguf-2.gguf",
+                hash="53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+            ),
+        ],
+    )
+    model = Model(config)
+    model.datadir = tmp_path
+    await model.download()
+    assert model.model_files[0].exists()
+    assert model.model_files[1].exists()
+    assert model.integrity_marker_file.exists()
