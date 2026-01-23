@@ -47,7 +47,6 @@ module-name = ["aramaki", "skvaider"]
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
-exclude = [ "**/conftest.py", "**/tests/*" ]
 
 [dependency-groups]
 dev = [

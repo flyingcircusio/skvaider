@@ -58,7 +58,7 @@ async def verify_token(
     # the correct types from services.aget() with a factory for a context manager that isn't entered
     # are just too hard for the type system for now afaict.
     try:
-        client_token = json.loads(
+        client_token: dict[str, str] = json.loads(
             base64.b64decode(
                 credentials.credentials.encode("utf-8"), validate=True
             ).decode("utf-8")

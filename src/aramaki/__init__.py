@@ -1,4 +1,4 @@
-from .collection import Collection
+from .collection import AbstractCollection, Collection
 from .manager import Manager
 
-__all__ = ["Manager", "Collection"]
+__all__ = ["AbstractCollection", "Collection", "Manager"]

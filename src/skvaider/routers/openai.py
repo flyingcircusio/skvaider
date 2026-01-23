@@ -1,5 +1,7 @@
 """Open-AI compatible API."""
 
+from collections.abc import AsyncGenerator
+from contextlib import AbstractAsyncContextManager
 from typing import Any, Generic, TypeVar
 
 import structlog
@@ -8,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from skvaider.proxy.backends import Backend
 from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
 
@@ -31,8 +34,13 @@ class OpenAIProxy:
         self.services = services
         self.pool = self.services.get(Pool)
 
-    async def proxy(self, request, endpoint, allow_stream=True):
-        request_data = await request.json()
+    async def proxy(
+        self,
+        request: Request,
+        endpoint: str,
+        allow_stream: bool = True,
+    ) -> StreamingResponse | Any:
+        request_data: dict[str, Any] = await request.json()
         request_data["store"] = False
         request.state.model = request_data["model"]
         request.state.stream = allow_stream and request_data.get(
@@ -48,7 +56,10 @@ class OpenAIProxy:
         if request.state.stream:
             # We need to place the context manager in a scope that is valid while the response is
             # streaming, so wrap the original streaming method and iterate there
-            async def stream(stream_aws, context):
+            async def stream(
+                stream_aws: AsyncGenerator[str],
+                context: AbstractAsyncContextManager[Backend],
+            ) -> AsyncGenerator[str]:
                 try:
                     async for chunk in stream_aws:
                         yield chunk
@@ -77,7 +88,7 @@ async def list_models(
     services: svcs.fastapi.DepContainer,
 ) -> ListResponse[AIModel]:
     pool = services.get(Pool)
-    return ListResponse[AIModel](data=pool.models.values())
+    return ListResponse[AIModel](data=list(pool.models.values()))
 
 
 @router.get("/v1/models/{model_id}")
