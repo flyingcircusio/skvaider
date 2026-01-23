@@ -144,7 +144,7 @@ def llm_model_name(request: pytest.FixtureRequest) -> str:
 
 
 @pytest.fixture
-def token_db() -> Generator[DummyTokens, None]:
+def token_db() -> Generator[DummyTokens, None, None]:
     DUMMY_TOKENS.data.clear()
     yield DUMMY_TOKENS
 
@@ -171,6 +171,6 @@ async def auth_header(
 
 
 @pytest.fixture
-def client() -> Generator[TestClient, None]:
+def client() -> Generator[TestClient, None, None]:
     with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client

@@ -46,6 +46,9 @@ class Model:
     config: "skvaider.inference.config.ModelConfig"
     datadir: Path
     status: Literal["stopped", "running", "starting", "stopping"] = "stopped"
+    is_healthy: bool = False
+    health_check_interval: float = 30
+    health_check_timeout: float = 10
 
     _port_found: asyncio.Event
     _tasks: list[asyncio.Task[Any]]
@@ -201,6 +204,8 @@ class Model:
             self._create_task(self._monitor_output(self.process.stdout, False))
             startup_task = self._create_task(self._wait_for_startup())
             await startup_task
+            # self.is_healthy is set by the monitoring task which starts immediately
+            self._create_task(self._monitor_health())
         except Exception:
             await self.terminate()
             raise
@@ -248,6 +253,7 @@ class Model:
         self.process = None
         self.endpoint = None
         self.status = "stopped"
+        self.is_healthy = False
 
     async def _monitor_process(self) -> None:
         """Monitor whether our process has exited."""
@@ -294,6 +300,50 @@ class Model:
                     port = int(match.group(1))
                     self.endpoint = f"http://{self._host}:{port}"
                     self._port_found.set()
+
+    async def _monitor_health(self) -> None:
+        """Periodically check if the model is responsive."""
+        while True:
+            # We check first, then sleep
+            if self.status != "running" or not self.endpoint:
+                self.is_healthy = False
+                await asyncio.sleep(self.health_check_interval)
+                continue
+
+            try:
+                # We use a minimal generation request to ensure the model isn't stuck
+                async with httpx.AsyncClient(
+                    timeout=self.health_check_timeout
+                ) as client:
+                    if "--embeddings" in self.config.cmd_args:
+                        resp = await client.post(
+                            f"{self.endpoint}/v1/embeddings",
+                            json={
+                                "input": "health check",
+                                "model": self.config.id,
+                            },
+                        )
+                    else:
+                        resp = await client.post(
+                            f"{self.endpoint}/v1/completions",
+                            json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
+                        )
+                    if resp.status_code == 200:
+                        self.is_healthy = True
+                    else:
+                        log.warning(
+                            "Health check failed",
+                            model=self.config.id,
+                            status=resp.status_code,
+                        )
+                        self.is_healthy = False
+            except Exception as e:
+                log.warning(
+                    "Health check error", model=self.config.id, error=str(e)
+                )
+                self.is_healthy = False
+
+            await asyncio.sleep(self.health_check_interval)
 
     async def _wait_for_startup(self) -> None:
         await self._port_found.wait()

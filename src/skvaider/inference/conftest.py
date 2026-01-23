@@ -15,7 +15,7 @@ from skvaider.inference.manager import Manager, Model
 
 
 @pytest.fixture
-def services() -> Generator[svcs.Container, None]:
+def services() -> Generator[svcs.Container, None, None]:
     reg = svcs.Registry()
     with svcs.Container(reg) as container:
         yield container
@@ -29,7 +29,7 @@ async def test_lifespan(
 
 
 @pytest.fixture
-def client() -> Generator[TestClient, None]:
+def client() -> Generator[TestClient, None, None]:
     with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client
 
@@ -94,7 +94,7 @@ async def gemma(models_cache: Path, manager: Manager) -> Model:
 
 
 @pytest.fixture
-def gguf_http_server() -> Generator[str, None]:
+def gguf_http_server() -> Generator[str, None, None]:
     """Serve static GGUF fixture files via HTTP."""
     server_address = ("localhost", 0)  # let the OS pick an available port
     MY_FILE_DIR = Path(__file__).parent.resolve()

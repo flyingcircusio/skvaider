@@ -104,12 +104,25 @@ def app_factory(lifespan: Any = lifespan) -> FastAPI:
     app.include_router(models.router)
 
     @app.get("/manager/health")
-    async def health() -> (  # pyright: ignore[reportUnusedFunction]
-        dict[str, str]
-    ):
-        # XXX show model status and convert to multiple reports with ok/not ok
-        # and return 5xx on not ok
-        return {"status": "ok"}
+    async def health(  # pyright: ignore[reportUnusedFunction]
+        services: svcs.fastapi.DepContainer,
+    ) -> JSONResponse:
+        manager = services.get(Manager)
+        models_status = {
+            id: {"status": m.status, "healthy": m.is_healthy}
+            for id, m in manager.models.items()
+        }
+        all_ok = all(
+            not (m.status == "running" and not m.is_healthy)
+            for m in manager.models.values()
+        )
+        return JSONResponse(
+            status_code=200 if all_ok else 503,
+            content={
+                "status": "ok" if all_ok else "error",
+                "models": models_status,
+            },
+        )
 
     app.add_middleware(
         LoggingMiddleware, logger=getLogger("skvaider.accesslog")
