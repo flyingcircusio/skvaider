@@ -159,20 +159,26 @@ class Model:
         # fmt: off
         cmd: list[str] = [
                 str(self.config.llama_server),
-                "--no-webui",
+                # Keep the alias as first argument to make ps output
+                # easier to read.
                 "-a", self.config.id,
+
+                # Model
                 "--model", str(self.model_files[0]),
-                "--jinja", # XXX per model?
+                "--jinja", # XXX allow/require control per model?
+                "--ctx-size", str(self.config.context_size),
+
+                # Network
                 "--host", self._host,
                 "--port", "0",  # let the kernel select a free port
+
+                # Security
+                "--no-webui",
+
                 # Monitoring
                 "--metrics",
                 "--slots",
             ]
-        if self.config.context_size:
-            cmd += [
-                    "--ctx-size", str(self.config.context_size),
-                ]
         cmd += self.config.cmd_args
         # fmt: on
         log.debug("cli", argv=" ".join(cmd))
