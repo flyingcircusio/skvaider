@@ -7,6 +7,7 @@
 #
 import itertools
 import json
+import math
 import re
 from pathlib import Path
 
@@ -41,7 +42,15 @@ for a, b in itertools.combinations(names, 2):
     cosine[b, a] = cs
 
 
-def print_table(title: str, values: dict[tuple[str, str], float]) -> None:
+output: list[str] = []
+
+
+def print_table(
+    title: str,
+    values: dict[tuple[str, str], float],
+    fmt: str = ".4f",
+    suffix: str = "",
+) -> None:
     # Bold adds 4 chars of non-visible width
     col_width = max(len(n) for n in names)
     col_width = max(col_width, 10)  # wide enough for "**0.0000**"
@@ -49,7 +58,8 @@ def print_table(title: str, values: dict[tuple[str, str], float]) -> None:
     def pad(s: str, extra: int = 0) -> str:
         return s.rjust(col_width + extra)
 
-    print(f"## {title}\n")
+    output.append(f"## {title}")
+    output.append("")
     header = (
         f"| {''.ljust(col_width)} | " + " | ".join(pad(n) for n in names) + " |"
     )
@@ -58,15 +68,15 @@ def print_table(title: str, values: dict[tuple[str, str], float]) -> None:
         + " | ".join("-" * (col_width - 1) + ":" for _ in names)
         + " |"
     )
-    print(header)
-    print(separator)
+    output.append(header)
+    output.append(separator)
     for i, row in enumerate(names):
         cells = []
         for j, col in enumerate(names):
             if j <= i:
                 cells.append(pad(""))
             else:
-                val = f"{values[row, col]:.4f}"
+                val = f"{values[row, col]:{fmt}}{suffix}"
                 rp = precision(row)
                 cp = precision(col)
                 if rp and cp and rp == cp:
@@ -74,9 +84,26 @@ def print_table(title: str, values: dict[tuple[str, str], float]) -> None:
                     cells.append(pad(val, 4))
                 else:
                     cells.append(pad(val))
-        print(f"| {row.ljust(col_width)} | " + " | ".join(cells) + " |")
-    print()
+        output.append(f"| {row.ljust(col_width)} | " + " | ".join(cells) + " |")
+    output.append("")
 
+
+angles: dict[tuple[str, str], float] = {
+    k: math.degrees(math.acos(min(1.0, max(-1.0, v))))
+    for k, v in cosine.items()
+}
 
 print_table("Euclidean Distance", euclidean)
 print_table("Cosine Similarity", cosine)
+print_table("Angle", angles, fmt=".1f", suffix="°")
+
+BEGIN = "<!-- BEGIN comparison -->"
+END = "<!-- END comparison -->"
+
+readme = Path("README.md")
+content = readme.read_text(encoding="utf-8")
+before = content[: content.index(BEGIN) + len(BEGIN)]
+after = content[content.index(END) :]
+readme.write_text(
+    before + "\n" + "\n".join(output) + "\n" + after, encoding="utf-8"
+)
