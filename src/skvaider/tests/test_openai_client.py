@@ -3,32 +3,38 @@
 Test script to verify OpenAI client compatibility with our API gateway.
 """
 
+from collections.abc import Generator
+
 import pytest
+from fastapi.testclient import TestClient
 from openai import OpenAI
 
 
 @pytest.fixture
-def openai_client(client, auth_token):
+def openai_client(
+    client: TestClient, auth_token: str
+) -> Generator[OpenAI, None]:
     yield OpenAI(
         base_url="http://testserver/openai/v1",
-        http_client=client,
+        http_client=client,  # pyright: ignore[reportArgumentType]
         api_key=auth_token,
     )
 
 
-def test_model_list(openai_client, llm_model_name):
+def test_model_list(openai_client: OpenAI, llm_model_name: str):
     models = openai_client.models.list()
     assert len(models.data) >= 1
     assert llm_model_name in [x.id for x in models.data]
 
 
-def test_chat_completions(openai_client, llm_model_name):
+def test_chat_completions(openai_client: OpenAI, llm_model_name: str):
     response = openai_client.chat.completions.create(
         model=llm_model_name,
         messages=[{"role": "user", "content": "Say 'hello world'"}],
         max_tokens=50,  # More generous token budget
     )
     assert response.choices[0].message.content
+    assert response.usage
     assert 0 < response.usage.total_tokens < 100
 
 
@@ -51,7 +57,7 @@ def test_chat_completions(openai_client, llm_model_name):
 #     assert response.usage.total_tokens < 200
 
 
-def test_chat_completions_streaming(openai_client, llm_model_name):
+def test_chat_completions_streaming(openai_client: OpenAI, llm_model_name: str):
     stream = openai_client.chat.completions.create(
         model=llm_model_name,
         messages=[{"role": "user", "content": "Count from 1 to 5"}],
@@ -74,17 +80,18 @@ def test_chat_completions_streaming(openai_client, llm_model_name):
     assert full_content
 
 
-def test_completions(openai_client, llm_model_name):
+def test_completions(openai_client: OpenAI, llm_model_name: str):
     response = openai_client.completions.create(
         model=llm_model_name,
         prompt="The capital of France is",
         max_tokens=50,  # More generous token budget
     )
     assert response.choices[0].text
+    assert response.usage
     assert 0 < response.usage.total_tokens <= 100
 
 
-def test_completions_streaming(openai_client, llm_model_name):
+def test_completions_streaming(openai_client: OpenAI, llm_model_name: str):
     stream = openai_client.completions.create(
         model=llm_model_name,
         prompt="The capital of France is",
@@ -106,7 +113,7 @@ def test_completions_streaming(openai_client, llm_model_name):
     assert 0 < chunk_count < 100
 
 
-def test_embeddings(openai_client):
+def test_embeddings(openai_client: OpenAI):
     response = openai_client.embeddings.create(
         input="Test String", model="embeddinggemma"
     )

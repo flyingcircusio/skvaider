@@ -1,30 +1,35 @@
+from pathlib import Path
+
 import pytest
 
 from aramaki.db import DBSessionManager, SessionManagerClosed
 
 
-async def test_session_manager(tmpdir):
-    manager = DBSessionManager(tmpdir)
+async def test_session_manager(tmp_path: Path):
+    manager = DBSessionManager(tmp_path)
     manager.upgrade()
 
-    assert manager._engine is not None
-    assert manager._sessionmaker is not None
+    assert manager._engine is not None  # pyright: ignore[reportPrivateUsage]
+    sm = manager._sessionmaker  # pyright: ignore[reportPrivateUsage]
+    assert sm is not None
 
     await manager.close()
 
-    assert manager._engine is None
-    assert manager._sessionmaker is None
+    assert manager._engine is None  # pyright: ignore[reportPrivateUsage]
+    sm = manager._sessionmaker  # pyright: ignore[reportPrivateUsage]
+    assert sm is None
 
     # idempotent
 
     await manager.close()
 
-    assert manager._engine is None
-    assert manager._sessionmaker is None
+    assert manager._engine is None  # pyright: ignore[reportPrivateUsage]
+    sm = manager._sessionmaker  # pyright: ignore[reportPrivateUsage]
+    assert sm is None
 
 
-async def test_session_manager_context_manager(tmpdir):
-    manager = DBSessionManager(tmpdir)
+async def test_session_manager_context_manager(tmp_path: Path):
+    manager = DBSessionManager(tmp_path)
     manager.upgrade()
 
     async with manager.session():

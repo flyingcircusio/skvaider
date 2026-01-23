@@ -3,8 +3,12 @@
 Simple test script to verify the OpenAI-compatible endpoints work correctly.
 """
 
+from fastapi.testclient import TestClient
 
-def test_list_models(client, auth_header, llm_model_name):
+
+def test_list_models(
+    client: TestClient, auth_header: None, llm_model_name: str
+):
     response = client.get("/openai/v1/models")
     assert response.status_code == 200
     data = response.json()["data"]
@@ -12,7 +16,7 @@ def test_list_models(client, auth_header, llm_model_name):
     assert llm_model_name in [m["id"] for m in data]
 
 
-def test_get_model(client, auth_header, llm_model_name):
+def test_get_model(client: TestClient, auth_header: None, llm_model_name: str):
     response = client.get(f"/openai/v1/models/{llm_model_name}")
     assert response.status_code == 200
     model = response.json()
@@ -22,7 +26,9 @@ def test_get_model(client, auth_header, llm_model_name):
     # assert model["owned_by"] == "skvaider"
 
 
-def test_completions_with_non_existing_model(client, auth_header):
+def test_completions_with_non_existing_model(
+    client: TestClient, auth_header: None
+):
     payload = {
         "model": "non-existing",
         "messages": [{"role": "user", "content": "Hello, how are you?"}],
@@ -39,7 +45,9 @@ def test_completions_with_non_existing_model(client, auth_header):
     assert response.status_code == 400
 
 
-def test_chat_completions_non_streaming(client, auth_header, llm_model_name):
+def test_chat_completions_non_streaming(
+    client: TestClient, auth_header: None, llm_model_name: str
+):
     payload = {
         "model": llm_model_name,
         "messages": [{"role": "user", "content": "Hello, how are you?"}],
@@ -56,7 +64,9 @@ def test_chat_completions_non_streaming(client, auth_header, llm_model_name):
     assert response.status_code == 200, response.text
 
 
-def test_chat_completions_streaming(client, auth_header, llm_model_name):
+def test_chat_completions_streaming(
+    client: TestClient, auth_header: None, llm_model_name: str
+):
     payload = {
         "model": llm_model_name,
         "messages": [{"role": "user", "content": "Count from 1 to 3"}],
@@ -87,7 +97,9 @@ def test_chat_completions_streaming(client, auth_header, llm_model_name):
                     break
 
 
-def test_multiple_streaming_requests(client, auth_header, llm_model_name):
+def test_multiple_streaming_requests(
+    client: TestClient, auth_header: None, llm_model_name: str
+):
     """
     Test multiple concurrent streaming requests to verify pool management.
 
@@ -97,10 +109,10 @@ def test_multiple_streaming_requests(client, auth_header, llm_model_name):
     import threading
     import time
 
-    results = []
+    results: list[tuple[int, bool, str]] = []
     lock = threading.Lock()
 
-    def make_request(index):
+    def make_request(index: int) -> None:
         payload = {
             "model": llm_model_name,
             "messages": [
@@ -134,7 +146,7 @@ def test_multiple_streaming_requests(client, auth_header, llm_model_name):
             with lock:
                 results.append((index, True, content))
 
-    threads = []
+    threads: list[threading.Thread] = []
     for i in range(5):
         t = threading.Thread(target=make_request, args=(i,))
         threads.append(t)
@@ -148,7 +160,9 @@ def test_multiple_streaming_requests(client, auth_header, llm_model_name):
         assert success, f"Request {index} failed: {content}"
 
 
-def test_completions_non_streaming(client, auth_header, llm_model_name):
+def test_completions_non_streaming(
+    client: TestClient, auth_header: None, llm_model_name: str
+):
     payload = {
         "model": llm_model_name,
         "prompt": "The capital of France is",
@@ -166,7 +180,9 @@ def test_completions_non_streaming(client, auth_header, llm_model_name):
     assert response.headers["content-type"] == "application/json"
 
 
-def test_model_context_limit_applied(client, auth_header, llm_model_name):
+def test_model_context_limit_applied(
+    client: TestClient, auth_header: None, llm_model_name: str
+):
     """Test that custom context limits are applied when loading models"""
     import time
 

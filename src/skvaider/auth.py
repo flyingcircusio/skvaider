@@ -23,11 +23,11 @@ class AuthTokens(aramaki.Collection):
 async def verify_token(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_auth)],
     services: svcs.fastapi.DepContainer,
-):
+) -> None:
     authtokens = await services.aget(AuthTokens)
 
     try:
-        client_token = json.loads(
+        client_token: dict[str, str] = json.loads(
             base64.b64decode(
                 credentials.credentials.encode("utf-8"), validate=True
             ).decode("utf-8")
@@ -39,6 +39,7 @@ async def verify_token(
     if not db_token:
         raise HTTPException(401, detail="Bad authentication")
     try:
+        assert isinstance(db_token["secret_hash"], str)
         hasher.verify(db_token["secret_hash"], client_token["secret"])
     # We could specify explicit exceptions here but go the safe route and just catch all in case the lib addes one
     except Exception:

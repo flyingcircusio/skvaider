@@ -1,6 +1,8 @@
 import asyncio
 import base64
 import json
+from collections.abc import AsyncGenerator, Callable, Coroutine
+from typing import Any, Generator
 
 import httpx
 import pytest
@@ -9,41 +11,54 @@ from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import aramaki
 import skvaider.auth
 import skvaider.proxy.backends
 import skvaider.proxy.pool
+from aramaki.typing import JSONObject
 from skvaider import app_factory
 
 hasher = PasswordHasher()
 
 
-class DummyTokens:
+class DummyTokens(aramaki.AbstractCollection):
+    collection = "test.tokens"
+
     def __init__(self):
-        self.data = {}
+        self.data: dict[str, JSONObject] = {}
 
-    async def get(self, key):
-        return self.data.get(key)
+    async def get(
+        self, key: str, default: JSONObject | None = None
+    ) -> JSONObject | None:
+        return self.data.get(key, default)
 
-    async def keys(self):
-        return self.data.keys()
+    async def keys(self) -> list[str]:
+        return list(self.data.keys())
 
 
 DUMMY_TOKENS = DummyTokens()
 
 
 @pytest.fixture
-def services():
+def services() -> Generator[svcs.Container, None]:
     reg = svcs.Registry()
-    reg.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
+    reg.register_value(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AuthTokens, DUMMY_TOKENS
+    )
     with svcs.Container(reg) as container:
         yield container
 
 
-def wait_for_condition(interval=0.1, timeout=30):
-    def decorator(async_condition):
-        async def wrapped():
-            async def loop():
-                result = False
+def wait_for_condition(interval: float = 0.1, timeout: float = 30) -> Callable[
+    [Callable[[], Coroutine[Any, Any, bool]]],
+    Callable[[], Coroutine[Any, Any, None]],
+]:
+    def decorator(
+        async_condition: Callable[[], Coroutine[Any, Any, bool]],
+    ) -> Callable[[], Coroutine[Any, Any, None]]:
+        async def wrapped() -> None:
+            async def loop() -> None:
+                result: bool = False
                 while True:
                     try:
                         result = await async_condition()
@@ -66,48 +81,56 @@ def wait_for_condition(interval=0.1, timeout=30):
 
 
 @svcs.fastapi.lifespan
-async def test_lifespan(app: FastAPI, registry: svcs.Registry):
+async def test_lifespan(
+    app: FastAPI, registry: svcs.Registry
+) -> AsyncGenerator[None, None]:
     pool = skvaider.proxy.pool.Pool()
 
     url = "http://127.0.0.1:8001"
 
     @wait_for_condition()
-    async def backend_connection_is_up():
+    async def backend_connection_is_up() -> bool:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{url}/manager/health")
             if resp.status_code == 200:
                 return True
+        return False
 
     await backend_connection_is_up()
 
     pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url))
 
-    registry.register_value(skvaider.proxy.pool.Pool, pool)
-    registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
+    registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.proxy.pool.Pool, pool
+    )
+    registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AuthTokens, DUMMY_TOKENS
+    )
 
     @wait_for_condition()
-    async def wait_for_healthy_backends():
+    async def wait_for_healthy_backends() -> bool:
         return all(b.healthy for b in pool.backends)
 
     await wait_for_healthy_backends()
 
-    yield {}
+    yield
     pool.close()
 
 
 @pytest.fixture(params=["gemma"])
-def llm_model_name(request):
-    return request.param
+def llm_model_name(request: pytest.FixtureRequest) -> str:
+    result: str = request.param
+    return result
 
 
 @pytest.fixture
-def token_db():
+def token_db() -> Generator[DummyTokens, None]:
     DUMMY_TOKENS.data.clear()
     yield DUMMY_TOKENS
 
 
 @pytest.fixture
-async def auth_token(token_db):
+async def auth_token(token_db: DummyTokens) -> AsyncGenerator[str, None]:
     """Return a valid auth token."""
     secret = "asdf"
     token_db.data["user"] = {"secret_hash": hasher.hash(secret)}
@@ -118,7 +141,9 @@ async def auth_token(token_db):
 
 
 @pytest.fixture
-async def auth_header(client, auth_token):
+async def auth_header(
+    client: TestClient, auth_token: str
+) -> AsyncGenerator[None, None]:
     """Inject a valid auth header into all client requests."""
     header = {"Authorization": f"Bearer {auth_token}"}
     client.headers.update(header)
@@ -126,6 +151,6 @@ async def auth_header(client, auth_token):
 
 
 @pytest.fixture
-def client():
+def client() -> Generator[TestClient, None]:
     with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client

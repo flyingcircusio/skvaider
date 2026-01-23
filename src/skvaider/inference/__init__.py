@@ -1,10 +1,11 @@
 import asyncio
-import logging
 import os
 import shutil
 import tomllib
+from collections.abc import AsyncGenerator
 from logging import getLogger
 from logging.config import dictConfig
+from typing import Any, Awaitable
 
 import structlog
 import structlog.dev
@@ -24,7 +25,9 @@ log = structlog.stdlib.get_logger()
 
 
 @svcs.fastapi.lifespan
-async def lifespan(app: FastAPI, registry: svcs.Registry):
+async def lifespan(
+    app: FastAPI, registry: svcs.Registry
+) -> AsyncGenerator[None]:
     config_file = os.environ.get(
         "SKVAIDER_CONFIG_FILE", "config-inference.toml"
     )
@@ -44,9 +47,11 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
         raise
 
     manager = Manager(models_dir=config.models_dir)
-    registry.register_value(Manager, manager)
+    registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        Manager, manager
+    )
 
-    model_downloads = []
+    model_downloads: list[Awaitable[Any]] = []
     for model_config in config.openai.models:
         model = skvaider.inference.manager.Model(model_config)
         manager.add_model(model)
@@ -60,7 +65,7 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
 
     log.info("Ready to handle requests.")
 
-    def purge_outdated_models():
+    def purge_outdated_models() -> None:
         worklist = set(m.absolute() for m in manager.models_dir.glob("*"))
         worklist = worklist - set(
             m.datadir.absolute() for m in manager.models.values()
@@ -72,16 +77,17 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
             else:
                 shutil.rmtree(dir, ignore_errors=True)
 
-    tasks = []
+    tasks: list[asyncio.Task[Any]] = []
     tasks.append(asyncio.create_task(asyncio.to_thread(purge_outdated_models)))
 
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(global_exception_handler)
     dictConfig(
         logging_config(config.logging)
-    )  # XXX makes us swallow lifespan errors?
+    )  # Activate logging late, otherwise we swallow lifecycle errors.
 
     yield
+
     log.info("Shutting down...")
     await manager.shutdown()
 
@@ -93,13 +99,16 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
             pass
 
 
-def app_factory(lifespan=lifespan):
+def app_factory(lifespan: Any = lifespan) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.include_router(models.router)
 
-    # XXX
     @app.get("/manager/health")
-    async def health():
+    async def health() -> (  # pyright: ignore[reportUnusedFunction]
+        dict[str, str]
+    ):
+        # XXX show model status and convert to multiple reports with ok/not ok
+        # and return 5xx on not ok
         return {"status": "ok"}
 
     app.add_middleware(
@@ -107,7 +116,9 @@ def app_factory(lifespan=lifespan):
     )
 
     @app.exception_handler(Exception)
-    async def global_exception_handler(request: Request, exc: Exception):
+    async def _exception_handler(  # pyright: ignore[reportUnusedFunction]
+        request: Request, exc: Exception
+    ) -> JSONResponse:
         """
         This catches all unhandled 500 errors anywhere in the app.
         """

@@ -1,7 +1,7 @@
 import ipaddress
 import logging
 import time
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 import structlog
 from fastapi import Request
@@ -45,7 +45,10 @@ class LoggingMiddleware:
                     anon_net = client_ip.supernet(new_prefix=24)
                 if client_ip.version == 6:
                     anon_net = client_ip.supernet(new_prefix=64)
-                anon_ip = str(anon_net.network_address)
+                if anon_net is not None:
+                    # This shouldn't happen and we could likely assert on non-None-ness,
+                    # but I'm not willing to (have Skvaider) die on that hill.
+                    anon_ip = str(anon_net.network_address)
             except ValueError:
                 pass
 
@@ -92,7 +95,7 @@ class LoggingMiddleware:
             )
 
 
-def logging_config(config: LoggingConfig) -> dict:
+def logging_config(config: LoggingConfig) -> dict[str, Any]:
     return {
         "version": 1,
         "handlers": {

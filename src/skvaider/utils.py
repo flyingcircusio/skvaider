@@ -11,7 +11,7 @@ T = TypeVar("T")
 log = structlog.stdlib.get_logger()
 
 
-def log_task_exception(task: asyncio.Task) -> None:
+def log_task_exception(task: asyncio.Task[Any]) -> None:
     try:
         task.result()
     except asyncio.CancelledError:

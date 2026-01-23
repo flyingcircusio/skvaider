@@ -1,8 +1,11 @@
 import asyncio
 import os
 import tomllib
+from asyncio import AbstractEventLoop
+from collections.abc import AsyncGenerator
 from logging import getLogger
 from logging.config import dictConfig
+from typing import Any
 
 import structlog.dev
 import structlog.stdlib
@@ -10,6 +13,7 @@ import svcs
 from fastapi import FastAPI, Request, Security
 from fastapi.responses import JSONResponse
 
+import skvaider.auth
 import skvaider.proxy.backends
 import skvaider.proxy.pool
 import skvaider.routers.openai
@@ -21,7 +25,9 @@ from skvaider.logging import LoggingMiddleware, logging_config
 log = structlog.stdlib.get_logger()
 
 
-def global_exception_handler(loop, context):
+def global_exception_handler(
+    loop: AbstractEventLoop, context: dict[str, Any]
+) -> None:
     """
     This is the global handler for all unhandled exceptions in asyncio.
     """
@@ -53,7 +59,9 @@ def global_exception_handler(loop, context):
 
 
 @svcs.fastapi.lifespan
-async def lifespan(app: FastAPI, registry: svcs.Registry):
+async def lifespan(
+    app: FastAPI, registry: svcs.Registry
+) -> AsyncGenerator[None]:
     config_file = os.environ.get("SKVAIDER_CONFIG_FILE", "config.toml")
     with open(config_file, "rb") as f:
         config_data = tomllib.load(f)
@@ -73,7 +81,9 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
             )
         else:
             raise TypeError(backend_config.type)
-    registry.register_value(skvaider.proxy.pool.Pool, pool)
+    registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.proxy.pool.Pool, pool
+    )
 
     aramaki = AramakiManager(
         config.aramaki.principal,
@@ -84,7 +94,7 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
     )
     aramaki.start()
     auth_tokens = aramaki.register_collection(skvaider.auth.AuthTokens)
-    registry.register_factory(
+    registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
         skvaider.auth.AuthTokens, auth_tokens.get_collection_with_session
     )
 
@@ -92,12 +102,14 @@ async def lifespan(app: FastAPI, registry: svcs.Registry):
         logging_config(config.logging)
     )  # XXX makes us swallow lifespan errors?
 
-    yield {}
+    yield
     aramaki.stop()
     pool.close()
 
 
-def app_factory(lifespan=lifespan):
+def app_factory(
+    lifespan: Any = lifespan,
+) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.include_router(
         skvaider.routers.openai.router,
@@ -109,7 +121,9 @@ def app_factory(lifespan=lifespan):
     )
 
     @app.exception_handler(Exception)
-    async def global_exception_handler(request: Request, exc: Exception):
+    async def _global_exception_handler(  # pyright: ignore[reportUnusedFunction]
+        request: Request, exc: Exception
+    ) -> JSONResponse:
         """
         This catches all unhandled 500 errors anywhere in the app.
         """

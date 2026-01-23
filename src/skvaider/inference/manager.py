@@ -2,8 +2,9 @@ import asyncio
 import functools
 import hashlib
 import re
+from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Callable, Dict, Literal, Optional
+from typing import Any, Concatenate, Literal, ParamSpec, Protocol, TypeVar
 
 import anyio
 import httpx
@@ -14,13 +15,25 @@ from skvaider.utils import slugify
 
 log = structlog.get_logger()
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-def locked(func: Callable) -> Callable:
+
+class HasLock(Protocol):
+    _lock: asyncio.Lock
+
+
+SelfT = TypeVar("SelfT", bound=HasLock)
+
+
+def locked(
+    func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
     """Decorator that acquires self._lock before executing an async method."""
 
     @functools.wraps(func)
-    async def wrapper(self, *args, **kwargs):
-        async with self._lock:
+    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
+        async with self._lock:  # pyright: ignore[reportPrivateUsage]
             return await func(self, *args, **kwargs)
 
     return wrapper
@@ -34,21 +47,22 @@ class Model:
     status: Literal["stopped", "running", "starting", "stopping"] = "stopped"
 
     _port_found: asyncio.Event
-    _tasks: list[asyncio.Task]
+    _tasks: list[asyncio.Task[Any]]
     _host = "127.0.0.1"
 
-    def __init__(self, config):
+    def __init__(self, config: "skvaider.inference.config.ModelConfig"):
         self.config = config
 
         self._port_found = asyncio.Event()
         self._tasks = []
 
     @property
-    def running(self):
+    def running(self) -> bool:
         return self.status == "running"
 
     @property
-    def slug(self):
+    def slug(self) -> str:
+        assert self.config.id is not None
         slug = slugify(self.config.id, 64)
         # The hash as suffix to assist auto-completion in shells
         slug += "-" + self.config.files[0].hash[:8]
@@ -60,7 +74,7 @@ class Model:
             slug += f"-{hash_of_hashes.hexdigest()[:8]}"
         return slug
 
-    def url_to_filename(self, url: str) -> str:
+    def url_to_filename(self, url: str) -> Path:
         # parse the url to get the last path component
         parsed = httpx.URL(url)
         path = parsed.path
@@ -68,14 +82,14 @@ class Model:
         return self.datadir / last_component
 
     @property
-    def model_files(self):
+    def model_files(self) -> list[Path]:
         return [self.url_to_filename(file.url) for file in self.config.files]
 
     @property
-    def integrity_marker_file(self):
+    def integrity_marker_file(self) -> Path:
         return self.datadir / "integrity.ok"
 
-    async def download(self):
+    async def download(self) -> None:
         assert self.datadir
         if self.integrity_marker_file.exists() and all(
             f.exists() for f in self.model_files
@@ -85,7 +99,7 @@ class Model:
             )
             return
 
-        verify_got_hashes = []
+        verify_got_hashes: list[str] = []
         for model_file in self.config.files:
             url = model_file.url
             log.info(f"{self.slug}: Downloading {url} ...")
@@ -137,12 +151,13 @@ class Model:
         self.integrity_marker_file.touch()
         log.info(f"{self.slug}: success")
 
-    async def start(self):
+    async def start(self) -> None:
         """Start the model process."""
+        assert self.config.id is not None
         log.info("Starting model", model=self.config.id)
         self.status = "starting"
         # fmt: off
-        cmd = [
+        cmd: list[str] = [
                 str(self.config.llama_server),
                 "--no-webui",
                 "-a", self.config.id,
@@ -180,12 +195,14 @@ class Model:
         log.info("Model started", model=self.config.id, endpoint=self.endpoint)
         self.status = "running"
 
-    def _create_task(self, awaitable):
+    def _create_task(
+        self, awaitable: Coroutine[Any, Any, Any]
+    ) -> asyncio.Task[Any]:
         t = asyncio.create_task(awaitable)
         self._tasks.append(t)
         return t
 
-    async def terminate(self):
+    async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model process", model=self.config.id)
         self.status = "stopping"
@@ -220,7 +237,7 @@ class Model:
         self.endpoint = None
         self.status = "stopped"
 
-    async def _monitor_process(self):
+    async def _monitor_process(self) -> None:
         """Monitor whether our process has exited."""
         assert self.process is not None
         await self.process.wait()
@@ -234,8 +251,15 @@ class Model:
         # Clean up
         await self.terminate()
 
-    async def _monitor_output(self, stream, is_stderr: bool):
+    async def _monitor_output(
+        self,
+        stream: asyncio.StreamReader | None,
+        is_stderr: bool,
+    ) -> None:
         stream_name = "stderr" if is_stderr else "stdout"
+        if stream is None:
+            log.warning(f"No stream for {stream_name}.")
+            return
         while True:
             line = await stream.readline()
             if not line:
@@ -259,7 +283,7 @@ class Model:
                     self.endpoint = f"http://{self._host}:{port}"
                     self._port_found.set()
 
-    async def _wait_for_startup(self):
+    async def _wait_for_startup(self) -> None:
         await self._port_found.wait()
         async with httpx.AsyncClient() as client:
             while True:
@@ -274,14 +298,15 @@ class Model:
 
 class Manager:
     models_dir: Path
-    models: Dict[str, Model]
+    models: dict[str, Model]
 
-    def __init__(self, models_dir):
+    def __init__(self, models_dir: Path):
         self.models_dir = models_dir
         self.models = {}
         self._lock = asyncio.Lock()
 
-    def add_model(self, model):
+    def add_model(self, model: Model) -> None:
+        assert model.config.id is not None
         assert model.config.id not in self.models
         self.models[model.config.id] = model
         model.datadir = self.models_dir / model.slug
@@ -295,7 +320,7 @@ class Manager:
         self,
         model_name: str,
         timeout: int = 60,
-    ) -> Optional[Model]:
+    ) -> Model:
         model = self.models[model_name]
         if not model.running:
             try:
@@ -309,13 +334,13 @@ class Manager:
         return model
 
     @locked
-    async def unload_model(self, model_name: str):
+    async def unload_model(self, model_name: str) -> None:
         model = self.models[model_name]
         if model.status in ["running", "starting"]:  # idempotent
             await model.terminate()
 
     @locked
-    async def shutdown(self):
+    async def shutdown(self) -> None:
         for model in self.models.values():
             await model.terminate()
         self.models.clear()

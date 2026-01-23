@@ -4,6 +4,8 @@ import json
 import time
 import unittest.mock
 import uuid
+from pathlib import Path
+from typing import Any, AsyncGenerator, Generator
 
 import pytest
 import websockets
@@ -14,16 +16,17 @@ from aramaki.manager import (
     MessageReplaySet,
     MessageTooOldError,
 )
+from aramaki.typing import JSONObject
 
 
 @pytest.fixture
-def now(monkeypatch):
+def now(monkeypatch: pytest.MonkeyPatch) -> Generator[unittest.mock.Mock, None]:
     now = unittest.mock.Mock()
     now.return_value = 0
 
     class MockedDateTime(datetime.datetime):
         @classmethod
-        def now(cls, tz=None):
+        def now(cls, tz: datetime.tzinfo | None = None) -> "MockedDateTime":
             return cls.fromtimestamp(now.return_value, tz)
 
     monkeypatch.setattr(time, "time", now)
@@ -31,7 +34,7 @@ def now(monkeypatch):
     yield now
 
 
-def test_now_mock(now):
+def test_now_mock(now: unittest.mock.Mock):
     assert time.time() == 0
     assert (
         datetime.datetime.now(datetime.UTC).isoformat()
@@ -39,7 +42,7 @@ def test_now_mock(now):
     )
 
 
-def test_message_replay_set(now):
+def test_message_replay_set(now: unittest.mock.Mock):
     set = MessageReplaySet()
 
     # An unknown id doesn't trigger
@@ -61,7 +64,9 @@ def test_message_replay_set(now):
     assert "asdf" not in set.ids
 
 
-def test_message_replay_set_expire_interval_triggerd(now):
+def test_message_replay_set_expire_interval_triggerd(
+    now: unittest.mock.Mock,
+):
     set = MessageReplaySet()
     assert set.last_expire == now()
 
@@ -80,7 +85,9 @@ def test_message_replay_set_expire_interval_triggerd(now):
     assert set.last_expire < now()
 
 
-def test_message_replay_set_expire_only_outdated(now):
+def test_message_replay_set_expire_only_outdated(
+    now: unittest.mock.Mock,
+):
     set = MessageReplaySet()
     # Mark two IDs distributed so that we can move time forward
     # and expire one, but not the other
@@ -104,12 +111,12 @@ def test_message_replay_set_expire_only_outdated(now):
         set.check("bsdf")
 
 
-async def test_manager_authenticate(now, tmp_path):
+async def test_manager_authenticate(now: unittest.mock.Mock, tmp_path: Path):
     manager = Manager("host1", "app", "dummy", "asdf", tmp_path)
 
     # Start assembling a message until we pass it. This needs
     # 1. A proper principal
-    message = {"@principal": "foobar"}
+    message: JSONObject = {"@principal": "foobar"}
     with pytest.raises(AssertionError):
         manager.authenticate(message)
 
@@ -148,20 +155,22 @@ async def test_manager_authenticate(now, tmp_path):
     )
 
 
-async def test_manager_stop_start(tmp_path):
+async def test_manager_stop_start(tmp_path: Path):
     manager = Manager("host1", "app", "dummy", "asdf", tmp_path)
     manager.start()
     manager.stop()
 
 
-async def test_manager_creates_new_dir(tmp_path):
+async def test_manager_creates_new_dir(tmp_path: Path):
     dir = tmp_path / "new"
     assert not dir.exists()
     Manager("host1", "app", "dummy", "asdf", dir)
     assert dir.exists()
 
 
-async def test_manager_prepare_message(now, tmp_path, monkeypatch):
+async def test_manager_prepare_message(
+    now: unittest.mock.Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     manager = Manager("host1", "app", "dummy", "asdf", tmp_path)
 
     m_uuid = unittest.mock.Mock()
@@ -186,16 +195,18 @@ async def test_manager_prepare_message(now, tmp_path, monkeypatch):
     }
 
 
-async def test_manager_process_message(now, tmp_path, monkeypatch):
+async def test_manager_process_message(
+    now: unittest.mock.Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     manager = Manager("host1", "app", "dummy", "asdf", tmp_path)
 
-    seen_messages = []
+    seen_messages: list[JSONObject] = []
 
-    async def handle_message(message):
+    async def handle_message(message: JSONObject) -> None:
         seen_messages.append(message)
 
     manager.register_message_handler("message", handle_message)
-    message = {
+    message: JSONObject = {
         "key": "value",
         "@type": "message",
         "@context": "https://flyingcircus.io/ns/aramaki",
@@ -233,11 +244,11 @@ async def test_manager_process_message(now, tmp_path, monkeypatch):
 
 
 async def test_manager_process_with_missing_or_unknown_type_ignored(
-    now, tmp_path, monkeypatch
+    now: unittest.mock.Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     manager = Manager("host1", "app", "dummy", "asdf", tmp_path)
 
-    message = {
+    message: JSONObject = {
         "key": "value",
         "@context": "https://flyingcircus.io/ns/aramaki",
         "@version": 1,
@@ -256,6 +267,7 @@ async def test_manager_process_with_missing_or_unknown_type_ignored(
     await manager.process(json.dumps(message))
 
     del message["@type"]
+    assert isinstance(message["@id"], str)
     message["@id"] += "a"  # make a new id
     manager.sign_message(message)
     await manager.process(json.dumps(message))
@@ -264,26 +276,33 @@ async def test_manager_process_with_missing_or_unknown_type_ignored(
 class AsyncContextManagerMock:
     """Mock for async context managers with nested mocking capabilities."""
 
-    def __init__(self, mock):
+    def __init__(self, mock: unittest.mock.AsyncMock):
         """Initialize with a mock that will be returned from __aenter__."""
         self.mock = mock
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> unittest.mock.AsyncMock:
         """Enter async context manager."""
         return self.mock
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> None:
         """Exit async context manager."""
         pass
 
 
-async def test_manager_run_loop(now, tmp_path, monkeypatch):
+async def test_manager_run_loop(
+    now: unittest.mock.Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     websocket = unittest.mock.AsyncMock()
     connect = unittest.mock.Mock()
     connect.return_value = AsyncContextManagerMock(websocket)
     monkeypatch.setattr(websockets, "connect", connect)
 
-    async def receive_messages(self):
+    async def receive_messages(self: Any) -> AsyncGenerator[bytes, None]:
         yield b'{"@type": "message", "@principal": "@directory", "@expiry": "1970-01-01T01:00:00+00:00", "@id": "id", "@signature": {"alg": "HS256", "signature": "11c4cc460685c85ac035f3aed98c96ff7a39b6036fa9c81a701ad9c3a3433d76"}}'
         await asyncio.sleep(10000)
 
@@ -296,9 +315,9 @@ async def test_manager_run_loop(now, tmp_path, monkeypatch):
     manager = Manager("host1", "app", "dummy", "asdf", tmp_path)
     manager.start()
 
-    seen_messages = []
+    seen_messages: list[JSONObject] = []
 
-    async def handle_message(message):
+    async def handle_message(message: JSONObject) -> None:
         seen_messages.append(message)
 
     manager.register_message_handler("message", handle_message)
@@ -318,7 +337,10 @@ async def test_manager_run_loop(now, tmp_path, monkeypatch):
 
     await manager.send_message("foobar", {"key": "value"})
 
-    assert websocket.send.call_args_list == [
+    calls = (
+        websocket.send.call_args_list
+    )  # pyright: ignore[reportUnknownMemberType]
+    assert calls == [
         unittest.mock.call(
             '{"key": "value", "@type": "foobar", "@context": "https://flyingcircus.io/ns/aramaki", "@version": 1, "@principal": "host1", "@application": "app", "@issued": "1970-01-01T00:00:00+00:00", "@expiry": "1970-01-01T01:00:00+00:00", "@id": "64473ce93de046988f93a3feb6e11914", "@signature": {"alg": "HS256", "signature": "5a97fe6881c6dbe8a73ba95ef63ca1dc2f9882d8494c58b2c6799b13f79e37da"}}'
         ),

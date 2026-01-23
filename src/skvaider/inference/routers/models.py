@@ -1,16 +1,13 @@
-import json
-from pathlib import Path
-from typing import Any
+from collections.abc import AsyncGenerator
 
-import anyio
 import httpx
 import structlog
 import svcs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from skvaider.inference.manager import Manager
+from skvaider.typing import JSONObject
 
 router = APIRouter()
 log = structlog.get_logger()
@@ -20,7 +17,7 @@ log = structlog.get_logger()
 async def get_model_info(
     model_name: str,
     services: svcs.fastapi.DepContainer,
-):
+) -> JSONObject:
     manager = services.get(Manager)
 
     model = manager.models.get(model_name)
@@ -39,7 +36,7 @@ async def load_model(
     model_name: str,
     request: Request,
     services: svcs.fastapi.DepContainer,
-):
+) -> JSONObject:
     manager = services.get(Manager)
 
     if not model_name:
@@ -63,7 +60,7 @@ async def load_model(
 async def unload_model(
     model_name: str,
     services: svcs.fastapi.DepContainer,
-):
+) -> JSONObject:
     manager = services.get(Manager)
 
     if not model_name:
@@ -76,7 +73,7 @@ async def unload_model(
 @router.get("/models")
 async def list_models(
     services: svcs.fastapi.DepContainer,
-):
+) -> JSONObject:
     manager = services.get(Manager)
 
     return {
@@ -94,7 +91,7 @@ async def proxy_request(
     path: str,
     request: Request,
     services: svcs.fastapi.DepContainer,
-):
+) -> StreamingResponse:
     manager = services.get(Manager)
 
     model = await manager.get_or_start_model(model_name)
@@ -125,7 +122,7 @@ async def proxy_request(
             status_code=500, detail=f"Error in model '{model_name}' request"
         )
 
-    async def streaming_content():
+    async def streaming_content() -> AsyncGenerator[bytes]:
         try:
             async for chunk in rp.aiter_raw():
                 yield chunk

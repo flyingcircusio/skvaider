@@ -1,26 +1,26 @@
 import asyncio
-import json
+from pathlib import Path
 
 import httpx
 import pytest
 
 from skvaider.inference.config import ModelConfig, ModelFile
-from skvaider.inference.manager import Model
+from skvaider.inference.manager import Manager, Model
 
 
-async def test_manager_start_crash_quick_return(gemma, manager):
+async def test_manager_start_crash_quick_return(gemma: Model, manager: Manager):
     gemma.config.cmd_args = ["--asdf"]
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(manager.get_or_start_model("gemma"), timeout=10)
 
 
-async def test_download_model_success(gemma):
+async def test_download_model_success(gemma: Model):
     await gemma.download()
     assert gemma.model_files[0].exists()
     assert gemma.integrity_marker_file.exists()
 
 
-async def test_download_model_wrong_hash(tmp_path, gguf_http_server):
+async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
     config = ModelConfig(
         id="gemma",
         files=[
@@ -42,12 +42,13 @@ async def test_download_model_wrong_hash(tmp_path, gguf_http_server):
     assert not model.integrity_marker_file.exists()
 
 
-async def test_manager_start_model(gemma, manager):
+async def test_manager_start_model(gemma: Model, manager: Manager):
     with pytest.raises(KeyError):
         await manager.get_or_start_model("unknown-model")
 
     model = await manager.get_or_start_model("gemma")
     assert model.config.id == "gemma"
+    assert model.endpoint
     assert model.endpoint.startswith("http://127.0.0.1:")
 
     async with httpx.AsyncClient() as client:
@@ -124,7 +125,7 @@ async def test_manager_start_model(gemma, manager):
     assert model.status == "stopped"
 
 
-async def test_download_split_model(tmp_path, gguf_http_server):
+async def test_download_split_model(tmp_path: Path, gguf_http_server: str):
     config = ModelConfig(
         id="split-gemma",
         files=[

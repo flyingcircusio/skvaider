@@ -201,11 +201,12 @@ class Pool:
     async def use(self, model_id: str):
         request = ProxyRequest()
         assert model_id in self.queues
-        log.debug("queuing request", model=model_id)
+        log.debug("queueing request", model=model_id)
         queue = self.queues[model_id]
         await queue.put(request)
         log.debug("waiting for backend to become available", model=model_id)
         await request.backend_available.wait()
+        assert request.model is not None
         log.debug(
             "got backend", backend=request.model.backend.url, model=model_id
         )

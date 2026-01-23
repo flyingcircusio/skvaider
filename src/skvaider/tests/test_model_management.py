@@ -3,20 +3,25 @@
 import asyncio
 
 import httpx
+import svcs
 
 import skvaider.proxy.backends
+import skvaider.proxy.pool
 from skvaider.conftest import wait_for_condition
 
 
-async def test_backend_model_warmup(llm_model_name, services):
+async def test_backend_model_warmup(
+    llm_model_name: str, services: svcs.Container
+):
     url = "http://127.0.0.1:8001"
 
     @wait_for_condition()
-    async def backend_connection_is_up():
+    async def backend_connection_is_up() -> bool:
         async with httpx.AsyncClient() as client:
             resp = await client.get(f"{url}/manager/health")
             if resp.status_code == 200:
                 return True
+        return False
 
     await backend_connection_is_up()
 

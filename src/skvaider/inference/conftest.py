@@ -1,7 +1,10 @@
 import http.server
+from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any, Generator
 
 import pytest
+import svcs
 import svcs.fastapi
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -12,32 +15,36 @@ from skvaider.inference.manager import Manager, Model
 
 
 @pytest.fixture
-def services():
+def services() -> Generator[svcs.Container, None]:
     reg = svcs.Registry()
     with svcs.Container(reg) as container:
         yield container
 
 
 @svcs.fastapi.lifespan
-async def test_lifespan(app: FastAPI, registry: svcs.Registry):
+async def test_lifespan(
+    app: FastAPI, registry: svcs.Registry
+) -> AsyncGenerator[None, None]:
     yield
 
 
 @pytest.fixture
-def client():
+def client() -> Generator[TestClient, None]:
     with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client
 
 
 @pytest.fixture
-def model_path(tmp_path):
+def model_path(tmp_path: Path) -> Path:
     p = tmp_path / "models"
     p.mkdir()
     return p
 
 
 @pytest.fixture
-def models_cache():
+def models_cache() -> Path:
+    # This is on purpose not in a tmp_path as we want to cache this
+    # over multiple runs.
     cache_dir = Path(".models").absolute()
     if not cache_dir.exists():
         cache_dir.mkdir()
@@ -45,14 +52,14 @@ def models_cache():
 
 
 @pytest.fixture
-async def manager(model_path):
+async def manager(model_path: Path) -> AsyncGenerator[Manager, None]:
     m = Manager(model_path)
     yield m
     await m.shutdown()
 
 
 @pytest.fixture
-async def gemma(models_cache, manager):
+async def gemma(models_cache: Path, manager: Manager) -> Model:
     config = ModelConfig(
         id="gemma",
         files=[
@@ -86,14 +93,14 @@ async def gemma(models_cache, manager):
     return model
 
 
-# should load tests/fixtures/gguf_http_server_files/*
 @pytest.fixture
-def gguf_http_server():
+def gguf_http_server() -> Generator[str, None]:
+    """Serve static GGUF fixture files via HTTP."""
     server_address = ("localhost", 0)  # let the OS pick an available port
     MY_FILE_DIR = Path(__file__).parent.resolve()
 
     class CustomHandler(http.server.SimpleHTTPRequestHandler):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args: Any, **kwargs: Any):
             super().__init__(
                 *args,
                 directory=str(

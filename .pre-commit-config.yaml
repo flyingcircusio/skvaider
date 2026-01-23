@@ -16,7 +16,7 @@ repos:
       - exclude: "(?x)^(\n  environments/.*/secret.*|\n  .*\\.patch\n)$\n"
         id: check-toml
     repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
   - hooks:
       - args:
           - --profile
@@ -25,11 +25,11 @@ repos:
         id: isort
         name: isort (python)
     repo: https://github.com/pycqa/isort
-    rev: 6.0.1
+    rev: 7.0.0
   - hooks:
       - id: black
     repo: https://github.com/psf/black
-    rev: 25.1.0
+    rev: 26.1.0
   - hooks:
       - args:
           - --ignore
@@ -38,8 +38,8 @@ repos:
           - F401
         id: ruff
     repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.9
-  # - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-  #   rev: v1.13.0 # or whatever the latest version is at the time
-  #   hooks:
-  #     - id: basedpyright
+    rev: v0.14.14
+  - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
+    rev: 1.37.1 # or whatever the latest version is at the time
+    hooks:
+      - id: basedpyright
