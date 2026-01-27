@@ -119,16 +119,18 @@ The raw results are available in this folder as JSON files. The results have bee
 
 <!-- END comparison -->
 
-# Findings
+# Findings and conclusions
 
-Stability within quantisations over different inference engines, hardware and drivers is very high for high precision models and acceptably high for quantized models. Switching to lower quantizations has a certain degree of variation that might still be acceptable but could also warrant re-indexing depending on your use case.
+1. Stability within quantisations over different inference engines, hardware and drivers is very high for high precision models and acceptably high for quantized models. Switching to lower quantizations has a certain degree of variation that might still be acceptable but could also warrant re-indexing depending on your use case.
 
-Switching from ollama to llama-cpp showed stark deviations due to unobvious differences in their approach implementing the gemma model:
+2. Switching from ollama to llama-cpp showed stark deviations due to unobvious differences in their approach implementing the gemma model:
 
-* Ollama apparently chose to use a single code base to handle the Gemma LLM and embedding models so the model file was not reusable by llama-cpp.
-* The available GGUF conversions on Hugging Face did not include the dense models whereas the Ollama GGUF did.
+  * Ollama apparently chose to use a single code base to handle the Gemma LLM and embedding models so the model file was not reusable by llama-cpp.
+  * The available GGUF conversions on Hugging Face did not include the dense models whereas the Ollama GGUF did.
 
-Even though our AI offering so far has been provided as a "pilot" we always strive to
+  Even though our AI offering so far has been provided as a "pilot" we always strive to
 provide operational continuity and thus decided to provide a custom GGUF conversion
 that matches the BF16 precision (which gemma is originally trained in anyway) and includes
-the dense modules to match the Ollama model we provided thus far. The model (together with instructions for reproducing it) is publicly available on huggingface as [flyingcircusio/embeddinggemma-300m]
+the dense modules to match the Ollama model we provided thus far. The model (together with instructions for reproducing it) is publicly available on huggingface as [flyingcircusio/embeddinggemma-300m](https://huggingface.co/flyingcircusio/embeddinggemma-300m-GGUF-with-dense-modules)
+
+3. We are introducing continuous monitoring for numberical stability of the embedding models that we provide that will ensure that changes in the environment or model do not accidentally distort the results our customers are getting while at the same time supporting operational flexibility to improve things over time.
