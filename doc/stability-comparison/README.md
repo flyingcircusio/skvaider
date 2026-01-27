@@ -48,13 +48,15 @@ Finally, we provide a custom quantization to resolve the issues we encountered:
 
 As input to the model we used the example sentence from the original's model card:
 
-  $ curl http://127.0.0.1:8000/models/embeddinggemma:300m/proxy/v1/embeddings \
-    -H "Content-Type: application/json" \
-    -d '{
-      "input": "The food was delicious and the waiter...",
-      "model": "embeddinggemma",
-      "encoding_format": "float"
-    }'
+``
+$ curl http://127.0.0.1:8000/models/embeddinggemma:300m/proxy/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "The food was delicious and the waiter...",
+    "model": "embeddinggemma",
+    "encoding_format": "float"
+  }'
+``
 
 # Environment and parameter variations
 
