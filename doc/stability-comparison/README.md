@@ -118,10 +118,12 @@ The raw results are available in this folder as JSON files. The results have bee
 
 1. Stability within quantisations over different inference engines, hardware and drivers is very high for high precision models and acceptably high for quantized models. Switching to lower quantizations has a certain degree of variation that might still be acceptable but could also warrant re-indexing depending on your use case.
 
+2. It was initially unobvious where the differences in the Ollama and llama-cpp
+
 2. Switching from ollama to llama-cpp showed stark deviations due to unobvious differences in their approach implementing the gemma model:
 
-   * Ollama apparently chose to use a single code base to handle the Gemma LLM and embedding models so the model file was not reusable by llama-cpp.
-   * The available GGUF conversions on Hugging Face did not include the dense models whereas the Ollama GGUF did.
+   * Ollama seems to have chosen are more unified (i.e. hard coded) approach to the Gemma architecture, always relying on the dense modules and handling the LLM and Embedding models with the same code base.
+   * Most of the available GGUF conversions on Hugging Face did not include the dense models whereas the Ollama GGUF had to.
 
    Even though our AI offering so far has been provided as a "pilot" we always strive to
    provide operational continuity and thus decided to provide a custom GGUF conversion
