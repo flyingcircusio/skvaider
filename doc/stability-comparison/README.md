@@ -17,7 +17,7 @@ Overall stability was quite high. We saw the biggest deviation in model outputs 
 We also found that the GGUF variants of this specific model available on hugging face were missing the "dense modules" and thus resulted in vastly different output. At the
 same time there were slight differences in the GGUF file formats between llama-cpp and ollama that didn't allow us to directly consume the model files for embeddinggemma from Ollama in llama-cpp.
 
-As a result we created a custom model ([flyingcircusio/embeddinggemma-300m-GGUF-with-dense-modules](https://huggingface.co/flyingcircusio/embeddinggemma-300m-GGUF-with-dense-modules) derived from the original embeddinggemma that
+As a result we created a custom model ([flyingcircusio/embeddinggemma-300m-GGUF-with-dense-modules](https://huggingface.co/flyingcircusio/embeddinggemma-300m-GGUF-with-dense-modules)) derived from the original embeddinggemma that
 provides numerical stability when moving from Ollama to llama-cpp.
 
 # Chosen model
