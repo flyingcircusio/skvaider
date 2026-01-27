@@ -20,7 +20,9 @@ from aramaki.typing import JSONObject
 
 
 @pytest.fixture
-def now(monkeypatch: pytest.MonkeyPatch) -> Generator[unittest.mock.Mock, None]:
+def now(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[unittest.mock.Mock, None, None]:
     now = unittest.mock.Mock()
     now.return_value = 0
 

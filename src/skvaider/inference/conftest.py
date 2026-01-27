@@ -21,15 +21,18 @@ def services() -> Generator[svcs.Container, None, None]:
         yield container
 
 
-@svcs.fastapi.lifespan
-async def test_lifespan(
-    app: FastAPI, registry: svcs.Registry
-) -> AsyncGenerator[None, None]:
-    yield
-
-
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
+def client(manager: Manager, gemma: Model) -> Generator[TestClient, None, None]:
+    @svcs.fastapi.lifespan
+    async def test_lifespan(
+        app: FastAPI, registry: svcs.Registry
+    ) -> AsyncGenerator[None, None]:
+        registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+            Manager, manager
+        )
+
+        yield
+
     with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client
 

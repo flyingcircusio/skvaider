@@ -3,12 +3,13 @@ models_dir = "models-2"
 
 [logging]
 log_level = "DEBUG"
-access_log_path = ".access_log-inference"
+access_log_path = ".access_log-inference2"
 
 [[openai.models]]
 id = "gemma"
 context_size = 4096
 cmd_args = []
+
 [[openai.models.files]]
 url = "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true"
 hash = "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
@@ -16,9 +17,10 @@ hash = "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
 [[openai.models]]
 id = "embeddinggemma"
 cmd_args = ["--embeddings"]
+
 [[openai.models.files]]
-url = "https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/6661a6504c30d8304af13455cb4a5d4f5bc6011f/embeddinggemma-300m-Q4_0.gguf?download=true"
-hash = "edc6015cb15694c27be7d1d33f1bc015db9a358ff51ed524628c027504907ba9"
+url = "https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf"
+hash = "a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57"
 
 
 # It would be useful to have a reasoning model, but the 12G are unwieldy
