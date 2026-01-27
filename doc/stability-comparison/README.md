@@ -26,23 +26,13 @@ We arbitrarily chose one of the embedding models we provide on our platform for 
 
 One of the parameters we wanted to test against was quantization.
 
-The baseline in Ollama uses BF16:
-
-
-As a high precision model in llama-cpp we used this F32 variant:
-
-
-As a quantized model in llama-cpp we used this Q4_0 variant:
-
-https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/6661a6504c30d8304af13455cb4a5d4f5bc6011f/embeddinggemma-300m-Q4_0.gguf (SHA256  edc6015cb15694c27be7d1d33f1bc015db9a358ff51ed524628c027504907ba9)
-
-For F32 we used:
-
-https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf"
-hash = "a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57"
-
-Finally, we provide a custom quantization to resolve the issues we encountered:
-
+| Model | Quantization | URL | HASH/ID |
+| - | - | - | - |
+| Baseline Ollama | BF16 |  https://ollama.com/library/embeddinggemma:300m | 85462619ee72 (ID) |
+| llama-cpp unsloth/embeddinggemma-300m-GGUF | F32 | https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf | a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57 (SHA256) |
+| llama-cpp unsloth/embeddinggemma-300m-GGUF | Q4_0 | https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/6661a6504c30d8304af13455cb4a5d4f5bc6011f/embeddinggemma-300m-Q4_0.gguf | edc6015cb15694c27be7d1d33f1bc015db9a358ff51ed524628c027504907ba9 (SHA256)
+| llama-cpp cduk/embeddinggemma-300m-GGUF-with-dense-modules | F32 | https://huggingface.co/cduk/embeddinggemma-300m-GGUF-with-dense-modules/blob/6c4b6b0b86f1917506d8047478e350e51ac65fe8/embeddinggemma-300M-F32.gguf | 695c5960fa074ccdc7993d9a9d215a20bee20c03f8eba23111caa6de0d0c6991 (SHA256) |
+| llama-cpp flyingcircusio/embeddinggemma-300m-GGUF-with-dense-modules | BF16 | ... | ... |
 
 # Request
 
