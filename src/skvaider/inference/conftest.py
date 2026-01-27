@@ -61,18 +61,19 @@ async def manager(model_path: Path) -> AsyncGenerator[Manager, None]:
     await m.shutdown()
 
 
-@pytest.fixture
-async def gemma(models_cache: Path, manager: Manager) -> Model:
+async def prepare_model(
+    id: str,
+    context: int,
+    args: list[str],
+    file: ModelFile,
+    models_cache: Path,
+    manager: Manager,
+) -> Model:
     config = ModelConfig(
-        id="gemma",
-        files=[
-            ModelFile(
-                url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
-                hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
-            )
-        ],
-        context_size=4096,
-        cmd_args=[],
+        id=id,
+        files=[file],
+        context_size=context,
+        cmd_args=args,
     )
 
     model = Model(config)
@@ -94,6 +95,36 @@ async def gemma(models_cache: Path, manager: Manager) -> Model:
     model.integrity_marker_file.touch()
 
     return model
+
+
+@pytest.fixture
+async def gemma(models_cache: Path, manager: Manager) -> Model:
+    return await prepare_model(
+        "gemma",
+        4096,
+        [],
+        ModelFile(
+            url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
+            hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
+        ),
+        models_cache,
+        manager,
+    )
+
+
+@pytest.fixture
+async def embeddinggemma(models_cache: Path, manager: Manager) -> Model:
+    return await prepare_model(
+        "embeddinggemma",
+        4096,
+        ["--embeddings"],
+        ModelFile(
+            url="https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf",
+            hash="a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57",
+        ),
+        models_cache,
+        manager,
+    )
 
 
 @pytest.fixture

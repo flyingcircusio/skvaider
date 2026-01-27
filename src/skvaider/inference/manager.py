@@ -224,6 +224,14 @@ class Model:
         log.info("Terminating model process", model=self.config.id)
         self.status = "stopping"
 
+        # Cancel the monitor task (not in self._tasks)
+        if hasattr(self, "_monitor_process_task"):
+            self._monitor_process_task.cancel()
+            try:
+                await self._monitor_process_task
+            except asyncio.CancelledError:
+                pass
+
         for task in self._tasks:
             task.cancel()
             try:
@@ -237,18 +245,18 @@ class Model:
                 self.process.terminate()
             except ProcessLookupError:
                 pass
-            else:
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                log.info(
+                    "Killing unresponsive model process",
+                    model=self.config.id,
+                )
                 try:
-                    await asyncio.wait_for(self.process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    log.info(
-                        "Killing unresponsive model process",
-                        model=self.config.id,
-                    )
-                    try:
-                        self.process.kill()
-                    except ProcessLookupError:
-                        pass
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
+                await self.process.wait()
         self._port_found.clear()
         self.process = None
         self.endpoint = None
