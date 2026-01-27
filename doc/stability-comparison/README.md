@@ -1,4 +1,4 @@
-# Comparison of numerical stability
+# Comparison of numerical stability of embedding models when moving from Ollama to llama-cpp
 
 When switching inference engines from Ollama to llama-cpp-server we had to switch our
 source of model files from the Ollama hub to huggingface.co. We were unsure whether
@@ -42,7 +42,6 @@ https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddingge
 hash = "a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57"
 
 Finally, we provide a custom quantization to resolve the issues we encountered:
-
 
 
 # Request
