@@ -49,6 +49,7 @@ class Model:
     is_healthy: bool = False
     health_check_interval: float = 30
     health_check_timeout: float = 10
+    verification_data: dict[str, list[float]] | None = None
 
     _port_found: asyncio.Event
     _tasks: list[asyncio.Task[Any]]
@@ -63,6 +64,13 @@ class Model:
     @property
     def running(self) -> bool:
         return self.status == "running"
+
+    @property
+    def is_embedding(self) -> bool:
+        return (
+            "--embeddings" in self.config.cmd_args
+            or "--embedding" in self.config.cmd_args
+        )
 
     @property
     def slug(self) -> str:
@@ -309,6 +317,56 @@ class Model:
                     self.endpoint = f"http://{self._host}:{port}"
                     self._port_found.set()
 
+    async def _check_embedding_health(self, client: httpx.AsyncClient) -> bool:
+        input_text = "health check"
+        expected_embedding = None
+        if self.verification_data:
+            input_text, expected_embedding = next(
+                iter(self.verification_data.items())
+            )
+
+        resp = await client.post(
+            f"{self.endpoint}/v1/embeddings",
+            json={
+                "input": input_text,
+                "model": self.config.id,
+            },
+        )
+
+        if resp.status_code != 200:
+            log.warning(
+                "Health check failed",
+                model=self.config.id,
+                status=resp.status_code,
+            )
+            return False
+
+        if expected_embedding:
+            data = resp.json()
+            actual_embedding = data["data"][0]["embedding"]
+            if actual_embedding != expected_embedding:
+                log.warning(
+                    "Health check failed: embedding mismatch",
+                    model=self.config.id,
+                )
+                return False
+
+        return True
+
+    async def _check_completion_health(self, client: httpx.AsyncClient) -> bool:
+        resp = await client.post(
+            f"{self.endpoint}/v1/completions",
+            json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
+        )
+        if resp.status_code != 200:
+            log.warning(
+                "Health check failed",
+                model=self.config.id,
+                status=resp.status_code,
+            )
+            return False
+        return True
+
     async def _monitor_health(self) -> None:
         """Periodically check if the model is responsive."""
         while True:
@@ -323,28 +381,14 @@ class Model:
                 async with httpx.AsyncClient(
                     timeout=self.health_check_timeout
                 ) as client:
-                    if "--embeddings" in self.config.cmd_args:
-                        resp = await client.post(
-                            f"{self.endpoint}/v1/embeddings",
-                            json={
-                                "input": "health check",
-                                "model": self.config.id,
-                            },
+                    if self.is_embedding:
+                        self.is_healthy = await self._check_embedding_health(
+                            client
                         )
                     else:
-                        resp = await client.post(
-                            f"{self.endpoint}/v1/completions",
-                            json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
+                        self.is_healthy = await self._check_completion_health(
+                            client
                         )
-                    if resp.status_code == 200:
-                        self.is_healthy = True
-                    else:
-                        log.warning(
-                            "Health check failed",
-                            model=self.config.id,
-                            status=resp.status_code,
-                        )
-                        self.is_healthy = False
             except Exception as e:
                 log.warning(
                     "Health check error", model=self.config.id, error=str(e)
