@@ -9,6 +9,7 @@ class Config(BaseModel):
     models_dir: Path
     logging: "LoggingConfig"
     openai: "OpenAIConfig"
+    embedding_verification_file: Path | None = None
 
 
 class OpenAIConfig(BaseModel):

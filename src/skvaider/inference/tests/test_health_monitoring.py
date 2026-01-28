@@ -1,5 +1,6 @@
 import asyncio
 import http.server
+import json
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,6 +15,8 @@ from skvaider.inference.manager import Model
 
 class ServerState:
     status = 200
+    body: dict[str, Any] | None = None
+    last_request_json: dict[str, Any] | None = None
 
 
 @pytest.fixture
@@ -33,9 +36,21 @@ def fake_llama_server() -> Generator[tuple[str, ServerState], None, None]:
         def do_POST(self):
             # Used by _monitor_health
             if self.path == "/v1/completions" or self.path == "/v1/embeddings":
+                length = int(self.headers.get("content-length", 0))
+                if length > 0:
+                    try:
+                        state.last_request_json = json.loads(
+                            self.rfile.read(length)
+                        )
+                    except Exception:
+                        pass
+
                 self.send_response(state.status)
                 self.end_headers()
-                self.wfile.write(b"{}")
+                if state.body is not None:
+                    self.wfile.write(json.dumps(state.body).encode())
+                else:
+                    self.wfile.write(b"{}")
             else:
                 self.send_response(404)
 
@@ -135,6 +150,56 @@ async def test_health_check(
 
             # 3. Simulate recovery
             state.status = 200
+            await await_health(model, True)
+
+        finally:
+            await model.terminate()
+
+
+async def test_health_check_embeddings(
+    fake_llama_server: tuple[str, ServerState],
+    tmp_path: Path,
+):
+    url, state = fake_llama_server
+    port = int(url.split(":")[-1])
+
+    expected_embedding = [0.1, 0.2, 0.3]
+    state.body = {
+        "model": "test-embed",
+        "object": "list",
+        "data": [
+            {"embedding": expected_embedding, "index": 0, "object": "embedding"}
+        ],
+        "usage": {"prompt_tokens": 0, "total_tokens": 0},
+    }
+
+    config = ModelConfig(
+        id="test-embed",
+        cmd_args=["--embeddings"],
+        files=[ModelFile(url="u", hash="h")],
+    )
+    model = Model(config)
+    model.datadir = tmp_path
+    model.verification_data = {"test input": expected_embedding}
+
+    # Configure fast health checks
+    model.health_check_interval = 0.01
+    model.health_check_timeout = 0.01
+
+    async with mock_llama_subprocess(port):
+        await model.start()
+        try:
+            # 1. Verify it sends correct input and becomes healthy
+            await await_health(model, True)
+            assert state.last_request_json is not None
+            assert state.last_request_json["input"] == "test input"
+
+            # 2. Simulate wrong embedding -> unhealthy
+            state.body["data"][0]["embedding"] = [0.9, 0.9, 0.9]
+            await await_health(model, False)
+
+            # 3. Correct again -> healthy
+            state.body["data"][0]["embedding"] = expected_embedding
             await await_health(model, True)
 
         finally:

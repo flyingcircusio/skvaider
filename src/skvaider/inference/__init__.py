@@ -35,6 +35,16 @@ async def lifespan(
         config_data = tomllib.load(f)
     config = Config.model_validate(config_data)
 
+    verification_data = {}
+    if config.embedding_verification_file:
+        with open(config.embedding_verification_file, "rb") as f:
+            if config.embedding_verification_file.suffix == ".json":
+                import json
+
+                verification_data = json.load(f)
+            else:
+                verification_data = tomllib.load(f)
+
     cr = structlog.dev.ConsoleRenderer.get_active()
     cr.exception_formatter = structlog.dev.plain_traceback
 
@@ -54,6 +64,8 @@ async def lifespan(
     model_downloads: list[Awaitable[Any]] = []
     for model_config in config.openai.models:
         model = skvaider.inference.manager.Model(model_config)
+        if model_config.id and model_config.id in verification_data:
+            model.verification_data = verification_data[model_config.id]
         manager.add_model(model)
         model_downloads.append(model.download())
 
