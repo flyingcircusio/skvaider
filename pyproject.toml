@@ -46,7 +46,7 @@ module-name = ["aramaki", "skvaider"]
 [tool.basedpyright]
 typeCheckingMode = "strict"
 venvPath = "."
-venv = ".venv"
+venv = ".devenv/state/venv"
 exclude = ["doc/**"]
 
 [dependency-groups]
