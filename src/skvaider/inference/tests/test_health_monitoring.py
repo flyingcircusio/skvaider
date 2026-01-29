@@ -73,8 +73,9 @@ async def mock_llama_subprocess(port: int) -> AsyncGenerator[MagicMock, None]:
 
     fake_stderr = asyncio.StreamReader()
     fake_stderr.feed_data(
-        f"main: HTTP server is listening, hostname: 127.0.0.1, port: {port}\n".encode()
+        f"main: server is listening on http://127.0.0.1:{port}\n".encode()
     )
+    fake_stderr.feed_data(b"main: model loaded\n")
     fake_stderr.feed_eof()
 
     fake_stdout = asyncio.StreamReader()
