@@ -364,6 +364,19 @@ class Model:
                 },
             )
 
+            if resp.status_code != 200:
+                log.warning(
+                    "Health check failed",
+                    model=self.config.id,
+                    status=resp.status_code,
+                )
+                return False
+
+            if expected_embeddings is not None:
+                data = resp.json()
+                for i, item in enumerate(data.get("data", [])):
+                    embedding = item.get("embedding", [])
+                    if not embedding:
                         log.warning(
                             "Health check failed: missing embedding",
                             model=self.config.id,
