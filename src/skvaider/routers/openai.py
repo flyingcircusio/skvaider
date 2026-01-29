@@ -42,6 +42,7 @@ class OpenAIProxy:
     ) -> StreamingResponse | Any:
         request_data: dict[str, Any] = await request.json()
         request_data["store"] = False
+        request_data["model"] = request_data["model"].lower()
         request.state.model = request_data["model"]
         request.state.stream = allow_stream and request_data.get(
             "stream", False
@@ -95,6 +96,7 @@ async def list_models(
 async def get_model(
     model_id: str, services: svcs.fastapi.DepContainer
 ) -> AIModel:
+    model_id = model_id.lower()
     pool = services.get(Pool)
     return pool.models[model_id]
 
