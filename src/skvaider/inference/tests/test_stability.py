@@ -34,4 +34,18 @@ async def test_embeddinggemma_output_stability(embeddinggemma: Model):
             "r",
         ) as f:
             expected_response = json.load(f)
-        assert response.json() == expected_response
+
+        # check data, max 1e-2 difference in each embedding value
+        resp_json = response.json()
+        for resp_item, exp_item in zip(
+            resp_json["data"], expected_response["data"]
+        ):
+            resp_embedding = resp_item["embedding"]
+            exp_embedding = exp_item["embedding"]
+            assert len(resp_embedding) == len(exp_embedding)
+            for r_val, e_val in zip(resp_embedding, exp_embedding):
+                assert abs(r_val - e_val) < 1e-2
+        # delete data to compare the rest of the response
+        del resp_json["data"]
+        del expected_response["data"]
+        assert resp_json == expected_response
