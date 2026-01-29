@@ -337,7 +337,7 @@ class Model:
             )
             if is_stderr and self.endpoint is None:
                 match = re.search(
-                    r"main: HTTP server is listening, hostname: .*, port: (\d+)",
+                    r"main: server is listening on http://[^:]+:(\d+)",
                     line_str,
                 )
                 if match:
