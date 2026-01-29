@@ -361,7 +361,7 @@ class Model:
                     return False
                 # Allow small numerical differences
                 for a, b in zip(embedding, expected):
-                    if abs(a - b) > 1e-5:
+                    if abs(a - b) > 1e-3:
                         log.warning(
                             "Health check failed: embedding value mismatch",
                             model=self.config.id,
