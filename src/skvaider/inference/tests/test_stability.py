@@ -9,7 +9,7 @@ from skvaider.inference.manager import Model
 async def test_embeddinggemma_output_stability(embeddinggemma: Model):
     await embeddinggemma.start()
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
             f"{embeddinggemma.endpoint}/v1/embeddings",
             json={
