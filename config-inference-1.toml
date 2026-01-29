@@ -1,6 +1,9 @@
 # Sample config used by the development environment
 models_dir = "models"
 
+[manager]
+backend = "cpu"
+
 [logging]
 log_level = "DEBUG"
 access_log_path = ".access_log-inference1"

@@ -1,17 +1,20 @@
 import asyncio
 import functools
 import hashlib
+import json
 import re
 import shutil
+import subprocess
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, Concatenate, Literal, ParamSpec, Protocol, TypeVar
 
 import anyio
 import httpx
+import psutil
 import structlog
 
-import skvaider.inference.config
+from skvaider.inference.config import ManagerConfig, ModelConfig
 from skvaider.utils import slugify
 
 log = structlog.get_logger()
@@ -43,7 +46,7 @@ def locked(
 class Model:
     process: asyncio.subprocess.Process | None = None
     endpoint: str | None = None
-    config: "skvaider.inference.config.ModelConfig"
+    config: ModelConfig
     datadir: Path
     process_status: Literal["stopped", "running", "starting", "stopping"] = (
         "stopped"
@@ -59,7 +62,7 @@ class Model:
 
     async def _check_health(self) -> bool: ...
 
-    def __init__(self, config: "skvaider.inference.config.ModelConfig"):
+    def __init__(self, config: ModelConfig):
         self.config = config
 
         self._port_found = asyncio.Event()
@@ -459,10 +462,88 @@ class Manager:
     models_dir: Path
     models: dict[str, Model]
 
-    def __init__(self, models_dir: Path):
+    vram_total = 0
+    vram_used = 0
+    vram_free = 0
+
+    def __init__(self, models_dir: Path, config: ManagerConfig):
+        self.config = config
         self.models_dir = models_dir
         self.models = {}
         self._lock = asyncio.Lock()
+
+        if self.config.backend == "cpu":
+            self._update_usage = self._update_usage_cpu
+        elif self.config.backend == "rocm":
+            self._update_usage = self._update_usage_rocm
+
+        self._monitor_task = asyncio.create_task(self._monitor())
+
+    async def _monitor(self) -> None:
+        """Periodically update VRAM/memory usage statistics."""
+        while True:
+            try:
+                await self._update_usage()
+            except Exception:
+                log.exception("Failed to update memory usage")
+            log.info(
+                f"memory total={self.vram_total:,} used={self.vram_used:,} free={self.vram_free:,}"
+            )
+            await asyncio.sleep(10)
+
+    async def _update_usage_cpu(self) -> None:
+        """Update memory usage using psutil (for CPU backend / unit tests)."""
+        mem = psutil.virtual_memory()
+        self.vram_total = mem.total
+        self.vram_used = mem.used
+        self.vram_free = mem.available
+
+    async def _update_usage_rocm(self) -> None:
+        """Update VRAM usage by calling rocm-smi and parsing JSON output."""
+        proc = await asyncio.create_subprocess_exec(
+            "rocm-smi",
+            "--json",
+            "--showmeminfo",
+            "all",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=5
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise
+        assert proc.returncode is not None
+
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode,
+                "rocm-smi",
+                stdout,
+                stderr,
+            )
+
+        data = json.loads(stdout.decode("utf-8"))
+
+        # Sum VRAM across all cards
+        # This only resets the VRAM data if we encounter no failues.
+        # This might be the wrong or the right thing to do. Not sure yet.
+        # It's intended to protect us from flakiness but might result
+        # in us using the node while being broken.
+        total = 0
+        used = 0
+        for key, card_data in data.items():
+            if not key.startswith("card"):
+                continue
+            total += int(card_data["VRAM Total Memory (B)"])
+            used += int(card_data["VRAM Total Used Memory (B)"])
+
+        self.vram_total = total
+        self.vram_used = used
+        self.vram_free = self.vram_total - self.vram_used
 
     def add_model(self, model: Model) -> None:
         assert model.config.id is not None
@@ -500,6 +581,12 @@ class Manager:
 
     @locked
     async def shutdown(self) -> None:
+        if hasattr(self, "_monitor_task"):
+            self._monitor_task.cancel()
+            try:
+                await self._monitor_task
+            except asyncio.CancelledError:
+                pass
         for model in self.models.values():
             await model.terminate()
         self.models.clear()

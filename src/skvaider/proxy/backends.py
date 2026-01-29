@@ -102,47 +102,66 @@ class SkvaiderBackend(Backend):
             )
             return r.status_code == 200
 
-    async def monitor_health_and_update_models(self, pool: "Pool"):
-        from .models import AIModel
-
+    async def monitor_health_and_update_models(self, pool: "Pool") -> None:
         self.log.debug("starting monitor")
         while True:
             try:
-                async with httpx.AsyncClient(follow_redirects=True) as client:
-                    r = await client.get(f"{self.url}/models")
-                    r_json = r.json()
-                    known_models = r_json["models"]
+                await self._update_usage(pool)
+                await self._update_models(pool)
 
-                self.log.debug("updating backends")
-                current_models = self.models
-                updated_models = {}
-                for model in known_models:
-                    if model["id"] not in current_models:
-                        model_obj = AIModel(
-                            id=model["id"],
-                            created=0,
-                            owned_by="skvaider",
-                            backend=self,
-                        )
-                    else:
-                        model_obj = current_models[model["id"]]
-
-                    updated_models[model_obj.id] = model_obj
-
-                    if "active" in model["status"]:
-                        model_obj.is_loaded = True
-                        model_obj.memory_usage = 0
-                    else:
-                        model_obj.is_loaded = False
-                        model_obj.memory_usage = 0
-
-                self.models = updated_models
-                pool.update_model_maps()
                 self.healthy = True
-
             except Exception as e:
                 self.log.error("monitor failed", error=str(e))
                 self.healthy = False
                 self.unhealthy_reason = str(e)
 
             await asyncio.sleep(self.health_interval)
+
+    async def _update_models(self, pool: "Pool") -> None:
+        from .models import AIModel
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.get(f"{self.url}/models")
+            r.raise_for_status()
+            r_json = r.json()
+            known_models = r_json["models"]
+
+        self.log.debug("updating backends")
+        current_models = self.models
+        updated_models = {}
+        for model in known_models:
+            if model["id"] not in current_models:
+                model_obj = AIModel(
+                    id=model["id"],
+                    created=0,
+                    owned_by="skvaider",
+                    backend=self,
+                )
+            else:
+                model_obj = current_models[model["id"]]
+
+            updated_models[model_obj.id] = model_obj
+
+            if "active" in model["status"]:
+                model_obj.is_loaded = True
+                model_obj.memory_usage = 0
+            else:
+                model_obj.is_loaded = False
+                model_obj.memory_usage = 0
+
+        self.models = updated_models
+        pool.update_model_maps()
+
+    async def _update_usage(self, pool: "Pool") -> None:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            r = await client.get(f"{self.url}/manager/usage")
+            r.raise_for_status()
+            usage = r.json()
+
+        self.vram_total = int(usage["vram"]["total"])
+        self.vram_used = int(usage["vram"]["used"])
+        self.vram_free = int(usage["vram"]["free"])
+
+        self.log.info(
+            f"{self.url} memory total={self.vram_total:,} used={self.vram_used:,} free={self.vram_free:,}"
+        )
