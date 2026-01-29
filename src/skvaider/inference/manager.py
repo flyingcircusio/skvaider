@@ -318,17 +318,17 @@ class Model:
                     self._port_found.set()
 
     async def _check_embedding_health(self, client: httpx.AsyncClient) -> bool:
-        input_text = "health check"
-        expected_embedding = None
+        input_texts = ["health check"]
+        expected_embeddings: list[list[float]] | None = None
         if self.verification_data:
-            input_text, expected_embedding = next(
-                iter(self.verification_data.items())
-            )
+            # input texts are keys
+            input_texts = list(self.verification_data.keys())
+            expected_embeddings = list(self.verification_data.values())
 
         resp = await client.post(
             f"{self.endpoint}/v1/embeddings",
             json={
-                "input": input_text,
+                "input": input_texts,
                 "model": self.config.id,
             },
         )
@@ -341,16 +341,32 @@ class Model:
             )
             return False
 
-        if expected_embedding:
+        if expected_embeddings is not None:
             data = resp.json()
-            actual_embedding = data["data"][0]["embedding"]
-            if actual_embedding != expected_embedding:
-                log.warning(
-                    "Health check failed: embedding mismatch",
-                    model=self.config.id,
-                )
-                return False
-
+            for i, item in enumerate(data.get("data", [])):
+                embedding = item.get("embedding", [])
+                if not embedding:
+                    log.warning(
+                        "Health check failed: missing embedding",
+                        model=self.config.id,
+                    )
+                    return False
+                # Compare with expected
+                expected = expected_embeddings[i]
+                if len(embedding) != len(expected):
+                    log.warning(
+                        "Health check failed: embedding size mismatch",
+                        model=self.config.id,
+                    )
+                    return False
+                # Allow small numerical differences
+                for a, b in zip(embedding, expected):
+                    if abs(a - b) > 1e-5:
+                        log.warning(
+                            "Health check failed: embedding value mismatch",
+                            model=self.config.id,
+                        )
+                        return False
         return True
 
     async def _check_completion_health(self, client: httpx.AsyncClient) -> bool:
