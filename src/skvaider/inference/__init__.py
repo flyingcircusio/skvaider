@@ -15,12 +15,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 import skvaider.inference.manager
+import skvaider.inference.routers.manager
+import skvaider.inference.routers.models
 from skvaider import global_exception_handler
 from skvaider.inference.config import Config
 from skvaider.inference.manager import Manager
-from skvaider.inference.routers import models
 from skvaider.logging import LoggingMiddleware, logging_config
-from skvaider.typing import JSONObject
 
 log = structlog.stdlib.get_logger()
 
@@ -57,7 +57,7 @@ async def lifespan(
         log.error("Failed to create models directory", error=str(e))
         raise
 
-    manager = Manager(models_dir=config.models_dir)
+    manager = Manager(models_dir=config.models_dir, config=config.manager)
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         Manager, manager
     )
@@ -114,31 +114,8 @@ async def lifespan(
 
 def app_factory(lifespan: Any = lifespan) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
-    app.include_router(models.router)
-
-    @app.get("/manager/health")
-    async def health(  # pyright: ignore[reportUnusedFunction]
-        services: svcs.fastapi.DepContainer,
-    ) -> JSONResponse:
-        """
-        Signal whether this server inference server is ready to be talked to.
-
-        The state of the individual models doesn't necessarily indicate that
-        this server is overall broken.
-
-        This method is used by the proxy to determine whether this server can
-        generally be talked to.
-
-        """
-        manager = services.get(Manager)
-        content: JSONObject = {
-            "status": "ok",
-            "models": {
-                m.config.id: {"status": list(sorted(m.status))}
-                for m in manager.list_models()
-            },
-        }
-        return JSONResponse(status_code=200, content=content)
+    app.include_router(skvaider.inference.routers.models.router)
+    app.include_router(skvaider.inference.routers.manager.router)
 
     app.add_middleware(
         LoggingMiddleware, logger=getLogger("skvaider.accesslog")

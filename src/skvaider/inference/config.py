@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -10,6 +11,11 @@ class Config(BaseModel):
     logging: "LoggingConfig"
     openai: "OpenAIConfig"
     embedding_verification_file: Path | None = None
+    manager: "ManagerConfig"
+
+
+class ManagerConfig(BaseModel):
+    backend: Literal["cpu", "rocm"]
 
 
 class OpenAIConfig(BaseModel):

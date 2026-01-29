@@ -57,7 +57,10 @@ def models_cache() -> Path:
 
 @pytest.fixture
 async def manager(model_path: Path) -> AsyncGenerator[Manager, None]:
-    m = Manager(model_path)
+    from skvaider.inference.config import ManagerConfig
+
+    config = ManagerConfig(backend="cpu")
+    m = Manager(model_path, config)
     yield m
     await m.shutdown()
 
