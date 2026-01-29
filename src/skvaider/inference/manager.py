@@ -365,6 +365,10 @@ class Model:
                         log.warning(
                             "Health check failed: embedding value mismatch",
                             model=self.config.id,
+                            index=i,
+                            expected=a,
+                            got=b,
+                            input_text=input_texts[i],
                         )
                         return False
         return True
