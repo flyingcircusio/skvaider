@@ -117,7 +117,7 @@ async def embeddinggemma(models_cache: Path, manager: Manager) -> Model:
     return await prepare_model(
         "embeddinggemma",
         4096,
-        ["--embeddings"],
+        ["--embeddings", "-ngl", "0"],
         ModelFile(
             url="https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf",
             hash="a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57",
