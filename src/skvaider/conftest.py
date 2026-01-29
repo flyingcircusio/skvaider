@@ -68,18 +68,31 @@ def services(
 
 
 def wait_for_condition(interval: float = 0.1, timeout: float = 30) -> Callable[
-    [Callable[[], Coroutine[Any, Any, bool]]],
-    Callable[[], Coroutine[Any, Any, None]],
+    [Callable[..., Coroutine[Any, Any, bool]]],
+    Callable[..., Coroutine[Any, Any, None]],
 ]:
+    """Wait for a callable to return True.
+
+    If AssertionErrors happen, those will be propagated if the timeout occurs
+    but will be suppressed while retrying.
+
+    """
+
     def decorator(
-        async_condition: Callable[[], Coroutine[Any, Any, bool]],
-    ) -> Callable[[], Coroutine[Any, Any, None]]:
-        async def wrapped() -> None:
+        async_condition: Callable[..., Coroutine[Any, Any, bool]],
+    ) -> Callable[..., Coroutine[Any, Any, None]]:
+        async def wrapped(*args: Any, **kwargs: Any) -> None:
+            assertion: AssertionError | None = None
+
             async def loop() -> None:
                 result: bool = False
+                nonlocal assertion
                 while True:
+                    assertion = None
                     try:
-                        result = await async_condition()
+                        result = await async_condition(*args, **kwargs)
+                    except AssertionError as e:
+                        assertion = e
                     except Exception:
                         pass
 
@@ -91,11 +104,22 @@ def wait_for_condition(interval: float = 0.1, timeout: float = 30) -> Callable[
             try:
                 await asyncio.wait_for(loop(), timeout=timeout)
             except asyncio.TimeoutError as e:
+                if assertion:
+                    raise assertion
                 raise asyncio.TimeoutError(async_condition.__name__) from e
 
         return wrapped
 
     return decorator
+
+
+@wait_for_condition()
+async def backend_connection_is_up(url: str) -> bool:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{url}/manager/health")
+        if resp.status_code == 200:
+            return True
+    return False
 
 
 @svcs.fastapi.lifespan
@@ -105,16 +129,7 @@ async def test_lifespan(
     pool = skvaider.proxy.pool.Pool()
 
     url = "http://127.0.0.1:8001"
-
-    @wait_for_condition()
-    async def backend_connection_is_up() -> bool:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{url}/manager/health")
-            if resp.status_code == 200:
-                return True
-        return False
-
-    await backend_connection_is_up()
+    await backend_connection_is_up(url)
 
     pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url))
 
@@ -147,6 +162,7 @@ def llm_model_name(request: pytest.FixtureRequest) -> str:
 def token_db() -> Generator[DummyTokens, None, None]:
     DUMMY_TOKENS.data.clear()
     yield DUMMY_TOKENS
+    DUMMY_TOKENS.data.clear()
 
 
 @pytest.fixture

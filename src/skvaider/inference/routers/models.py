@@ -6,11 +6,18 @@ import svcs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from skvaider.inference.manager import Manager
+from skvaider.inference.manager import Manager, Model
 from skvaider.typing import JSONObject
 
 router = APIRouter()
 log = structlog.get_logger()
+
+
+def model_info(model: Model) -> JSONObject:
+    return {
+        "id": model.config.id,
+        "status": list(model.status),
+    }
 
 
 @router.get("/models/{model_name}")
@@ -24,12 +31,8 @@ async def get_model_info(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    return {
-        "id": model.config.id,
-        "status": model.status,
-        "endpoint": model.endpoint,
-        "healthy": model.is_healthy,
-    }
+    # keep in sync with list_models
+    return model_info(model)
 
 
 @router.post("/models/{model_name}/load")
@@ -76,11 +79,7 @@ async def list_models(
     services: svcs.fastapi.DepContainer,
 ) -> JSONObject:
     manager = services.get(Manager)
-
-    return {
-        "models": await manager.list_models(),
-        "running": [m.config.id for m in manager.models.values() if m.running],
-    }
+    return {"models": [model_info(m) for m in manager.list_models()]}
 
 
 @router.api_route(

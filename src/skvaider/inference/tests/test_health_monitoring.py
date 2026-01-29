@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from skvaider.conftest import wait_for_condition
 from skvaider.inference.config import ModelConfig, ModelFile
 from skvaider.inference.manager import Model
 
@@ -99,14 +100,11 @@ async def mock_llama_subprocess(port: int) -> AsyncGenerator[MagicMock, None]:
         yield mock_proc
 
 
-async def await_health(model: Model, expect_healthy: bool) -> None:
-    for _ in range(50):
-        if model.is_healthy == expect_healthy:
-            return
-        await asyncio.sleep(0.01)
-    assert (
-        model.is_healthy == expect_healthy
-    ), f"Timeout waiting for health={expect_healthy}"
+@wait_for_condition()
+async def is_active(model: Model, expected: bool) -> bool:
+    if ("active" in model.status) == expected:
+        return True
+    return False
 
 
 @pytest.mark.parametrize(
@@ -142,15 +140,15 @@ async def test_health_check(
             assert model.endpoint == url
 
             # 1. Verify it becomes healthy
-            await await_health(model, True)
+            await is_active(model, True)
 
             # 2. Simulate failure
             state.status = 500
-            await await_health(model, False)
+            await is_active(model, False)
 
             # 3. Simulate recovery
             state.status = 200
-            await await_health(model, True)
+            await is_active(model, True)
 
         finally:
             await model.terminate()
