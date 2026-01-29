@@ -57,11 +57,18 @@ class Model:
     _tasks: list[asyncio.Task[Any]]
     _host = "127.0.0.1"
 
+    async def _check_health(self) -> bool: ...
+
     def __init__(self, config: "skvaider.inference.config.ModelConfig"):
         self.config = config
 
         self._port_found = asyncio.Event()
         self._tasks = []
+
+        if self.is_embedding:
+            self._check_health = self._check_embedding_health
+        else:
+            self._check_health = self._check_completion_health
 
     @property
     def status(self) -> set[str]:
@@ -87,9 +94,8 @@ class Model:
 
     @property
     def is_embedding(self) -> bool:
-        return (
-            "--embeddings" in self.config.cmd_args
-            or "--embedding" in self.config.cmd_args
+        return bool(
+            set(self.config.cmd_args) & set(["--embedding", "--embeddings"])
         )
 
     @property
@@ -293,12 +299,6 @@ class Model:
         self.process_status = "stopped"
         self.health_status = ""
 
-        if self.is_embedding:
-            self._health_check = self._check_embedding_health
-        else:
-            self._health_check = self._check_completion_health
-
-
     async def _monitor_process(self) -> None:
         """Monitor whether our process has exited."""
         assert self.process is not None
@@ -418,7 +418,9 @@ class Model:
                 continue
 
             try:
-                self.health_status = "healthy" if (await self._check_health()) else "unhealthy"
+                self.health_status = (
+                    "healthy" if (await self._check_health()) else "unhealthy"
+                )
             except Exception as e:
                 log.warning(
                     "Health check error", model=self.config.id, error=str(e)

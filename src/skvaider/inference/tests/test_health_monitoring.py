@@ -188,17 +188,17 @@ async def test_health_check_embeddings(
         await model.start()
         try:
             # 1. Verify it sends correct input and becomes healthy
-            await await_health(model, True)
+            await is_active(model, True)
             assert state.last_request_json is not None
-            assert state.last_request_json["input"] == "test input"
+            assert state.last_request_json["input"] == ["test input"]
 
             # 2. Simulate wrong embedding -> unhealthy
             state.body["data"][0]["embedding"] = [0.9, 0.9, 0.9]
-            await await_health(model, False)
+            await is_active(model, False)
 
             # 3. Correct again -> healthy
             state.body["data"][0]["embedding"] = expected_embedding
-            await await_health(model, True)
+            await is_active(model, True)
 
         finally:
             await model.terminate()
