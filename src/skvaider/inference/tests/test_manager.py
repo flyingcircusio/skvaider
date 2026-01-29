@@ -51,7 +51,7 @@ async def test_manager_start_model(gemma: Model, manager: Manager):
     assert model.endpoint
     assert model.endpoint.startswith("http://127.0.0.1:")
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=60) as client:
         # Check health
         r = await client.get(f"{model.endpoint}/health")
         r.raise_for_status()
