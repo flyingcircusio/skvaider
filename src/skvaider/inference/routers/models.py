@@ -26,6 +26,7 @@ async def get_model_info(
     services: svcs.fastapi.DepContainer,
 ) -> JSONObject:
     manager = services.get(Manager)
+    model_name = model_name.lower()
 
     model = manager.models.get(model_name)
     if not model:
@@ -42,6 +43,7 @@ async def load_model(
     services: svcs.fastapi.DepContainer,
 ) -> JSONObject:
     manager = services.get(Manager)
+    model_name = model_name.lower()
 
     if not model_name:
         raise HTTPException(status_code=400, detail="Model not specified")
@@ -66,6 +68,7 @@ async def unload_model(
     services: svcs.fastapi.DepContainer,
 ) -> JSONObject:
     manager = services.get(Manager)
+    model_name = model_name.lower()
 
     if not model_name:
         raise HTTPException(status_code=400, detail="Model not specified")
@@ -93,6 +96,7 @@ async def proxy_request(
     services: svcs.fastapi.DepContainer,
 ) -> StreamingResponse:
     manager = services.get(Manager)
+    model_name = model_name.lower()
 
     model = await manager.get_or_start_model(model_name)
     if not model:

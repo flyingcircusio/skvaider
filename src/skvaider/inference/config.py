@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from skvaider.config import LoggingConfig as BaseLoggingConfig
 
@@ -26,6 +26,11 @@ class ModelConfig(BaseModel):
     context_size: int = 0
     llama_server: Path = Path("llama-server")
     files: list["ModelFile"]
+
+    @field_validator("id")
+    @classmethod
+    def lower_id(cls, v: str) -> str:
+        return v.lower()
 
 
 class ModelFile(BaseModel):
