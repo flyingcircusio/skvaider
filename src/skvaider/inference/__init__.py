@@ -20,6 +20,7 @@ from skvaider.inference.config import Config
 from skvaider.inference.manager import Manager
 from skvaider.inference.routers import models
 from skvaider.logging import LoggingMiddleware, logging_config
+from skvaider.typing import JSONObject
 
 log = structlog.stdlib.get_logger()
 
@@ -119,22 +120,25 @@ def app_factory(lifespan: Any = lifespan) -> FastAPI:
     async def health(  # pyright: ignore[reportUnusedFunction]
         services: svcs.fastapi.DepContainer,
     ) -> JSONResponse:
+        """
+        Signal whether this server inference server is ready to be talked to.
+
+        The state of the individual models doesn't necessarily indicate that
+        this server is overall broken.
+
+        This method is used by the proxy to determine whether this server can
+        generally be talked to.
+
+        """
         manager = services.get(Manager)
-        models_status = {
-            id: {"status": m.status, "healthy": m.is_healthy}
-            for id, m in manager.models.items()
-        }
-        all_ok = all(
-            not (m.status == "running" and not m.is_healthy)
-            for m in manager.models.values()
-        )
-        return JSONResponse(
-            status_code=200 if all_ok else 503,
-            content={
-                "status": "ok" if all_ok else "error",
-                "models": models_status,
+        content: JSONObject = {
+            "status": "ok",
+            "models": {
+                m.config.id: {"status": list(sorted(m.status))}
+                for m in manager.list_models()
             },
-        )
+        }
+        return JSONResponse(status_code=200, content=content)
 
     app.add_middleware(
         LoggingMiddleware, logger=getLogger("skvaider.accesslog")

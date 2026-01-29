@@ -21,7 +21,7 @@ class LoggingConfig(BaseLoggingConfig):
 
 
 class ModelConfig(BaseModel):
-    id: str | None = None
+    id: str
     cmd_args: list[str] = []
     context_size: int = 0
     llama_server: Path = Path("llama-server")

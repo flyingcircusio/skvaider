@@ -7,7 +7,7 @@ import svcs
 
 import skvaider.proxy.backends
 import skvaider.proxy.pool
-from skvaider.conftest import wait_for_condition
+from skvaider.conftest import backend_connection_is_up
 
 
 async def test_backend_model_warmup(
@@ -15,15 +15,7 @@ async def test_backend_model_warmup(
 ):
     url = "http://127.0.0.1:8001"
 
-    @wait_for_condition()
-    async def backend_connection_is_up() -> bool:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{url}/manager/health")
-            if resp.status_code == 200:
-                return True
-        return False
-
-    await backend_connection_is_up()
+    await backend_connection_is_up(url)
 
     # call /models/{llm_model_name}/unload to ensure model is not loaded
     async with httpx.AsyncClient(timeout=15) as client:

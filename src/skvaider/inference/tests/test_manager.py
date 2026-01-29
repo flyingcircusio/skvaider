@@ -119,10 +119,15 @@ async def test_manager_start_model(gemma: Model, manager: Manager):
         content = chat["choices"][0]["message"]["content"]
         assert len(content) > 0  # Got some response
 
+    assert "active" in model.status
+    assert model.process_status == "running"
+    assert model.health_status == "healthy"
+
     await manager.unload_model("gemma")
 
-    assert model.running is False
-    assert model.status == "stopped"
+    assert "active" not in model.status
+    assert model.process_status == "stopped"
+    assert model.health_status == ""
 
 
 async def test_download_split_model(tmp_path: Path, gguf_http_server: str):

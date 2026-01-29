@@ -112,25 +112,24 @@ class SkvaiderBackend(Backend):
                     r = await client.get(f"{self.url}/models")
                     r_json = r.json()
                     known_models = r_json["models"]
-                    running_models = r_json["running"]
 
                 self.log.debug("updating backends")
                 current_models = self.models
                 updated_models = {}
-                for model_name in known_models:
-                    if model_name not in current_models:
+                for model in known_models:
+                    if model["id"] not in current_models:
                         model_obj = AIModel(
-                            id=model_name,
+                            id=model["id"],
                             created=0,
                             owned_by="skvaider",
                             backend=self,
                         )
                     else:
-                        model_obj = current_models[model_name]
+                        model_obj = current_models[model["id"]]
 
                     updated_models[model_obj.id] = model_obj
 
-                    if model_name in running_models:
+                    if "active" in model["status"]:
                         model_obj.is_loaded = True
                         model_obj.memory_usage = 0
                     else:
