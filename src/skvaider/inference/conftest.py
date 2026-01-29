@@ -1,4 +1,5 @@
 import http.server
+import shutil
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, Generator
@@ -86,7 +87,10 @@ async def prepare_model(
         await model.download()
         cache_dir.mkdir()
         for f in model.model_files:
-            f.rename(cache_dir / f.name)
+            # f.rename(cache_dir / f.name)
+            shutil.move(
+                f, cache_dir / f.name
+            )  # cannot move accross filesystems, for example in github actions runner
     # We had data in the cache. The download method is unaware of the test-fixture
     # caching. Maybe there could be a real world use case to make download() smarter.
     # The test harness needs to ensure that we restore the data from the cache as expected.
