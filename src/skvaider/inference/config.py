@@ -11,11 +11,6 @@ class Config(BaseModel):
     logging: "LoggingConfig"
     openai: "OpenAIConfig"
     embedding_verification_file: Path | None = None
-    manager: "ManagerConfig"
-
-
-class ManagerConfig(BaseModel):
-    backend: Literal["cpu", "rocm"]
 
 
 class OpenAIConfig(BaseModel):
@@ -28,6 +23,7 @@ class LoggingConfig(BaseLoggingConfig):
 
 class ModelConfig(BaseModel):
     id: str
+    backend: Literal["cpu", "rocm"]
     cmd_args: list[str] = []
     context_size: int = 0
     llama_server: Path = Path("llama-server")

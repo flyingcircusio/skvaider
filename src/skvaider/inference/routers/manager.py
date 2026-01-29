@@ -39,22 +39,16 @@ async def health(  # pyright: ignore[reportUnusedFunction]
 async def usage(
     services: svcs.fastapi.DepContainer,
 ) -> JSONResponse:
-    """
-    Signal whether this server inference server is ready to be talked to.
-
-    The state of the individual models doesn't necessarily indicate that
-    this server is overall broken.
-
-    This method is used by the proxy to determine whether this server can
-    generally be talked to.
-
-    """
+    """Return memory usage statistics per backend."""
     manager = services.get(Manager)
     content: JSONObject = {
-        "vram": {
-            "total": manager.vram_total,
-            "used": manager.vram_used,
-            "free": manager.vram_free,
+        "memory": {
+            monitor.id: {
+                "total": monitor.total,
+                "used": monitor.used,
+                "free": monitor.free,
+            }
+            for monitor in manager.monitors.values()
         }
     }
     return JSONResponse(status_code=200, content=content)

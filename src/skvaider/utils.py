@@ -1,7 +1,7 @@
 import asyncio
 import re
 import unicodedata
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
 
 import structlog.stdlib
@@ -73,3 +73,37 @@ def slugify(text: str, max_length: int = 255) -> str:
         text = "unnamed"
 
     return text
+
+
+class TaskManager:
+    _tasks: list[asyncio.Task[None]]
+
+    def __init__(self):
+        self._tasks = []
+
+    def poll(
+        self,
+        func: Callable[..., Coroutine[Any, Any, None]],
+        *args: Any,
+        interval: float,
+    ) -> None:
+        """Add a function to be polled. Uses @poll decorator metadata."""
+
+        async def loop() -> None:
+            while True:
+                try:
+                    await func(*args)
+                except Exception:
+                    log.exception(f"An error occured polling {func!r}")
+                await asyncio.sleep(interval)
+
+        self.create(loop)
+
+    def create(self, func: Callable[..., Coroutine[Any, Any, Any]]):
+        self._tasks.append(asyncio.create_task(func()))
+
+    async def terminate(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks.clear()

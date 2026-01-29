@@ -41,14 +41,22 @@ class Backend(ABC):
     unhealthy_reason: str = ""
     models: dict[str, "AIModel"]
 
+    memory: dict[str, dict[str, int]]
+
     def __init__(self, url: str):
         self.url = url
         self.models = {}
+        self.memory = {}
         self.log = structlog.stdlib.get_logger().bind(backend=self.url)
 
     @property
     def memory_usage(self):
-        return sum([v.memory_usage for v in self.models.values()])
+        # XXX adapt to
+        usage = 0
+        for model in self.models.values():
+            for mem in model.memory_usage.values():
+                usage += mem
+        return usage
 
     @abstractmethod
     async def post(self, path: str, data: dict[str, Any]): ...
@@ -144,10 +152,7 @@ class SkvaiderBackend(Backend):
 
             if "active" in model["status"]:
                 model_obj.is_loaded = True
-                model_obj.memory_usage = 0
-            else:
-                model_obj.is_loaded = False
-                model_obj.memory_usage = 0
+            model_obj.memory_usage = model.get("memory_usage")
 
         self.models = updated_models
         pool.update_model_maps()
@@ -158,10 +163,9 @@ class SkvaiderBackend(Backend):
             r.raise_for_status()
             usage = r.json()
 
-        self.vram_total = int(usage["vram"]["total"])
-        self.vram_used = int(usage["vram"]["used"])
-        self.vram_free = int(usage["vram"]["free"])
+        self.memory = usage["memory"]
 
-        self.log.info(
-            f"{self.url} memory total={self.vram_total:,} used={self.vram_used:,} free={self.vram_free:,}"
-        )
+        for backend, m in self.memory.items():
+            self.log.info(
+                f"{self.url} {backend} memory total={m['total']:,} used={m['used']:,} free={m['free']:,}"
+            )

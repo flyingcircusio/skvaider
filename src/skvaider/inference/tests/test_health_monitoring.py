@@ -111,9 +111,14 @@ async def is_active(model: Model, expected: bool) -> bool:
 @pytest.mark.parametrize(
     "model_kwargs",
     [
-        {"id": "test", "files": [ModelFile(url="u", hash="h")]},
+        {
+            "id": "test",
+            "backend": "cpu",
+            "files": [ModelFile(url="u", hash="h")],
+        },
         {
             "id": "test-embed",
+            "backend": "cpu",
             "cmd_args": ["--embeddings"],
             "files": [ModelFile(url="u", hash="h")],
         },
@@ -174,6 +179,7 @@ async def test_health_check_embeddings(
 
     config = ModelConfig(
         id="test-embed",
+        backend="cpu",
         cmd_args=["--embeddings"],
         files=[ModelFile(url="u", hash="h")],
     )
