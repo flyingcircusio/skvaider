@@ -2,10 +2,12 @@ import json
 import pathlib
 
 import httpx
+import pytest
 
 from skvaider.inference.manager import Model
 
 
+@pytest.mark.timeout(120)
 async def test_embeddinggemma_output_stability(embeddinggemma: Model):
     await embeddinggemma.start()
 
