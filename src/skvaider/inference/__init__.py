@@ -57,7 +57,7 @@ async def lifespan(
         log.error("Failed to create models directory", error=str(e))
         raise
 
-    manager = Manager(models_dir=config.models_dir, config=config.manager)
+    manager = Manager(models_dir=config.models_dir)
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         Manager, manager
     )

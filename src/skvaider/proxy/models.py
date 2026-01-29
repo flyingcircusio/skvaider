@@ -25,7 +25,7 @@ class AIModel(BaseModel):
     in_progress: int = Field(default=0, exclude=True)
     limit: int = Field(default=5, exclude=True)
     is_loaded: bool = Field(default=False, exclude=True)
-    memory_usage: int = Field(default=0, exclude=True)
+    memory_usage: dict[str, int] = Field(default_factory=dict, exclude=True)
     log: Any = Field(default=None, exclude=True)
 
     __idle: asyncio.Event

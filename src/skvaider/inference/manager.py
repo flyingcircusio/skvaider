@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any, Concatenate, Literal, ParamSpec, Protocol, TypeVar
@@ -14,8 +15,8 @@ import httpx
 import psutil
 import structlog
 
-from skvaider.inference.config import ManagerConfig, ModelConfig
-from skvaider.utils import slugify
+from skvaider.inference.config import ModelConfig
+from skvaider.utils import TaskManager, slugify
 
 log = structlog.get_logger()
 
@@ -43,6 +44,166 @@ def locked(
     return wrapper
 
 
+class MemoryMonitor(ABC):
+    """Abstract base class for monitoring memory usage (RAM or VRAM)."""
+
+    id: str
+
+    total: int = 0
+    used: int = 0
+    free: int = 0
+
+    _model_usage: dict[str, int]
+
+    @abstractmethod
+    async def update_global_usage(self) -> None:
+        """Return global memory statistics as (total, used, free) in bytes."""
+        ...
+
+    @abstractmethod
+    async def update_model_usage(self, model: "Model") -> None:
+        """Return memory usage in bytes for the given process ID."""
+        ...
+
+    def model_usage(self, model: "Model") -> int:
+        if model.config.id in self._model_usage:
+            return self._model_usage[model.config.id]
+
+        # Bleh. We're kind of half-way through a proper abstraction here, but as we're
+        # already kind of deep into potential YAGNI and early abstraction land ... let's
+        # stick with this for now.
+        if (self.id == "ram" and model.config.backend == "cpu") or (
+            self.id == model.config.backend
+        ):
+            return model.file_size
+
+        return 0
+
+
+class RAMMonitor(MemoryMonitor):
+    """Memory monitor using psutil for system RAM."""
+
+    id = "ram"
+
+    def __init__(self):
+        self._model_usage = {}
+
+    async def update_global_usage(self) -> None:
+        mem = psutil.virtual_memory()
+        self.total = mem.total
+        self.used = mem.used
+        self.free = mem.available
+        log.info(
+            f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
+        )
+
+    async def update_model_usage(self, model: "Model") -> None:
+        if not model.process:
+            return
+
+        proc = psutil.Process(model.process.pid)
+        usage = proc.memory_info().rss
+
+        current = self._model_usage.setdefault(model.config.id, 0)
+        self._model_usage[model.config.id] = max([current, usage])
+
+
+class ROCmMemoryMonitor(MemoryMonitor):
+    """Memory monitor using rocm-smi for AMD GPU VRAM."""
+
+    id = "rocm"
+
+    def __init__(self):
+        self._model_usage = {}
+
+    async def update_global_usage(self):
+        """Update ROCm card VRAM memory statistics."""
+        proc = await asyncio.create_subprocess_exec(
+            "rocm-smi",
+            "--json",
+            "--showmeminfo",
+            "all",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=5
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise
+        assert proc.returncode is not None
+
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode,
+                "rocm-smi",
+                stdout,
+                stderr,
+            )
+
+        data = json.loads(stdout.decode("utf-8"))
+
+        # Sum VRAM across all cards
+        total = 0
+        used = 0
+        for key, card_data in data.items():
+            if not key.startswith("card"):
+                continue
+            total += int(card_data["VRAM Total Memory (B)"])
+            used += int(card_data["VRAM Total Used Memory (B)"])
+
+        self.total = total
+        self.used = used
+        self.free = total - used
+        log.info(
+            f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
+        )
+
+    async def update_model_usage(self, model: "Model") -> None:
+        """Return VRAM usage for a process by calling rocm-smi."""
+        if not model.process:
+            return
+        proc = await asyncio.create_subprocess_exec(
+            "rocm-smi",
+            "--json",
+            "--showpids",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=5
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return
+        assert proc.returncode is not None
+
+        if proc.returncode != 0:
+            log.warning(
+                "rocm-smi --showpids failed",
+                returncode=proc.returncode,
+                stderr=stderr.decode("utf-8", errors="replace"),
+            )
+            return
+
+        data = json.loads(stdout.decode("utf-8"))
+        system_data = data.get("system", {})
+
+        # Find this PID in the output
+        # Format: "PID123456": "process_name, gpu_count, vram_bytes, cpu_mem, unknown"
+        pid_key = f"PID{model.process.pid}"
+        parts = system_data[pid_key].split(",")
+        usage = int(parts[2].strip())
+
+        current = self._model_usage.setdefault(model.config.id, 0)
+        self._model_usage[model.config.id] = max([current, usage])
+
+
 class Model:
     process: asyncio.subprocess.Process | None = None
     endpoint: str | None = None
@@ -56,22 +217,30 @@ class Model:
     health_check_timeout: float = 10
     verification_data: dict[str, list[float]] | None = None
 
+    file_size: int
+
     _port_found: asyncio.Event
     _tasks: list[asyncio.Task[Any]]
     _host = "127.0.0.1"
+    status_changed: asyncio.Event
 
     async def _check_health(self) -> bool: ...
 
     def __init__(self, config: ModelConfig):
         self.config = config
-
         self._port_found = asyncio.Event()
         self._tasks = []
+        self.status_changed = asyncio.Event()
 
         if self.is_embedding:
             self._check_health = self._check_embedding_health
         else:
             self._check_health = self._check_completion_health
+
+    def _notify_status_changed(self) -> None:
+        """Notify watchers that status changed. Set and immediately clear."""
+        self.status_changed.set()
+        self.status_changed.clear()
 
     @property
     def status(self) -> set[str]:
@@ -126,6 +295,14 @@ class Model:
     def model_files(self) -> list[Path]:
         return [self.url_to_filename(file.url) for file in self.config.files]
 
+    def update_filesize(self) -> None:
+        """Set initial memory estimate from model file sizes."""
+        total = 0
+        for f in self.model_files:
+            if f.exists():
+                total += f.stat().st_size
+        self.file_size = total
+
     @property
     def integrity_marker_file(self) -> Path:
         return self.datadir / "integrity.ok"
@@ -138,6 +315,7 @@ class Model:
             log.info(
                 f"{self.slug}: found valid cached data, no download needed."
             )
+            self.update_filesize()
             return
 
         verify_got_hashes: list[str] = []
@@ -190,6 +368,7 @@ class Model:
                 raise ValueError(got)
 
         self.integrity_marker_file.touch()
+        self.update_filesize()
         log.info(f"{self.slug}: success")
 
     async def start(self) -> None:
@@ -242,14 +421,12 @@ class Model:
             startup_task = self._create_task(self._wait_for_startup())
             await startup_task
             self._create_task(self._monitor_health())
-
-            # health_status is set by the monitoring task which starts immediately
-            # XXX wait here for us to see the active flag? might not be required to block on, though ...
         except Exception:
             await self.terminate()
             raise
         log.info("Model started", model=self.config.id, endpoint=self.endpoint)
         self.process_status = "running"
+        self._notify_status_changed()
 
     def _create_task(
         self, awaitable: Coroutine[Any, Any, Any]
@@ -301,6 +478,7 @@ class Model:
         self.endpoint = None
         self.process_status = "stopped"
         self.health_status = ""
+        self._notify_status_changed()
 
     async def _monitor_process(self) -> None:
         """Monitor whether our process has exited."""
@@ -426,24 +604,37 @@ class Model:
 
     async def _monitor_health(self) -> None:
         """Periodically check if the model is responsive."""
+        new_status = ""
+        interval = 0
         while True:
-            # We check first, then sleep
-            if "running" not in self.status or not self.endpoint:
-                self.health_status = ""
-                await asyncio.sleep(0.1)
+            # This is a bit complicated to handle varying intervals during warmup
+            # and manage the event trigger
+            # 1. Status update and sleep
+            changed = new_status != self.health_status
+            self.health_status = new_status
+            if changed:
+                self._notify_status_changed()
+            await asyncio.sleep(interval)
+
+            # 2. Fast loop without an actual health check to wait until we see the
+            #    model starting or running and the endpoint exposed.
+            if set(["starting", "running"]) & self.status and not self.endpoint:
+                new_status = ""
+                interval = 0.1
                 continue
 
+            # 3. Real health check immediately afterwards and switching to a slower interval.
             try:
-                self.health_status = (
+                new_status = (
                     "healthy" if (await self._check_health()) else "unhealthy"
                 )
             except Exception as e:
-                log.warning(
+                log.exception(
                     "Health check error", model=self.config.id, error=str(e)
                 )
-                self.health_status = "unhealthy"
+                new_status = "unhealthy"
 
-            await asyncio.sleep(self.health_check_interval)
+            interval = self.health_check_interval
 
     async def _wait_for_startup(self) -> None:
         await self._port_found.wait()
@@ -461,89 +652,21 @@ class Model:
 class Manager:
     models_dir: Path
     models: dict[str, Model]
+    monitors: dict[str, MemoryMonitor]
+    _tasks: list[asyncio.Task[None]]
 
-    vram_total = 0
-    vram_used = 0
-    vram_free = 0
-
-    def __init__(self, models_dir: Path, config: ManagerConfig):
-        self.config = config
+    def __init__(self, models_dir: Path):
+        self.tasks = TaskManager()
         self.models_dir = models_dir
         self.models = {}
         self._lock = asyncio.Lock()
 
-        if self.config.backend == "cpu":
-            self._update_usage = self._update_usage_cpu
-        elif self.config.backend == "rocm":
-            self._update_usage = self._update_usage_rocm
+        self.monitors = {"ram": RAMMonitor()}
+        if shutil.which("rocm-smi"):
+            self.monitors["rocm"] = ROCmMemoryMonitor()
 
-        self._monitor_task = asyncio.create_task(self._monitor())
-
-    async def _monitor(self) -> None:
-        """Periodically update VRAM/memory usage statistics."""
-        while True:
-            try:
-                await self._update_usage()
-            except Exception:
-                log.exception("Failed to update memory usage")
-            log.info(
-                f"memory total={self.vram_total:,} used={self.vram_used:,} free={self.vram_free:,}"
-            )
-            await asyncio.sleep(10)
-
-    async def _update_usage_cpu(self) -> None:
-        """Update memory usage using psutil (for CPU backend / unit tests)."""
-        mem = psutil.virtual_memory()
-        self.vram_total = mem.total
-        self.vram_used = mem.used
-        self.vram_free = mem.available
-
-    async def _update_usage_rocm(self) -> None:
-        """Update VRAM usage by calling rocm-smi and parsing JSON output."""
-        proc = await asyncio.create_subprocess_exec(
-            "rocm-smi",
-            "--json",
-            "--showmeminfo",
-            "all",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=5
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise
-        assert proc.returncode is not None
-
-        if proc.returncode != 0:
-            raise subprocess.CalledProcessError(
-                proc.returncode,
-                "rocm-smi",
-                stdout,
-                stderr,
-            )
-
-        data = json.loads(stdout.decode("utf-8"))
-
-        # Sum VRAM across all cards
-        # This only resets the VRAM data if we encounter no failues.
-        # This might be the wrong or the right thing to do. Not sure yet.
-        # It's intended to protect us from flakiness but might result
-        # in us using the node while being broken.
-        total = 0
-        used = 0
-        for key, card_data in data.items():
-            if not key.startswith("card"):
-                continue
-            total += int(card_data["VRAM Total Memory (B)"])
-            used += int(card_data["VRAM Total Used Memory (B)"])
-
-        self.vram_total = total
-        self.vram_used = used
-        self.vram_free = self.vram_total - self.vram_used
+        for monitor in self.monitors.values():
+            self.tasks.poll(monitor.update_global_usage, interval=10)
 
     def add_model(self, model: Model) -> None:
         assert model.config.id is not None
@@ -551,6 +674,17 @@ class Manager:
         self.models[model.config.id] = model
         model.datadir = self.models_dir / model.slug
         model.datadir.mkdir(exist_ok=True)
+
+        # Always monitor RAM usage
+        ram_monitor = self.monitors["ram"]
+        self.tasks.poll(ram_monitor.update_model_usage, model, interval=10)
+
+        # Also monitor ROCm VRAM if backend is rocm
+        if model.config.backend == "rocm":
+            if "rocm" not in self.monitors:
+                raise ValueError("Memory monitor for rocm is not available.")
+            rocm_monitor = self.monitors["rocm"]
+            self.tasks.poll(rocm_monitor.update_model_usage, model, interval=10)
 
     def list_models(self) -> list[Model]:
         return list(self.models.values())
@@ -571,6 +705,9 @@ class Manager:
                 log.error("Timeout starting model", model=model_name)
                 await model.terminate()
                 raise
+            # XXX let this trigger on the monitor via the event handler?
+            for monitor in self.monitors.values():
+                await monitor.update_global_usage()
         return model
 
     @locked
@@ -578,15 +715,13 @@ class Manager:
         model = self.models[model_name]
         if model.process_status in ["running", "starting"]:  # idempotent
             await model.terminate()
+            # XXX let this trigger on the monitor via the event handler?
+            for monitor in self.monitors.values():
+                await monitor.update_global_usage()
 
     @locked
     async def shutdown(self) -> None:
-        if hasattr(self, "_monitor_task"):
-            self._monitor_task.cancel()
-            try:
-                await self._monitor_task
-            except asyncio.CancelledError:
-                pass
+        await self.tasks.terminate()
         for model in self.models.values():
             await model.terminate()
         self.models.clear()

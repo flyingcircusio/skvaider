@@ -13,10 +13,14 @@ router = APIRouter()
 log = structlog.get_logger()
 
 
-def model_info(model: Model) -> JSONObject:
+def model_info(model: Model, manager: Manager) -> JSONObject:
     return {
         "id": model.config.id,
         "status": list(model.status),
+        "memory_usage": {
+            monitor.id: monitor.model_usage(model)
+            for monitor in manager.monitors.values()
+        },
     }
 
 
@@ -33,7 +37,7 @@ async def get_model_info(
         raise HTTPException(status_code=404, detail="Model not found")
 
     # keep in sync with list_models
-    return model_info(model)
+    return model_info(model, manager)
 
 
 @router.post("/models/{model_name}/load")
@@ -82,7 +86,7 @@ async def list_models(
     services: svcs.fastapi.DepContainer,
 ) -> JSONObject:
     manager = services.get(Manager)
-    return {"models": [model_info(m) for m in manager.list_models()]}
+    return {"models": [model_info(m, manager) for m in manager.list_models()]}
 
 
 @router.api_route(

@@ -20,15 +20,9 @@ uv run pytest src/skvaider/inference/tests/test_manager.py::test_manager_start_m
 # Start all services (proxy + 2 inference servers)
 devenv up
 
-# Type checking
-uv run basedpyright
+# Type checking, linting, formatting, etc. all in one:
+pre-commit run -a
 
-# Formatting
-uv run black src/
-uv run isort src/
-
-# Linting
-uv run ruff check src/
 ```
 
 ## Architecture
@@ -105,16 +99,47 @@ Pydantic models in `config.py` files. Key patterns:
 
   Good:
 
+   ```
     for x in mylist:
       if not condition(x):
         continue
       ... do the happy path work ...
+  ```
 
   Bad:
 
+  ```
     for x in mylist:
       if condition(x):
         ... do the happy path work ...
+  ```
+
+- do not add superfluous comments to code that is already there. when making comments to
+  new code you generate then do not make the comment if its basically exactly what the
+  code already reads like or is sensibly obvious. stick to higher order "why" comments
+  instead of superfluous comments
+
+  bad examples:
+
+  ```
+    # do the foo bar thing
+    do_foo_bar()
+
+    # Get per-process VRAM usage from --showpids
+    await self._update_per_model_vram_rocm()
+
+    # Get total VRAM from --showmeminfo
+    proc = await asyncio.create_subprocess_exec(
+        "rocm-smi",
+        "--json",
+        "--showmeminfo",
+        "all",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+  ```
+
+- if you log an exception, use the log.exception() function to ensure we see a proper traceback
 
 - basedpyright strict mode
 - black + isort (line length 80)

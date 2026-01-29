@@ -10,6 +10,7 @@ import structlog.stdlib
 log = structlog.stdlib.get_logger()
 
 T = TypeVar("T")
+P = TypeVar("P")
 
 
 def log_task_exception(task: asyncio.Task[Any]) -> None:
