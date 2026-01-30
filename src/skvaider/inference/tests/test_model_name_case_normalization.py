@@ -14,20 +14,17 @@ async def test_inference_endpoints_normalize_model_name(
     """
     Test that inference endpoints normalize model name to lowercase.
     """
-    model_id = gemma.config.id  # should be "gemma"
-    mixed_case_id = model_id.upper()
+    model_id = gemma.config.id
+    assert model_id == "gemma"
 
-    # Test /models/{model_name}
-    response = client.get(f"/models/{mixed_case_id}")
+    response = client.get("/models/GEMMA")
     assert response.status_code == 200
     assert response.json()["id"] == model_id
 
-    # Test /models/{model_name}/load
-    response = client.post(f"/models/{mixed_case_id}/load")
+    response = client.post("/models/GEMMA/load")
     assert response.status_code == 200
 
-    # Test /models/{model_name}/unload
-    response = client.post(f"/models/{mixed_case_id}/unload")
+    response = client.post("/models/GemMA/unload")
     assert response.status_code == 200
 
 
@@ -37,6 +34,7 @@ def test_model_config_normalizes_id_to_lowercase():
     """
     config = ModelConfig(
         id="Gemma-2-2b",
+        backend="cpu",
         files=[
             ModelFile(
                 url="https://example.com/model.gguf",

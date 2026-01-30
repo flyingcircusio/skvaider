@@ -1,6 +1,6 @@
 import asyncio
 import contextlib
-from typing import Any
+from typing import Any, Self
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -47,6 +47,38 @@ class AIModel(BaseModel):
             self.__idle.set()
         else:
             self.__idle.clear()
+
+    async def wait_for_idle(self) -> Self:
+        await self.__idle.wait()
+        return self
+
+    def fit_score(self) -> float:
+        """A score (higher) is better how well this model fits or would fit on it's backend
+        compared to the same model on other backends.
+
+        The score is intended to be the same independent of whether it's already been
+        loaded or not. The score computes the inverted % of the free memory this would consume,
+        so higher values are better.
+
+        It's a sum of normalized values how well it fits in each category of memory. If it doesn't
+        use a specific kind of memory then this is not included in the fitting - as the fittings
+        can only ever be compared between the same models not agains other models.
+
+        If no data is available or the model doesn't fit, we return 0 as to not load this
+        model until we have sufficient data.
+
+        """
+        score = 0.0
+        for backend, usage in self.memory_usage.items():
+            if usage == 0:
+                continue
+            available = self.backend.memory.get(backend, {}).get("free", 0)
+            if self.is_loaded:
+                available += usage
+            if available < usage:
+                continue
+            score += 1 - (usage / available)
+        return score
 
     @contextlib.asynccontextmanager
     async def use(self):
