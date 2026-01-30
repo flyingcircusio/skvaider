@@ -67,6 +67,10 @@ class Backend(ABC):
 
 
 class SkvaiderBackend(Backend):
+    def __init__(self, url: str):
+        super().__init__(url)
+        self.loading_lock = asyncio.Lock()
+
     async def post(self, path: str, data: dict[str, Any]):
         model_id = data.get("model")
         if not model_id:
@@ -98,21 +102,27 @@ class SkvaiderBackend(Backend):
     async def load_model_with_options(
         self, model_id: str, pool: "Pool"
     ) -> bool:
-        success = False
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            try:
-                r = await client.post(
-                    f"{self.url}/models/{model_id}/load",
-                    timeout=120,
-                )
-            except httpx.HTTPError as exc:
-                self.log.error(
-                    f"Loading model failed: HTTP Exception for {exc.request.url} - {exc}"
-                )
-            else:
-                success = r.status_code == 200
-        await self._update_models(pool)
-        return success
+        async with self.loading_lock:
+            # Only try loading one model at a time on a backend.
+            if self.models[model_id].is_loaded:
+                return True
+            # XXX double check whether this model still fits, as other models might have loaded -
+            # alternatively the lock needs to be held elsewhere, too.
+            success = False
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                try:
+                    r = await client.post(
+                        f"{self.url}/models/{model_id}/load",
+                        timeout=120,
+                    )
+                except httpx.HTTPError as exc:
+                    self.log.error(
+                        f"Loading model failed: HTTP Exception for {exc.request.url} - {exc}"
+                    )
+                else:
+                    success = r.status_code == 200
+            await self._update_models(pool)
+            return success
 
     async def monitor_health_and_update_models(self, pool: "Pool") -> None:
         self.log.debug("starting monitor")
