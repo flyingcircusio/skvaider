@@ -217,10 +217,10 @@ class Model:
     health_check_timeout: float = 10
     verification_data: dict[str, list[float]] | None = None
 
-    file_size: int
+    file_size: int = 0
 
     _port_found: asyncio.Event
-    _tasks: list[asyncio.Task[Any]]
+    _tasks: TaskManager
     _host = "127.0.0.1"
     status_changed: asyncio.Event
 
@@ -229,7 +229,7 @@ class Model:
     def __init__(self, config: ModelConfig):
         self.config = config
         self._port_found = asyncio.Event()
-        self._tasks = []
+        self._tasks = TaskManager()
         self.status_changed = asyncio.Event()
 
         if self.is_embedding:
@@ -413,14 +413,16 @@ class Model:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            self._monitor_process_task = asyncio.create_task(
-                self._monitor_process()
+            self._tasks.create(self._monitor_process)
+            self._tasks.create(
+                self._monitor_output, args=[self.process.stderr, True]
             )
-            self._create_task(self._monitor_output(self.process.stderr, True))
-            self._create_task(self._monitor_output(self.process.stdout, False))
-            startup_task = self._create_task(self._wait_for_startup())
+            self._tasks.create(
+                self._monitor_output, args=[self.process.stdout, False]
+            )
+            startup_task = self._tasks.create(self._wait_for_startup)
             await startup_task
-            self._create_task(self._monitor_health())
+            self._tasks.create(self._monitor_health)
         except Exception:
             await self.terminate()
             raise
@@ -428,33 +430,12 @@ class Model:
         self.process_status = "running"
         self._notify_status_changed()
 
-    def _create_task(
-        self, awaitable: Coroutine[Any, Any, Any]
-    ) -> asyncio.Task[Any]:
-        t = asyncio.create_task(awaitable)
-        self._tasks.append(t)
-        return t
-
     async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model process", model=self.config.id)
         self.process_status = "stopping"
 
-        # Cancel the monitor task (not in self._tasks)
-        if hasattr(self, "_monitor_process_task"):
-            self._monitor_process_task.cancel()
-            try:
-                await self._monitor_process_task
-            except asyncio.CancelledError:
-                pass
-
-        for task in self._tasks:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        self._tasks.clear()
+        self._tasks.terminate()
 
         if self.process:
             try:
@@ -719,9 +700,10 @@ class Manager:
             for monitor in self.monitors.values():
                 await monitor.update_global_usage()
 
-    @locked
     async def shutdown(self) -> None:
-        await self.tasks.terminate()
-        for model in self.models.values():
+        self.tasks.terminate()
+        for model in list(self.models.values()):
             await model.terminate()
+        # It would be cleaner if we'd use a lock here, but shutdown otherwise
+        # can end up locked infinitely it seems.
         self.models.clear()

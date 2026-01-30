@@ -49,15 +49,6 @@ class Backend(ABC):
         self.memory = {}
         self.log = structlog.stdlib.get_logger().bind(backend=self.url)
 
-    @property
-    def memory_usage(self):
-        # XXX adapt to
-        usage = 0
-        for model in self.models.values():
-            for mem in model.memory_usage.values():
-                usage += mem
-        return usage
-
     @abstractmethod
     async def post(self, path: str, data: dict[str, Any]): ...
 
@@ -67,7 +58,9 @@ class Backend(ABC):
     ) -> AsyncGenerator[str, None]: ...
 
     @abstractmethod
-    async def load_model_with_options(self, model_id: str) -> bool: ...
+    async def load_model_with_options(
+        self, model_id: str, pool: "Pool"
+    ) -> bool: ...
 
     @abstractmethod
     async def monitor_health_and_update_models(self, pool: "Pool"): ...
@@ -102,13 +95,24 @@ class SkvaiderBackend(Backend):
                     if chunk.strip():
                         yield chunk
 
-    async def load_model_with_options(self, model_id: str) -> bool:
+    async def load_model_with_options(
+        self, model_id: str, pool: "Pool"
+    ) -> bool:
+        success = False
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.post(
-                f"{self.url}/models/{model_id}/load",
-                timeout=120,
-            )
-            return r.status_code == 200
+            try:
+                r = await client.post(
+                    f"{self.url}/models/{model_id}/load",
+                    timeout=120,
+                )
+            except httpx.HTTPError as exc:
+                self.log.error(
+                    f"Loading model failed: HTTP Exception for {exc.request.url} - {exc}"
+                )
+            else:
+                success = r.status_code == 200
+        await self._update_models(pool)
+        return success
 
     async def monitor_health_and_update_models(self, pool: "Pool") -> None:
         self.log.debug("starting monitor")
@@ -150,13 +154,13 @@ class SkvaiderBackend(Backend):
 
             updated_models[model_obj.id] = model_obj
 
-            if "active" in model["status"]:
-                model_obj.is_loaded = True
+            model_obj.is_loaded = "active" in model["status"]
             model_obj.memory_usage = model.get("memory_usage")
             self.log.info(
                 "model memory usage",
                 model=model_obj.id,
                 memory=model_obj.memory_usage,
+                loaded=model_obj.is_loaded,
             )
 
         self.models = updated_models

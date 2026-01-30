@@ -25,11 +25,13 @@ class ProxyRequest:
 class Pool:
     backends: list["Backend"]
     health_check_tasks: list[asyncio.Task[None]]
+    tasks: list[asyncio.Task[None]]
     queues: dict[str, asyncio.Queue[ProxyRequest]]  # one queue per model
 
     def __init__(self):
         self.backends = []
         self.health_check_tasks = []
+        self.tasks = []
         self.queues = {}
         self.models: dict[str, AIModel] = {}
         self.queue_tasks: dict[str, asyncio.Task[None]] = {}
@@ -81,94 +83,108 @@ class Pool:
             for b in self.backends
         ):
             return
-        # load model on backend with least memory usage
-        candidate_backends = [b for b in self.backends if model_id in b.models]
-        if not candidate_backends:
-            log.error(
-                "trying to load model not present on any backend {model}, are the backends flapping?",
-                model=model_id,
-            )
-            return
-        candidate_backends.sort(key=lambda b: b.memory_usage)
-        backend = candidate_backends[0]
-        log.info(
-            "loading model on backend", model=model_id, backend=backend.url
+        await self.add_model_instance(model_id)
+
+    async def add_model_instance(self, model_id: str):
+        # add another model instance on a backend with least memory usage and where its not running, yet.
+        candidate_backends = [
+            (b, b.models[model_id].fit_score())
+            for b in self.backends
+            if model_id in b.models and not b.models[model_id].is_loaded
+        ]
+        # Eliminate backends where the score is 0
+        candidate_backends = list(
+            filter(lambda b: b[1] > 0, candidate_backends)
         )
-        await backend.load_model_with_options(model_id)
+        if not candidate_backends:
+            log.error("no backend available to load model", model=model_id)
+            return
+        candidate_backends.sort(key=lambda b: b[1], reverse=True)
+        for b, score in candidate_backends:
+            log.debug("model eval", model=model_id, backend=b.url, score=score)
+
+        backend, score = candidate_backends[0]
+        log.info(
+            "loading model", model=model_id, backend=backend.url, score=score
+        )
+        await backend.load_model_with_options(model_id, self)
 
     async def assign_backends(self, model_id: str):
         """Continuously assign requests to backends.
 
-        Perform batching and model distribution and warmup.
+        All requests for this model are seen here in a serialized
+        fashion and then we send them off for processing outside
+        of this loop.
+
+        At the same time we peek forward into the buffer to ensure
+        we can send off multiple requests to the same backend quickly
+        after each other to help with batching on the backends, too.
 
         """
         while True:
             log.debug("waiting for request", model=model_id)
             queue = self.queues[model_id]
             request_batch = [await queue.get()]
+
             log.debug("got request", model=model_id)
 
-            # Now, are there any backends with the model loaded and are they available?
-            while not (
-                model_backends := [
-                    b for b in self.backends if model_id in b.models
-                ]
-            ):
-                log.warning("no backends with model available", model=model_id)
-                await asyncio.sleep(1)
-
-            loaded_backends = [
-                b for b in model_backends if b.models[model_id].is_loaded
-            ]
-            idle_backends = [
-                b for b in loaded_backends if b.models[model_id].idle
-            ]
-            not_loaded_backends = [
-                b for b in model_backends if not b.models[model_id].is_loaded
+            # 1. Try up to 3 seconds to locate a free backend. As we're in a serialized loop here
+            # we don't have to pay attention whether other requests are coming in for now.
+            candidates = [
+                b.models[model_id]
+                for b in self.backends
+                if model_id in b.models
             ]
 
-            if (
-                not idle_backends
-                and len(loaded_backends) < 2
-                and not_loaded_backends
-            ):  # At most 2 instances per model
-                # Load the model on a host with as little used memory as possible
-                # if we have spare hosts.
-                not_loaded_backends.sort(key=lambda b: b.memory_usage)
-                new_backend = not_loaded_backends[0]
-                log.debug(
-                    "warming up model on new backend",
-                    backend=new_backend.url,
+            log.info("waiting for first idle backend", model=model_id)
+            done, pending = await asyncio.wait(
+                [asyncio.create_task(b.wait_for_idle()) for b in candidates],
+                timeout=3,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for p in pending:
+                p.cancel()
+
+            if not done:
+                log.info(
+                    "no idle backend found, starting another instance",
                     model=model_id,
                 )
-                await new_backend.load_model_with_options(model_id)
-                idle_backends.insert(0, new_backend)
-
-            if not idle_backends:
-                # Need to wait for an idle backend
-                log.debug("waiting for idle backends", model=model_id)
-                tasks = [
-                    utils.create_task(b.models[model_id].wait())
-                    for b in model_backends
-                ]
-                ready_tasks, _ = await asyncio.wait(
-                    tasks,
+                # 2. We didn't get an idle backend within 3 seconds so we start another one
+                self.tasks.append(
+                    asyncio.create_task(self.add_model_instance(model_id))
+                )
+                log.info("waiting for idle backend (2)", model=model_id)
+                # 3. And now we wait longer. There's a timeout to ensure we do not
+                # get stuck infinitely here, but loading models can take time.
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.create_task(b.wait_for_idle())
+                        for b in candidates
+                    ],
+                    timeout=120,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                idle_backends = [t.result().backend for t in ready_tasks]
-            backend = idle_backends[0]
-            model = backend.models[model_id]
-            log.debug("got idle backend", backend=backend.url, model=model_id)
 
-            # This should not be necessary, but it should also be gratuitous.
+            try:
+                model = list(done)[0].result()
+            except Exception:
+                log.exception(
+                    "An error occured waiting for an idle backend, starting over."
+                )
+                for r in request_batch:
+                    await self.queues[model_id].put(r)
+                continue
+            log.debug(
+                "got idle backend", backend=model.backend.url, model=model_id
+            )
 
-            await backend.load_model_with_options(model_id)
             log.debug("gathering more batchable requests", model=model_id)
-            # Prime the model
-            # Wait up to 0.1s for up to N requests
+            # Wait a bit to gather more requests that might have piled up.
             more_request_tasks = await asyncio.gather(
                 *[
-                    asyncio.wait_for(queue.get(), 0.001)
+                    asyncio.wait_for(queue.get(), 0.05)
                     for _ in range(model.limit - 1)
                 ],
                 return_exceptions=True,
@@ -180,21 +196,24 @@ class Pool:
                     if not isinstance(t, BaseException)
                 ]
             )
+            log.debug("got request batch", size=len(request_batch))
             for request in request_batch:
                 log.debug(
                     "assigning request to backend",
                     model=model_id,
-                    backend=backend.url,
+                    backend=model.backend.url,
                 )
                 model.in_progress += 1
+                model.idle = False
                 request.model = model
                 request.backend_available.set()
-            model.idle = False
 
     def close(self):
         for task in self.health_check_tasks:
             task.cancel()
         for task in self.queue_tasks.values():
+            task.cancel()
+        for task in self.tasks:
             task.cancel()
 
     @contextlib.asynccontextmanager

@@ -99,11 +99,15 @@ class TaskManager:
 
         self.create(loop)
 
-    def create(self, func: Callable[..., Coroutine[Any, Any, Any]]):
-        self._tasks.append(asyncio.create_task(func()))
+    def create(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        args: Any = (),
+    ) -> asyncio.Task[Any]:
+        self._tasks.append(t := asyncio.create_task(func(*args)))
+        return t
 
-    async def terminate(self) -> None:
+    def terminate(self) -> None:
         for task in self._tasks:
             task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
