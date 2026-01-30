@@ -441,15 +441,16 @@ class Model:
         self._tasks.terminate()
 
         if self.process:
+            pid = self.process.pid
             log.info(
                 "Terminating model process",
                 model=self.config.id,
-                pid=self.process.pid,
+                pid=pid,
             )
             try:
                 self.process.terminate()
             except ProcessLookupError:
-                log.exception()
+                log.exception("error terminating process", pid=pid)
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=5)
             except asyncio.TimeoutError:
@@ -462,7 +463,7 @@ class Model:
                 except ProcessLookupError:
                     pass
                 await self.process.wait()
-            log.info("process terminated")
+            log.info("process terminated", model=self.config.id, pid=pid)
         log.info("resetting model state", model=self.config.id)
         self._port_found.clear()
         self.process = None
