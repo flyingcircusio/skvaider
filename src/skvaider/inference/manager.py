@@ -373,8 +373,11 @@ class Model:
 
     async def start(self) -> None:
         """Start the model process."""
-        assert self.config.id is not None
         log.info("Starting model", model=self.config.id)
+        assert self.config.id is not None
+        assert self.process is None
+        assert self.process_status == "stopped"
+
         self.process_status = "starting"
         llama_server = self.config.llama_server
         if len(llama_server.parts) == 1:
@@ -423,7 +426,7 @@ class Model:
             startup_task = self._tasks.create(self._wait_for_startup)
             await startup_task
             self._tasks.create(self._monitor_health)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             await self.terminate()
             raise
         log.info("Model started", model=self.config.id, endpoint=self.endpoint)
@@ -432,16 +435,21 @@ class Model:
 
     async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""
-        log.info("Terminating model process", model=self.config.id)
+        log.info("Terminating model", model=self.config.id)
         self.process_status = "stopping"
 
         self._tasks.terminate()
 
         if self.process:
+            log.info(
+                "Terminating model process",
+                model=self.config.id,
+                pid=self.process.pid,
+            )
             try:
                 self.process.terminate()
             except ProcessLookupError:
-                pass
+                log.exception()
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=5)
             except asyncio.TimeoutError:
@@ -454,6 +462,8 @@ class Model:
                 except ProcessLookupError:
                     pass
                 await self.process.wait()
+            log.info("process terminated")
+        log.info("resetting model state", model=self.config.id)
         self._port_found.clear()
         self.process = None
         self.endpoint = None
