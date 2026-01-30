@@ -21,6 +21,7 @@ from skvaider import global_exception_handler
 from skvaider.inference.config import Config
 from skvaider.inference.manager import Manager
 from skvaider.logging import LoggingMiddleware, logging_config
+from skvaider.utils import TaskManager
 
 log = structlog.stdlib.get_logger()
 
@@ -90,8 +91,8 @@ async def lifespan(
             else:
                 shutil.rmtree(dir, ignore_errors=True)
 
-    tasks: list[asyncio.Task[Any]] = []
-    tasks.append(asyncio.create_task(asyncio.to_thread(purge_outdated_models)))
+    tasks = TaskManager()
+    tasks.create(asyncio.to_thread, args=(purge_outdated_models,))
 
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(global_exception_handler)
@@ -104,12 +105,7 @@ async def lifespan(
     log.info("Shutting down...")
     await manager.shutdown()
 
-    for task in tasks:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+    tasks.terminate()
 
 
 def app_factory(lifespan: Any = lifespan) -> FastAPI:
