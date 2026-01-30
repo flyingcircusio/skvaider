@@ -348,7 +348,7 @@ class Model:
                                     f"{self.slug}: {download_status:,d} (unknown size)"
                                 )
 
-                    status_task = asyncio.create_task(log_progress())
+                    task = self._tasks.create(log_progress)
                     try:
                         async with await anyio.open_file(model_file, "ab") as f:
                             async for chunk in response.aiter_bytes():
@@ -356,7 +356,7 @@ class Model:
                                 got_hash_.update(chunk)
                                 await f.write(chunk)
                     finally:
-                        status_task.cancel()
+                        task.cancel()
 
             got_hash = got_hash_.hexdigest()
             verify_got_hashes.append(got_hash)

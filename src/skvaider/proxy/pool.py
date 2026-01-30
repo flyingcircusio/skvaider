@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from skvaider import utils
+from skvaider.utils import TaskManager
 
 from .models import AIModel
 
@@ -25,21 +25,19 @@ class ProxyRequest:
 class Pool:
     backends: list["Backend"]
     health_check_tasks: list[asyncio.Task[None]]
-    tasks: list[asyncio.Task[None]]
+    tasks: TaskManager
     queues: dict[str, asyncio.Queue[ProxyRequest]]  # one queue per model
 
     def __init__(self):
         self.backends = []
-        self.health_check_tasks = []
-        self.tasks = []
+        self.tasks = TaskManager()
         self.queues = {}
         self.models: dict[str, AIModel] = {}
-        self.queue_tasks: dict[str, asyncio.Task[None]] = {}
 
     def add_backend(self, backend: "Backend"):
         self.backends.append(backend)
-        self.health_check_tasks.append(
-            utils.create_task(backend.monitor_health_and_update_models(self))
+        self.tasks.create(
+            backend.monitor_health_and_update_models, args=(self,)
         )
 
     def update_model_maps(self):
@@ -57,33 +55,31 @@ class Pool:
                 continue
             # Here, a new model appeared
             self.queues[model_id] = asyncio.Queue()
-            self.queue_tasks[model_id] = utils.create_task(
-                self.assign_backends(model_id)
+            self.tasks.create(
+                self.assign_backends, args=(model_id,), id=f"{model_id}:queue"
             )
 
         # ensure model is loaded on at least one backend
         for model_id in self.models:
-            utils.create_task(self.warm_up_model(model_id))
+            self.warm_up_model(model_id)
 
-        # Remove outdated model queues and tasks
-        for model_id, task in self.queue_tasks.items():
+        for task_id in self.tasks.unique_task_map.keys():
+            model_id, _ = task_id.split(":")
             if model_id in self.models:
                 continue
-            task.cancel()
-            del self.queue_tasks[model_id]
+            self.tasks.cancel(task_id)
 
-        for model_id in self.queues:
-            if model_id in self.models:
-                continue
-            del self.queues[model_id]
-
-    async def warm_up_model(self, model_id: str):
+    def warm_up_model(self, model_id: str):
         if any(
             model_id in b.models and b.models[model_id].is_loaded
             for b in self.backends
         ):
             return
-        await self.add_model_instance(model_id)
+        self.tasks.create(
+            self.add_model_instance,
+            args=(model_id,),
+            id=f"{model_id}:add_model_instance",  # needs to be consistent with continuous assignment
+        )
 
     async def add_model_instance(self, model_id: str):
         # add another model instance on a backend with least memory usage and where its not running, yet.
@@ -152,8 +148,10 @@ class Pool:
                     model=model_id,
                 )
                 # 2. We didn't get an idle backend within 3 seconds so we start another one
-                self.tasks.append(
-                    asyncio.create_task(self.add_model_instance(model_id))
+                self.tasks.create(
+                    self.add_model_instance,
+                    args=(model_id,),
+                    id=f"{model_id}:add_model_instance",  # needs to be consistent with warmup
                 )
                 log.info("waiting for idle backend (2)", model=model_id)
                 # 3. And now we wait longer. There's a timeout to ensure we do not
@@ -209,12 +207,7 @@ class Pool:
                 request.backend_available.set()
 
     def close(self):
-        for task in self.health_check_tasks:
-            task.cancel()
-        for task in self.queue_tasks.values():
-            task.cancel()
-        for task in self.tasks:
-            task.cancel()
+        self.tasks.terminate()
 
     @contextlib.asynccontextmanager
     async def use(self, model_id: str):

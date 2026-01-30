@@ -20,12 +20,6 @@ def log_task_exception(task: asyncio.Task[Any]) -> None:
         log.exception("Exception raised by task = %r", task)
 
 
-def create_task(aw: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
-    t = asyncio.create_task(aw)
-    t.add_done_callback(log_task_exception)
-    return t
-
-
 def slugify(text: str, max_length: int = 255) -> str:
     """
     Convert text to a slug safe for Linux, Windows, and URL path components.
@@ -76,10 +70,12 @@ def slugify(text: str, max_length: int = 255) -> str:
 
 
 class TaskManager:
-    _tasks: list[asyncio.Task[None]]
+    _tasks: list[asyncio.Task[Any]]
+    unique_task_map: dict[str, asyncio.Task[Any]]
 
     def __init__(self):
         self._tasks = []
+        self.unique_task_map = dict()
 
     def poll(
         self,
@@ -103,11 +99,36 @@ class TaskManager:
         self,
         func: Callable[..., Coroutine[Any, Any, Any]],
         args: Any = (),
+        id: str = "",
     ) -> asyncio.Task[Any]:
-        self._tasks.append(t := asyncio.create_task(func(*args)))
-        return t
+        if id:
+            if id in self.unique_task_map:
+                return self.unique_task_map[id]
+
+        task = asyncio.create_task(func(*args))
+        task.add_done_callback(log_task_exception)
+        self._tasks.append(task)
+
+        if id:
+            self.unique_task_map[id] = task
+
+            def cleanup_map(t: asyncio.Task[Any]):
+                self.unique_task_map.pop(id)
+
+            task.add_done_callback(cleanup_map)
+
+        def cleanup_list(t: asyncio.Task[Any]):
+            self._tasks.remove(t)
+
+        task.add_done_callback(cleanup_list)
+        return task
+
+    def cancel(self, id: str):
+        if id in self.unique_task_map:
+            self.unique_task_map[id].cancel()
 
     def terminate(self) -> None:
         for task in self._tasks:
             task.cancel()
         self._tasks.clear()
+        self.unique_task_map.clear()
