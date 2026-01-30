@@ -70,6 +70,20 @@ def slugify(text: str, max_length: int = 255) -> str:
 
 
 class TaskManager:
+    """Keep track of tasks.
+
+    Automatically clean up tasks that are done.
+
+    Allow unique tasks where a new task is ignored if a task with the same id already exists.
+
+    Install generic logging callback if exceptions occur.
+
+    Support polling tasks continuously.
+
+    Cancel tasks when cleaning up.
+
+    """
+
     _tasks: list[asyncio.Task[Any]]
     unique_task_map: dict[str, asyncio.Task[Any]]
 
