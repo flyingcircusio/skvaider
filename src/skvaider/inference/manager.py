@@ -684,15 +684,13 @@ class Manager:
     async def get_or_start_model(
         self,
         model_name: str,
-        timeout: int = 60,
+        timeout: int = 120,  # XXX the timeout might need to be model specific? and might need to be communicated to the gateway?
     ) -> Model:
         model = self.models[model_name]
         if "active" not in model.status:
             try:
                 await asyncio.wait_for(model.start(), timeout=timeout)
-            except (
-                asyncio.TimeoutError
-            ):  # XXX the timeout might need to be model specific?
+            except asyncio.TimeoutError:
                 log.error("Timeout starting model", model=model_name)
                 await model.terminate()
                 raise
