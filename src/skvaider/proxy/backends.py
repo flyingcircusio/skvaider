@@ -106,6 +106,14 @@ class SkvaiderBackend(Backend):
             # Only try loading one model at a time on a backend.
             if self.models[model_id].is_loaded:
                 return True
+            self.log.info(
+                "loading model",
+                model=model_id,
+                backend=self.url,
+                score=self.models[
+                    model_id
+                ].fit_score(),  # this is a bit weird to log this later, the score might have changed. we really might need to pick up the lock outside, or refactor
+            )
             # XXX double check whether this model still fits, as other models might have loaded -
             # alternatively the lock needs to be held elsewhere, too.
             success = False

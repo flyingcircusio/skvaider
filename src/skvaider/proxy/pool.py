@@ -99,10 +99,7 @@ class Pool:
         for b, score in candidate_backends:
             log.debug("model eval", model=model_id, backend=b.url, score=score)
 
-        backend, score = candidate_backends[0]
-        log.info(
-            "loading model", model=model_id, backend=backend.url, score=score
-        )
+        backend, _ = candidate_backends[0]
         await backend.load_model_with_options(model_id, self)
 
     async def assign_backends(self, model_id: str):
