@@ -134,7 +134,7 @@ class SkvaiderBackend(Backend):
             r_json = r.json()
             known_models = r_json["models"]
 
-        self.log.debug("updating backends")
+        self.log.info("updating models")
         current_models = self.models
         updated_models = {}
         for model in known_models:
@@ -153,6 +153,11 @@ class SkvaiderBackend(Backend):
             if "active" in model["status"]:
                 model_obj.is_loaded = True
             model_obj.memory_usage = model.get("memory_usage")
+            self.log.info(
+                "model memory usage",
+                model=model_obj.id,
+                memory=model_obj.memory_usage,
+            )
 
         self.models = updated_models
         pool.update_model_maps()
@@ -166,6 +171,4 @@ class SkvaiderBackend(Backend):
         self.memory = usage["memory"]
 
         for backend, m in self.memory.items():
-            self.log.info(
-                f"{self.url} {backend} memory total={m['total']:,} used={m['used']:,} free={m['free']:,}"
-            )
+            self.log.info("host memory usage", backend=backend, **m)
