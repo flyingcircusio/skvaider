@@ -98,10 +98,22 @@ class SkvaiderBackend(Backend):
                         yield chunk
 
     async def load_model(self, model_id: str, pool: "Pool") -> bool:
+        """Load a model on this backend.
+
+        Return True on success and False on failure.
+
+        This double checks whether the backend is considered having sufficient
+        free space as this may have changed while waiting for the lock.
+
+        """
         async with self.loading_lock:
             # Only try loading one model at a time on a backend.
             if self.models[model_id].is_loaded:
                 return True
+            if self.models[model_id].fit_score() == 0:
+                # Someone may have loaded a different model in between, so if the score
+                # dropped to 0 we need to abort.
+                return False
             self.log.info(
                 "loading model",
                 model=model_id,
