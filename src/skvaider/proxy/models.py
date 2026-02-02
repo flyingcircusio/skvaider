@@ -52,6 +52,9 @@ class AIModel(BaseModel):
         await self.__idle.wait()
         return self
 
+    def total_size(self) -> int:
+        return sum(self.memory_usage.values())
+
     def fit_score(self) -> float:
         """A score (higher) is better how well this model fits or would fit on it's backend
         compared to the same model on other backends.
@@ -60,9 +63,12 @@ class AIModel(BaseModel):
         loaded or not. The score computes the inverted % of the free memory this would consume,
         so higher values are better.
 
+        This means we prefer to put models on backends that have the most free space left
+        after placing the model there.
+
         It's a sum of normalized values how well it fits in each category of memory. If it doesn't
         use a specific kind of memory then this is not included in the fitting - as the fittings
-        can only ever be compared between the same models not agains other models.
+        can only ever be compared between the same models not against other models.
 
         If no data is available or the model doesn't fit, we return 0 as to not load this
         model until we have sufficient data.
@@ -79,6 +85,16 @@ class AIModel(BaseModel):
                 continue
             score += 1 - (usage / available)
         return score
+
+    def fits_generally(self) -> bool:
+        """Check whether this model fits on this backend at all."""
+        for backend, usage in self.memory_usage.items():
+            if usage == 0:
+                continue
+            total = self.backend.memory.get(backend, {}).get("total", 0)
+            if total < usage:
+                return False
+        return True
 
     @contextlib.asynccontextmanager
     async def use(self):

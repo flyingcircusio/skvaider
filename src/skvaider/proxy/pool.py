@@ -28,11 +28,19 @@ class Pool:
     tasks: TaskManager
     queues: dict[str, asyncio.Queue[ProxyRequest]]  # one queue per model
 
+    # Protect against multiple operations performing larger scale
+    # model management tasks like loading/unloading over multiple backends.
+    # E.g. if multiple models want to be loaded then they should not start
+    # loading/unloading models mixed throughout as this will cause confusion
+    model_management_lock: asyncio.Lock
+
     def __init__(self):
         self.backends = []
         self.tasks = TaskManager()
         self.queues = {}
         self.models: dict[str, AIModel] = {}
+
+        self.model_management_lock = asyncio.Lock()
 
     def add_backend(self, backend: "Backend"):
         self.backends.append(backend)
@@ -81,26 +89,111 @@ class Pool:
             id=f"{model_id}:add_model_instance",  # needs to be consistent with continuous assignment
         )
 
-    async def add_model_instance(self, model_id: str):
-        # add another model instance on a backend with least memory usage and where its not running, yet.
+        async def trigger_unload():
+            await asyncio.sleep(20)
+            log.warning("unloading models")
+            for backend in self.backends:
+                for model_id in backend.models:
+                    log.warning(f"unloading {backend.url} {model_id}")
+                    await backend.unload_model(model_id, self)
+
+        self.tasks.create(trigger_unload)
+
+    def find_backends_for_new_model_instance(
+        self, model_id: str
+    ) -> list["Backend"]:
+        """Find backends that could host a new instance of a given model.
+
+        Backends that already run the model are excluded and backends that do not
+        have sufficient space are excluded, too.
+
+        Return a list of backends ordered by best fitness first.
+
+        """
         candidate_backends = [
             (b, b.models[model_id].fit_score())
             for b in self.backends
-            if model_id in b.models and not b.models[model_id].is_loaded
+            if model_id in b.models
+            and not b.models[model_id].is_loaded
+            and b.models[model_id].fits_generally()
         ]
         # Eliminate backends where the score is 0
         candidate_backends = list(
             filter(lambda b: b[1] > 0, candidate_backends)
         )
-        if not candidate_backends:
-            log.error("no backend available to load model", model=model_id)
-            return
         candidate_backends.sort(key=lambda b: b[1], reverse=True)
         for b, score in candidate_backends:
             log.debug("model eval", model=model_id, backend=b.url, score=score)
+        return [b[0] for b in candidate_backends]
 
-        backend, _ = candidate_backends[0]
-        await backend.load_model(model_id, self)
+    async def add_model_instance(self, model_id: str):
+        """Try to add a(nother) instance of this model.
+
+        WARNING: This method should be called using the task manager with a
+        unique id as it doesn't make sense to have it called multiple times
+        concurrently.
+
+        Models are only placed on servers where the model is not yet loaded.
+
+        We prefer putting models on servers that have the best fitness (see `AIModel.fit_score()`).
+
+        If there is no room, then we will try to make room.
+
+        We retry up to 3 times, but give up after that.
+
+        """
+        retry = 0
+        async with self.model_management_lock:
+            candidate_backends = self.find_backends_for_new_model_instance(
+                model_id
+            )
+            while not candidate_backends and retry < 3:
+                retry += 1
+                await self.make_room(model_id)
+                candidate_backends = self.find_backends_for_new_model_instance(
+                    model_id
+                )
+
+            if not candidate_backends:
+                log.error("no backend available to load model", model=model_id)
+                return
+            await candidate_backends[0].load_model(model_id, self)
+
+    async def make_room(self, model_id: str):
+        """Make room in the cluster to fit the given model.
+
+        This likely always should be called while holding the model management lock.
+
+        """
+        candidate_backends = [
+            b
+            for b in self.backends
+            if model_id in b.models
+            and not b.models[model_id].is_loaded
+            and b.models[model_id].fits_generally()
+        ]
+        candidate_backends.sort(
+            key=lambda b: b.models[model_id].fit_score(), reverse=True
+        )
+        # We could assume the fitness is 0, but maybe something changed in between,
+        # so we can just check that.
+        for backend in candidate_backends:
+            while True:
+                if backend.models[model_id].fit_score() > 0:
+                    return
+
+                # Try to find a model that has not been used in the last 60 seconds
+                # try to unload smaller models first. This is likely not a perfect strategy
+                # but avoids unnecessarily unloading very large models.
+                unload_candidates = [
+                    m for m in backend.models.values() if m.is_loaded
+                ]
+
+                if not unload_candidates:
+                    # No progress to be made here.
+                    break
+                unload_candidates.sort(key=lambda m: m.total_size())
+                await backend.unload_model(unload_candidates[0].id, self)
 
     async def assign_backends(self, model_id: str):
         """Continuously assign requests to backends.
