@@ -61,10 +61,18 @@ class Backend(ABC):
     async def load_model(self, model_id: str, pool: "Pool") -> bool: ...
 
     @abstractmethod
+    async def unload_model(self, model_id: str, pool: "Pool"): ...
+
+    @abstractmethod
     async def monitor_health_and_update_models(self, pool: "Pool"): ...
 
 
 class SkvaiderBackend(Backend):
+    # protect against causing multiple load/unload operations at the same time on this backend
+    loading_lock: asyncio.Lock
+
+    # XXX we should keep a reference to the pool ...
+
     def __init__(self, url: str):
         super().__init__(url)
         self.loading_lock = asyncio.Lock()
@@ -137,8 +145,30 @@ class SkvaiderBackend(Backend):
                     )
                 else:
                     success = r.status_code == 200
+            # XXX make this part of the load/ protocol to avoid a roundtrip?
+            await self._update_usage(pool)
             await self._update_models(pool)
             return success
+
+    async def unload_model(self, model_id: str, pool: "Pool"):
+        async with self.loading_lock:
+            if not self.models[model_id].is_loaded:
+                return
+            self.log.info("unloading model", model=model_id, backend=self.url)
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                try:
+                    r = await client.post(
+                        f"{self.url}/models/{model_id}/unload",
+                        timeout=120,
+                    )
+                    r.raise_for_status()
+                except httpx.HTTPError as exc:
+                    self.log.error(
+                        f"Unloading model failed: HTTP Exception for {exc.request.url} - {exc}"
+                    )
+            # XXX make this part of the load/ protocol to avoid a roundtrip?
+            await self._update_usage(pool)
+            await self._update_models(pool)
 
     async def monitor_health_and_update_models(self, pool: "Pool") -> None:
         self.log.debug("starting monitor")
