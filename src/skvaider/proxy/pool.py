@@ -59,9 +59,8 @@ class Pool:
                 self.assign_backends, args=(model_id,), id=f"{model_id}:queue"
             )
 
-        # ensure model is loaded on at least one backend
         for model_id in self.models:
-            self.warm_up_model(model_id)
+            self.ensure_reserved_instance(model_id)
 
         for task_id in self.tasks.unique_task_map.keys():
             model_id, _ = task_id.split(":")
@@ -69,7 +68,8 @@ class Pool:
                 continue
             self.tasks.cancel(task_id)
 
-    def warm_up_model(self, model_id: str):
+    def ensure_reserved_instance(self, model_id: str):
+        """Ensure there is at least 1 instance of this model running."""
         if any(
             model_id in b.models and b.models[model_id].is_loaded
             for b in self.backends
