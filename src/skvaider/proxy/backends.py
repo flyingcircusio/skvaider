@@ -58,9 +58,7 @@ class Backend(ABC):
     ) -> AsyncGenerator[str, None]: ...
 
     @abstractmethod
-    async def load_model_with_options(
-        self, model_id: str, pool: "Pool"
-    ) -> bool: ...
+    async def load_model(self, model_id: str, pool: "Pool") -> bool: ...
 
     @abstractmethod
     async def monitor_health_and_update_models(self, pool: "Pool"): ...
@@ -99,9 +97,7 @@ class SkvaiderBackend(Backend):
                     if chunk.strip():
                         yield chunk
 
-    async def load_model_with_options(
-        self, model_id: str, pool: "Pool"
-    ) -> bool:
+    async def load_model(self, model_id: str, pool: "Pool") -> bool:
         async with self.loading_lock:
             # Only try loading one model at a time on a backend.
             if self.models[model_id].is_loaded:
