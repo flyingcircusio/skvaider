@@ -77,7 +77,9 @@ async def lifespan(
     for backend_config in config.backend:
         if backend_config.type == "skvaider":
             pool.add_backend(
-                skvaider.proxy.backends.SkvaiderBackend(backend_config.url)
+                skvaider.proxy.backends.SkvaiderBackend(
+                    backend_config.url, pool
+                )
             )
         else:
             raise TypeError(backend_config.type)

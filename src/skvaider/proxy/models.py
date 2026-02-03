@@ -1,9 +1,12 @@
 import asyncio
 import contextlib
+import datetime
 from typing import Any, Self
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
+
+from skvaider import utils
 
 from .backends import Backend
 
@@ -21,7 +24,9 @@ class AIModel(BaseModel):
     owned_by: str
 
     backend: Backend = Field(exclude=True)
-    last_used: float = Field(default=0, exclude=True)
+    last_used: datetime.datetime = Field(
+        default=utils.datetime_min, exclude=True
+    )
     in_progress: int = Field(default=0, exclude=True)
     limit: int = Field(default=5, exclude=True)
     is_loaded: bool = Field(default=False, exclude=True)
@@ -92,15 +97,17 @@ class AIModel(BaseModel):
             if usage == 0:
                 continue
             total = self.backend.memory.get(backend, {}).get("total", 0)
-            if total < usage:
+            if total <= usage:
                 return False
         return True
 
     @contextlib.asynccontextmanager
     async def use(self):
         try:
+            self.last_used = utils.now()
             yield
         finally:
+            self.last_used = utils.now()
             self.in_progress -= 1
             self.log.debug("done", in_progress=self.in_progress)
             if not self.in_progress:

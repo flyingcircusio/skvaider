@@ -6,6 +6,8 @@ import httpx
 import structlog
 from fastapi import HTTPException
 
+from skvaider import utils
+
 from ..typing import ConfigDict, ConfigValue, JSONObject
 
 if TYPE_CHECKING:
@@ -43,8 +45,9 @@ class Backend(ABC):
 
     memory: dict[str, dict[str, int]]
 
-    def __init__(self, url: str):
+    def __init__(self, url: str, pool: "Pool"):
         self.url = url
+        self.pool = pool
         self.models = {}
         self.memory = {}
         self.log = structlog.stdlib.get_logger().bind(backend=self.url)
@@ -58,23 +61,58 @@ class Backend(ABC):
     ) -> AsyncGenerator[str, None]: ...
 
     @abstractmethod
-    async def load_model(self, model_id: str, pool: "Pool") -> bool: ...
+    async def load_model(self, model_id: str) -> bool: ...
 
     @abstractmethod
-    async def unload_model(self, model_id: str, pool: "Pool"): ...
+    async def unload_model(self, model_id: str): ...
 
     @abstractmethod
-    async def monitor_health_and_update_models(self, pool: "Pool"): ...
+    async def monitor_health_and_update_models(self): ...
+
+
+class DummyBackend(Backend):
+    async def post(self, path: str, data: dict[str, Any]):
+        pass
+
+    async def post_stream(
+        self, path: str, data: JSONObject
+    ) -> AsyncGenerator[str, None]:
+        yield ""
+
+    async def load_model(self, model_id: str) -> bool:
+        model = self.models[model_id]
+        assert not model.is_loaded
+        if not set(model.memory_usage.keys()).issubset(self.memory.keys()):
+            return False
+        for kind, usage in model.memory_usage.items():
+            if self.memory[kind]["free"] <= usage:
+                return False
+        for kind, usage in model.memory_usage.items():
+            self.memory[kind]["free"] -= usage
+        model.is_loaded = True
+        model.last_used = utils.now()
+        return True
+
+    async def unload_model(self, model_id: str):
+        model = self.models[model_id]
+        assert model.is_loaded
+        for kind, usage in model.memory_usage.items():
+            if kind in self.memory:
+                self.memory[kind]["free"] += usage
+        model.is_loaded = False
+        model.last_used = utils.datetime_min
+
+    async def monitor_health_and_update_models(self):
+        while True:
+            await asyncio.sleep(5)
 
 
 class SkvaiderBackend(Backend):
     # protect against causing multiple load/unload operations at the same time on this backend
     loading_lock: asyncio.Lock
 
-    # XXX we should keep a reference to the pool ...
-
-    def __init__(self, url: str):
-        super().__init__(url)
+    def __init__(self, url: str, pool: "Pool"):
+        super().__init__(url, pool)
         self.loading_lock = asyncio.Lock()
 
     async def post(self, path: str, data: dict[str, Any]):
@@ -105,7 +143,7 @@ class SkvaiderBackend(Backend):
                     if chunk.strip():
                         yield chunk
 
-    async def load_model(self, model_id: str, pool: "Pool") -> bool:
+    async def load_model(self, model_id: str) -> bool:
         """Load a model on this backend.
 
         Return True on success and False on failure.
@@ -146,14 +184,28 @@ class SkvaiderBackend(Backend):
                 else:
                     success = r.status_code == 200
             # XXX make this part of the load/ protocol to avoid a roundtrip?
-            await self._update_usage(pool)
-            await self._update_models(pool)
+            self.models[model_id].last_used = utils.now()
+            await self._update_usage()
+            await self._update_models()
             return success
 
-    async def unload_model(self, model_id: str, pool: "Pool"):
+    async def unload_model(self, model_id: str):
         async with self.loading_lock:
-            if not self.models[model_id].is_loaded:
+            model = self.models[model_id]
+            if not model.is_loaded:
                 return
+            await model.wait()
+            # Immediately mark as non-idle but also unloaded to avoid it being used for further requests.
+            # XXX I'm seeing the potential for race conditions here. We might need to zoom out to review
+            # the overall logic and coordination within the manager async tasks, the requests being processed,
+            # and the way the inference server handles them.
+            # Potential issues:
+            # - requests being assigned to an unloaded backend/model
+            # - getting in some weird kind of deadlock
+            #
+            # Overall I'd like to keep as few locks as possible and avoid having locks on the inference side, completely.
+            model.is_loaded = False
+            model.idle = False
             self.log.info("unloading model", model=model_id, backend=self.url)
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 try:
@@ -167,17 +219,19 @@ class SkvaiderBackend(Backend):
                         f"Unloading model failed: HTTP Exception for {exc.request.url} - {exc}"
                     )
             # XXX make this part of the load/ protocol to avoid a roundtrip?
-            await self._update_usage(pool)
-            await self._update_models(pool)
+            model.last_used = utils.datetime_min
+            model.idle = True
+            await self._update_usage()
+            await self._update_models()
 
-    async def monitor_health_and_update_models(self, pool: "Pool") -> None:
+    async def monitor_health_and_update_models(self) -> None:
         self.log.debug("starting monitor")
         while True:
             try:
-                await self._update_usage(pool)
-                await self._update_models(pool)
-
-                self.healthy = True
+                async with self.loading_lock:
+                    await self._update_usage()
+                    await self._update_models()
+                    self.healthy = True
             except Exception as e:
                 self.log.error("monitor failed", error=str(e))
                 self.healthy = False
@@ -185,7 +239,7 @@ class SkvaiderBackend(Backend):
 
             await asyncio.sleep(self.health_interval)
 
-    async def _update_models(self, pool: "Pool") -> None:
+    async def _update_models(self) -> None:
         from .models import AIModel
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -220,9 +274,9 @@ class SkvaiderBackend(Backend):
             )
 
         self.models = updated_models
-        pool.update_model_maps()
+        self.pool.update_model_maps()
 
-    async def _update_usage(self, pool: "Pool") -> None:
+    async def _update_usage(self) -> None:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.get(f"{self.url}/manager/usage")
             r.raise_for_status()

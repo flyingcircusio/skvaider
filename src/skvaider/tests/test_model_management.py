@@ -24,7 +24,7 @@ async def test_backend_model_warmup(
 
     # now, load the test client
     pool = skvaider.proxy.pool.Pool()
-    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url))
+    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url, pool))
     await asyncio.sleep(20)
     # for model known to pool, all should be loaded
     model_backends = [b for b in pool.backends if llm_model_name in b.models]
