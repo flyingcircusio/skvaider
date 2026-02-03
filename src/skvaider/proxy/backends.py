@@ -100,7 +100,7 @@ class DummyBackend(Backend):
             if kind in self.memory:
                 self.memory[kind]["free"] += usage
         model.is_loaded = False
-        model.last_used = utils.datetime_min
+        model.last_used = utils.now()
 
     async def monitor_health_and_update_models(self):
         while True:

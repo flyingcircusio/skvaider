@@ -31,6 +31,33 @@ class HasLock(Protocol):
 SelfT = TypeVar("SelfT", bound=HasLock)
 
 
+class UserManagerLock:
+    def __init__(self):
+        self._users = 0
+        self._manager_lock = asyncio.Lock()
+        self._user_lock = asyncio.Lock()
+
+    async def user_acquire(self):
+        async with self._user_lock:
+            if self._users == 0:
+                # We can only start using this lock if the manager isn't running.
+                await self._manager_lock.acquire()
+            self._users += 1
+
+    async def user_release(self):
+        async with self._user_lock:
+            self._users -= 1
+            if self._users == 0:
+                # The manager now may start again.
+                self._manager_lock.release()
+
+    async def manager_acquire(self):
+        await self._manager_lock.acquire()
+
+    def manager_release(self):
+        self._manager_lock.release()
+
+
 def locked(
     func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
@@ -223,6 +250,7 @@ class Model:
     _tasks: TaskManager
     _host = "127.0.0.1"
     status_changed: asyncio.Event
+    lock: UserManagerLock
 
     async def _check_health(self) -> bool: ...
 
@@ -231,6 +259,7 @@ class Model:
         self._port_found = asyncio.Event()
         self._tasks = TaskManager()
         self.status_changed = asyncio.Event()
+        self.lock = UserManagerLock()
 
         if self.is_embedding:
             self._check_health = self._check_embedding_health
@@ -682,37 +711,61 @@ class Manager:
         return list(self.models.values())
 
     @locked
-    async def get_or_start_model(
+    async def start_model(
         self,
         model_name: str,
         timeout: int = 120,  # XXX the timeout might need to be model specific? and might need to be communicated to the gateway?
     ) -> Model:
         model = self.models[model_name]
+        await model.lock.manager_acquire()
+        try:
+            if "active" not in model.status:
+                try:
+                    await asyncio.wait_for(model.start(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    log.error("Timeout starting model", model=model_name)
+                    await model.terminate()
+                    raise
+                # XXX let this trigger on the monitor via the event handler?
+                for monitor in self.monitors.values():
+                    await monitor.update_global_usage()
+        finally:
+            model.lock.manager_release()
+        return model
+
+    async def use_model(
+        self,
+        model_name: str,
+    ) -> Model | None:
+        model = self.models.get(model_name)
+        if not model:
+            return
         if "active" not in model.status:
-            try:
-                await asyncio.wait_for(model.start(), timeout=timeout)
-            except asyncio.TimeoutError:
-                log.error("Timeout starting model", model=model_name)
-                await model.terminate()
-                raise
-            # XXX let this trigger on the monitor via the event handler?
-            for monitor in self.monitors.values():
-                await monitor.update_global_usage()
+            return
         return model
 
     @locked
     async def unload_model(self, model_name: str) -> None:
         model = self.models[model_name]
-        if model.process_status in ["running", "starting"]:  # idempotent
-            await model.terminate()
-            # XXX let this trigger on the monitor via the event handler?
-            for monitor in self.monitors.values():
-                await monitor.update_global_usage()
+        await model.lock.manager_acquire()
+        try:
+            if model.process_status in ["running", "starting"]:  # idempotent
+                await model.terminate()
+                # XXX let this trigger on the monitor via the event handler?
+                for monitor in self.monitors.values():
+                    await monitor.update_global_usage()
+        finally:
+            model.lock.manager_release()
 
     async def shutdown(self) -> None:
         self.tasks.terminate()
         for model in list(self.models.values()):
-            await model.terminate()
+            await model.lock.manager_acquire()
+            try:
+                await model.terminate()
+            finally:
+                model.lock.manager_release()
+
         # It would be cleaner if we'd use a lock here, but shutdown otherwise
         # can end up locked infinitely it seems.
         self.models.clear()

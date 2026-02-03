@@ -39,7 +39,6 @@ class AIModel(BaseModel):
         super().__init__(*args, **kw)
         self.__idle = asyncio.Event()
         self.__idle.set()
-
         self.log = log.bind(model=self.id, backend=self.backend.url)
 
     @property
