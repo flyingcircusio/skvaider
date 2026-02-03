@@ -124,6 +124,10 @@ class SkvaiderBackend(Backend):
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
             r = await client.post(url, json=data, timeout=120)
+            if r.status_code == 540:
+                raise HTTPException(
+                    status_code=540, detail="Backend unavailable"
+                )
             return r.json()
 
     async def post_stream(
@@ -139,6 +143,10 @@ class SkvaiderBackend(Backend):
             async with client.stream(
                 "POST", url, json=data, timeout=120
             ) as response:
+                if response.status_code == 540:
+                    raise HTTPException(
+                        status_code=540, detail="Backend unavailable"
+                    )
                 async for chunk in response.aiter_text():
                     if chunk.strip():
                         yield chunk

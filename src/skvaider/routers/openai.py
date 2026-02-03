@@ -30,9 +30,117 @@ log = structlog.stdlib.get_logger()
 class OpenAIProxy:
     """Intermediate the proxy logic between FastAPI and the OpenAI API-compatible backends."""
 
-    def __init__(self, services: svcs.fastapi.DepContainer):
+    def __init__(
+        self, services: svcs.fastapi.DepContainer, max_retries: int = 3
+    ):
         self.services = services
         self.pool = self.services.get(Pool)
+        self.max_retries = max_retries
+
+    async def _execute_with_retry(
+        self,
+        request: Request,
+        endpoint: str,
+        data: dict[str, Any],
+    ) -> Any:
+        excluded_backends: set[str] = set()
+
+        for attempt in range(self.max_retries):
+            backend = None
+            try:
+                async with self.pool.use(
+                    request.state.model,
+                    excluded_backends=excluded_backends,
+                ) as backend:
+                    return await backend.post(endpoint, data)
+            except HTTPException as e:
+                # 540: Backend unavailable
+                if e.status_code == 540 and attempt < self.max_retries - 1:
+                    if backend:
+                        excluded_backends.add(backend.url)
+
+                    log.warning(
+                        "Backend unavailable, retrying",
+                        model=request.state.model,
+                        attempt=attempt + 1,
+                        excluded_backends=excluded_backends,
+                    )
+                    continue
+                raise
+        # This should never be reached since we always raise on the last retry
+        raise HTTPException(status_code=503, detail="Service unavailable")
+
+    async def _execute_stream_with_retry(
+        self,
+        request: Request,
+        endpoint: str,
+        data: dict[str, Any],
+    ) -> StreamingResponse:
+        excluded_backends: set[str] = set()
+
+        for attempt in range(self.max_retries):
+            context = self.pool.use(
+                request.state.model, excluded_backends=excluded_backends
+            )
+            backend = None
+            try:
+                backend = await context.__aenter__()
+                stream_aws = backend.post_stream(endpoint, data)
+                first_chunk = await anext(stream_aws)
+            except (StopAsyncIteration, HTTPException, Exception) as e:
+                # Cleanup context on error
+                await context.__aexit__(None, None, None)
+
+                if isinstance(e, StopAsyncIteration):
+                    # Empty stream
+                    return StreamingResponse(
+                        iter([]),
+                        media_type="text/event-stream",
+                        headers={
+                            "Cache-Control": "no-cache",
+                            "Connection": "keep-alive",
+                        },
+                    )
+
+                if (
+                    isinstance(e, HTTPException)
+                    and e.status_code == 540
+                    and attempt < self.max_retries - 1
+                ):
+                    if backend:
+                        excluded_backends.add(backend.url)
+                    log.warning(
+                        "Backend unavailable, retrying",
+                        model=request.state.model,
+                        attempt=attempt + 1,
+                        excluded_backends=excluded_backends,
+                    )
+                    continue
+                raise
+
+            # Success
+            async def stream(
+                first: str,
+                stream_aws: AsyncGenerator[str],
+                context: AbstractAsyncContextManager[Backend],
+            ) -> AsyncGenerator[str]:
+                try:
+                    yield first
+                    async for chunk in stream_aws:
+                        yield chunk
+                finally:
+                    await context.__aexit__(None, None, None)
+
+            request.state.backend = backend
+            return StreamingResponse(
+                stream(first_chunk, stream_aws, context),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+        raise HTTPException(502, "No backend available after retries")
 
     async def proxy(
         self,
@@ -55,33 +163,15 @@ class OpenAIProxy:
             )
 
         if request.state.stream:
-            # We need to place the context manager in a scope that is valid while the response is
-            # streaming, so wrap the original streaming method and iterate there
-            async def stream(
-                stream_aws: AsyncGenerator[str],
-                context: AbstractAsyncContextManager[Backend],
-            ) -> AsyncGenerator[str]:
-                try:
-                    async for chunk in stream_aws:
-                        yield chunk
-                finally:
-                    await context.__aexit__(None, None, None)
-
-            context = self.pool.use(request.state.model)
-            backend = await context.__aenter__()
-            request.state.backend = backend
-            stream_aws = backend.post_stream(endpoint, request_data)
-            return StreamingResponse(
-                stream(stream_aws, context),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
+            return await self._execute_stream_with_retry(
+                request, endpoint, request_data
             )
         else:
-            async with self.pool.use(request.state.model) as backend:
-                return await backend.post(endpoint, request_data)
+            return await self._execute_with_retry(
+                request,
+                endpoint,
+                request_data,
+            )
 
 
 @router.get("/v1/models")

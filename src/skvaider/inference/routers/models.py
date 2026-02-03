@@ -106,6 +106,9 @@ async def proxy_request(
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
+    if "active" not in model.status:
+        raise HTTPException(status_code=540, detail="Model not active")
+
     url = f"{model.endpoint}/{path}"
     if request.query_params:
         url += f"?{request.query_params}"
