@@ -11,7 +11,7 @@ from skvaider.inference.manager import Manager, Model
 async def test_manager_start_crash_quick_return(gemma: Model, manager: Manager):
     gemma.config.cmd_args = ["--asdf"]
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(manager.get_or_start_model("gemma"), timeout=10)
+        await asyncio.wait_for(manager.start_model("gemma"), timeout=10)
 
 
 async def test_download_model_success(gemma: Model):
@@ -44,10 +44,12 @@ async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
 
 
 async def test_manager_start_model(gemma: Model, manager: Manager):
-    with pytest.raises(KeyError):
-        await manager.get_or_start_model("unknown-model")
+    assert await manager.use_model("unknown-model") is None
 
-    model = await manager.get_or_start_model("gemma")
+    # not yet started, not usable
+    assert await manager.use_model("gemma") is None
+
+    model = await manager.start_model("gemma")
     assert model.config.id == "gemma"
     assert model.endpoint
     assert model.endpoint.startswith("http://127.0.0.1:")
@@ -123,6 +125,8 @@ async def test_manager_start_model(gemma: Model, manager: Manager):
     assert "active" in model.status
     assert model.process_status == "running"
     assert model.health_status == "healthy"
+
+    assert await manager.use_model("gemma") is model
 
     await manager.unload_model("gemma")
 

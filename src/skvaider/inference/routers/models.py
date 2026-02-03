@@ -53,7 +53,7 @@ async def load_model(
         raise HTTPException(status_code=400, detail="Model not specified")
 
     try:
-        running_model = await manager.get_or_start_model(model_name)
+        running_model = await manager.start_model(model_name)
     except Exception as e:
         log.error("Failed to start model", model=model_name, error=str(e))
         raise HTTPException(
@@ -102,47 +102,48 @@ async def proxy_request(
     manager = services.get(Manager)
     model_name = model_name.lower()
 
-    model = await manager.get_or_start_model(model_name)
+    model = await manager.use_model(model_name)
     if not model:
         raise HTTPException(status_code=404, detail="Model not found")
 
-    if "active" not in model.status:
-        raise HTTPException(status_code=540, detail="Model not active")
-
-    url = f"{model.endpoint}/{path}"
-    if request.query_params:
-        url += f"?{request.query_params}"
-
-    client = httpx.AsyncClient(timeout=60)  # LLM requests may take time
-
-    req = client.build_request(
-        request.method,
-        url,
-        content=await request.body(),
-    )
-
+    await model.lock.user_acquire()
     try:
-        rp = await client.send(req, stream=True)
-    except Exception:
-        await client.aclose()
+        url = f"{model.endpoint}/{path}"
+        if request.query_params:
+            url += f"?{request.query_params}"
 
-        log.exception(
-            "Error in model request {model_name}", model_name=model_name
-        )
-        raise HTTPException(
-            status_code=500, detail=f"Error in model '{model_name}' request"
+        client = httpx.AsyncClient(timeout=60)  # LLM requests may take time
+
+        req = client.build_request(
+            request.method,
+            url,
+            content=await request.body(),
         )
 
-    async def streaming_content() -> AsyncGenerator[bytes]:
         try:
-            async for chunk in rp.aiter_raw():
-                yield chunk
-        finally:
-            await rp.aclose()
+            rp = await client.send(req, stream=True)
+        except Exception:
             await client.aclose()
 
-    return StreamingResponse(
-        streaming_content(),
-        status_code=rp.status_code,
-        headers=dict(rp.headers),
-    )
+            log.exception(
+                "Error in model request {model_name}", model_name=model_name
+            )
+            raise HTTPException(
+                status_code=500, detail=f"Error in model '{model_name}' request"
+            )
+
+        async def streaming_content() -> AsyncGenerator[bytes]:
+            try:
+                async for chunk in rp.aiter_raw():
+                    yield chunk
+            finally:
+                await rp.aclose()
+                await client.aclose()
+
+        return StreamingResponse(
+            streaming_content(),
+            status_code=rp.status_code,
+            headers=dict(rp.headers),
+        )
+    finally:
+        await model.lock.user_release()
