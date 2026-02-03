@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import re
 import unicodedata
 from collections.abc import Callable, Coroutine
@@ -91,6 +92,11 @@ class TaskManager:
         self._tasks = []
         self.unique_task_map = dict()
 
+    @property
+    def count(self):
+        """Return the number of managed tasks"""
+        return len(self._tasks)
+
     def poll(
         self,
         func: Callable[..., Coroutine[Any, Any, None]],
@@ -146,3 +152,12 @@ class TaskManager:
             task.cancel()
         self._tasks.clear()
         self.unique_task_map.clear()
+
+
+# mockable version
+def now():
+    return datetime.datetime.now(datetime.UTC)
+
+
+# tz-aware datetime
+datetime_min = datetime.datetime.min.replace(tzinfo=datetime.UTC)

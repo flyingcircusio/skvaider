@@ -89,7 +89,13 @@ async def list_models(
     services: svcs.fastapi.DepContainer,
 ) -> ListResponse[AIModel]:
     pool = services.get(Pool)
-    return ListResponse[AIModel](data=list(pool.models.values()))
+    models: dict[str, AIModel] = {}
+    # The pool used to keep track of the pydantic models but I didn't like
+    # that we had objects there where we only needed the ids. Here we do
+    # need the objects, so we need to sample them.
+    for backend in pool.backends:
+        models.update(backend.models)
+    return ListResponse[AIModel](data=list(models.values()))
 
 
 @router.get("/v1/models/{model_id}")
@@ -98,7 +104,14 @@ async def get_model(
 ) -> AIModel:
     model_id = model_id.lower()
     pool = services.get(Pool)
-    return pool.models[model_id]
+    # See list_models
+    for backend in pool.backends:
+        if model_id in backend.models:
+            return backend.models[model_id]
+    raise HTTPException(
+        404,
+        f"Unkonwn model `{model_id}`.",
+    )
 
 
 @router.post("/v1/chat/completions")

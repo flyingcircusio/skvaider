@@ -1,9 +1,11 @@
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING
+import datetime
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from skvaider import utils
 from skvaider.utils import TaskManager
 
 from .models import AIModel
@@ -38,43 +40,48 @@ class Pool:
         self.backends = []
         self.tasks = TaskManager()
         self.queues = {}
-        self.models: dict[str, AIModel] = {}
+
+        # This keeps track of the globally known model IDs
+        self.models: set[str] = set()
 
         self.model_management_lock = asyncio.Lock()
 
     def add_backend(self, backend: "Backend"):
         self.backends.append(backend)
-        self.tasks.create(
-            backend.monitor_health_and_update_models, args=(self,)
-        )
+        self.tasks.create(backend.monitor_health_and_update_models)
 
     def update_model_maps(self):
         # XXX the same model must not be owned by different organizations!
         # This requires a bit more thought how to handle consistency if
         # backends answer with conflicting/differing model data.
-        # XXX The models in self.models in pool still have backreferences to individual backends
-        self.models.clear()
+
+        current_backend_models: set[str] = set()
         for backend in self.backends:
-            self.models.update(backend.models)
+            current_backend_models.update(backend.models.keys())
+
+        new_models = current_backend_models - self.models
+        deleted_models = self.models - current_backend_models
 
         # Add new models
-        for model_id in self.models:
-            if model_id in self.queues:
-                continue
-            # Here, a new model appeared
+        for model_id in new_models:
             self.queues[model_id] = asyncio.Queue()
             self.tasks.create(
                 self.assign_backends, args=(model_id,), id=f"{model_id}:queue"
             )
 
-        for model_id in self.models:
-            self.ensure_reserved_instance(model_id)
-
+        # Cleanup after deleted models
         for task_id in self.tasks.unique_task_map.keys():
             model_id, _ = task_id.split(":")
-            if model_id in self.models:
-                continue
-            self.tasks.cancel(task_id)
+            if model_id in deleted_models:
+                self.tasks.cancel(task_id)
+        for model_id in deleted_models:
+            del self.queues[model_id]
+
+        self.models = current_backend_models
+
+        # Ensure reserved instances for remaining models
+        for model_id in self.models:
+            self.ensure_reserved_instance(model_id)
 
     def ensure_reserved_instance(self, model_id: str):
         """Ensure there is at least 1 instance of this model running."""
@@ -89,15 +96,16 @@ class Pool:
             id=f"{model_id}:add_model_instance",  # needs to be consistent with continuous assignment
         )
 
-        async def trigger_unload():
-            await asyncio.sleep(20)
-            log.warning("unloading models")
-            for backend in self.backends:
-                for model_id in backend.models:
-                    log.warning(f"unloading {backend.url} {model_id}")
-                    await backend.unload_model(model_id, self)
+        # XXX testing code
+        # async def trigger_unload():
+        #     await asyncio.sleep(20)
+        #     log.warning("unloading models")
+        #     for backend in self.backends:
+        #         for model_id in backend.models:
+        #             log.warning(f"unloading {backend.url} {model_id}")
+        #             await backend.unload_model(model_id)
 
-        self.tasks.create(trigger_unload)
+        # self.tasks.create(trigger_unload)
 
     def find_backends_for_new_model_instance(
         self, model_id: str
@@ -157,7 +165,7 @@ class Pool:
             if not candidate_backends:
                 log.error("no backend available to load model", model=model_id)
                 return
-            await candidate_backends[0].load_model(model_id, self)
+            await candidate_backends[0].load_model(model_id)
 
     async def make_room(self, model_id: str):
         """Make room in the cluster to fit the given model.
@@ -180,20 +188,39 @@ class Pool:
         for backend in candidate_backends:
             while True:
                 if backend.models[model_id].fit_score() > 0:
+                    # There should be sufficient space now!
                     return
 
-                # Try to find a model that has not been used in the last 60 seconds
-                # try to unload smaller models first. This is likely not a perfect strategy
-                # but avoids unnecessarily unloading very large models.
+                def loaded_instances(model_id: str) -> int:
+                    counter = 0
+                    for backend in self.backends:
+                        if model_id not in backend.models:
+                            continue
+                        if backend.models[model_id].is_loaded:
+                            counter += 1
+                    return counter
+
+                # Try to find a model that has
+                # - more than 1 instance
+                # - has not been used in the last 60 seconds
+                now = utils.now()
                 unload_candidates = [
-                    m for m in backend.models.values() if m.is_loaded
+                    m
+                    for m in backend.models.values()
+                    if m.is_loaded
+                    and loaded_instances(m.id) > 1
+                    and (now - m.last_used > datetime.timedelta(seconds=60))
                 ]
 
                 if not unload_candidates:
                     # No progress to be made here.
                     break
+
+                # try to unload smaller models first. This is likely not a perfect strategy
+                # but avoids unnecessarily unloading very large models.
+
                 unload_candidates.sort(key=lambda m: m.total_size())
-                await backend.unload_model(unload_candidates[0].id, self)
+                await backend.unload_model(unload_candidates[0].id)
 
     async def assign_backends(self, model_id: str):
         """Continuously assign requests to backends.
@@ -295,6 +322,21 @@ class Pool:
                 model.idle = False
                 request.model = model
                 request.backend_available.set()
+
+    def report_map(self) -> dict[Any, Any]:
+        """Return a report map of the status of known backends and models"""
+        report: dict[Any, Any] = {}
+        for backend in self.backends:
+            br = report[backend.url] = {}
+            br["models"] = {}
+            br["memory"] = backend.memory
+            for model in backend.models.values():
+                br["models"][model.id] = {
+                    "loaded": model.is_loaded,
+                    "last-used": model.last_used,
+                    "memory": model.memory_usage,
+                }
+        return report
 
     def close(self):
         self.tasks.terminate()

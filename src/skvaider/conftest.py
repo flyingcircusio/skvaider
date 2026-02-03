@@ -113,7 +113,7 @@ async def test_lifespan(
     url = "http://127.0.0.1:8001"
     await backend_connection_is_up(url)
 
-    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url))
+    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url, pool))
 
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         skvaider.proxy.pool.Pool, pool
