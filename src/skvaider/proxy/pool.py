@@ -4,6 +4,7 @@ import datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
+from fastapi import HTTPException
 
 from skvaider import utils
 from skvaider.utils import TaskManager
@@ -19,9 +20,12 @@ log = structlog.stdlib.get_logger()
 class ProxyRequest:
     backend_available: asyncio.Event
     model: AIModel | None = None
+    excluded_backends: set[str]
+    error: Exception | None = None
 
-    def __init__(self):
+    def __init__(self, excluded_backends: set[str] | None = None):
         self.backend_available = asyncio.Event()
+        self.excluded_backends = excluded_backends or set()
 
 
 class Pool:
@@ -247,7 +251,17 @@ class Pool:
                 b.models[model_id]
                 for b in self.backends
                 if model_id in b.models
+                and b.url not in request_batch[0].excluded_backends
             ]
+
+            if not candidates:
+                # All backends excluded for this request
+                for request in request_batch:
+                    request.error = HTTPException(
+                        503, "All available backends excluded for this request."
+                    )
+                    request.backend_available.set()
+                continue
 
             log.info("waiting for first idle backend", model=model_id)
             done, pending = await asyncio.wait(
@@ -313,6 +327,10 @@ class Pool:
             )
             log.debug("got request batch", size=len(request_batch))
             for request in request_batch:
+                # Skip requests that can't use this backend
+                if model.backend.url in request.excluded_backends:
+                    await queue.put(request)
+                    continue
                 log.debug(
                     "assigning request to backend",
                     model=model_id,
@@ -342,14 +360,18 @@ class Pool:
         self.tasks.terminate()
 
     @contextlib.asynccontextmanager
-    async def use(self, model_id: str):
-        request = ProxyRequest()
+    async def use(
+        self, model_id: str, excluded_backends: set[str] | None = None
+    ):
+        request = ProxyRequest(excluded_backends=excluded_backends)
         assert model_id in self.queues
         log.debug("queueing request", model=model_id)
         queue = self.queues[model_id]
         await queue.put(request)
         log.debug("waiting for backend to become available", model=model_id)
         await request.backend_available.wait()
+        if request.error:
+            raise request.error
         assert request.model is not None
         log.debug(
             "got backend", backend=request.model.backend.url, model=model_id
