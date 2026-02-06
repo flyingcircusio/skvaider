@@ -138,7 +138,11 @@ class TaskManager:
             task.add_done_callback(cleanup_map)
 
         def cleanup_list(t: asyncio.Task[Any]):
-            self._tasks.remove(t)
+            try:
+                self._tasks.remove(t)
+            except ValueError:
+                # Task was already removed (e.g., by terminate())
+                pass
 
         task.add_done_callback(cleanup_list)
         return task
