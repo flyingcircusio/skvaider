@@ -61,8 +61,17 @@ def fake_llama_server() -> Generator[tuple[str, ServerState], None, None]:
     server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}", state
-    server.shutdown()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", state
+    finally:
+        # Shutdown the server in a separate thread to avoid blocking
+        # if there are any lingering connections
+        shutdown_thread = threading.Thread(target=server.shutdown)
+        shutdown_thread.start()
+        shutdown_thread.join(timeout=1.0)
+        if shutdown_thread.is_alive():
+            # If shutdown is still hanging, just let the daemon thread die
+            pass
 
 
 @asynccontextmanager
