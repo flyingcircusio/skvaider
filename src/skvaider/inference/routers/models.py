@@ -104,7 +104,7 @@ async def proxy_request(
 
     model = await manager.use_model(model_name)
     if not model:
-        raise HTTPException(status_code=404, detail="Model not found")
+        raise HTTPException(status_code=540, detail="Model unavailable")
 
     await model.lock.user_acquire()
     try:
