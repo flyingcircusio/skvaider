@@ -148,6 +148,19 @@ async def test_lifespan(
 
     await wait_for_healthy_backends()
 
+    @wait_for_condition()
+    async def wait_for_models_active() -> bool:
+        # Wait for at least one instance of each model to be active
+        for model_id in pool.models:
+            if not any(
+                model_id in b.models and b.models[model_id].is_loaded
+                for b in pool.backends
+            ):
+                return False
+        return True
+
+    await wait_for_models_active()
+
     yield
     pool.close()
 
