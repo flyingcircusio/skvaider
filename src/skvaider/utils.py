@@ -133,7 +133,7 @@ class TaskManager:
             self.unique_task_map[id] = task
 
             def cleanup_map(t: asyncio.Task[Any]):
-                self.unique_task_map.pop(id)
+                self.unique_task_map.pop(id, None)
 
             task.add_done_callback(cleanup_map)
 
