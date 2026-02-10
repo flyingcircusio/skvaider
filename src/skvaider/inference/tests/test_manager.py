@@ -23,7 +23,6 @@ async def test_download_model_success(gemma: Model):
 async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
     config = ModelConfig(
         id="gemma",
-        backend="cpu",
         files=[
             ModelFile(
                 url=f"{gguf_http_server}/not-a-model.gguf",
@@ -138,7 +137,6 @@ async def test_manager_start_model(gemma: Model, manager: Manager):
 async def test_download_split_model(tmp_path: Path, gguf_http_server: str):
     config = ModelConfig(
         id="split-gemma",
-        backend="cpu",
         files=[
             ModelFile(
                 url=f"{gguf_http_server}/split-gguf-1.gguf",

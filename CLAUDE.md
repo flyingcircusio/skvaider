@@ -88,7 +88,6 @@ Combined into `status` set with "active" (running+healthy) or "inactive".
 ## Configuration
 
 Pydantic models in `config.py` files. Key patterns:
-- Backend selection: `ManagerConfig.backend` = "cpu" | "rocm"
 - Model files: URL + SHA256 hash for verification
 - Logging: structlog with IP anonymization
 
