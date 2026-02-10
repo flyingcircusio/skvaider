@@ -72,7 +72,6 @@ async def prepare_model(
 ) -> Model:
     config = ModelConfig(
         id=id,
-        backend="cpu",
         files=[file],
         context_size=context,
         cmd_args=args,

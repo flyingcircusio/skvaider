@@ -83,39 +83,30 @@ class MemoryMonitor(ABC):
     free: int = 0
 
     _model_usage: dict[str, int]
+    _manager: "Manager"
+
+    def __init__(self, manager: "Manager"):
+        self._manager = manager
+        self._model_usage = {}
 
     @abstractmethod
     async def update_global_usage(self) -> None:
-        """Return global memory statistics as (total, used, free) in bytes."""
+        """Update global memory statistics (total, used, free) in bytes."""
         ...
 
     @abstractmethod
-    async def update_model_usage(self, model: "Model") -> None:
-        """Return memory usage in bytes for the given process ID."""
+    async def update_model_usage(self) -> None:
+        """Update memory usage for all models by collecting PIDs and querying."""
         ...
 
     def model_usage(self, model: "Model") -> int:
-        if model.config.id in self._model_usage:
-            return self._model_usage[model.config.id]
-
-        # Bleh. We're kind of half-way through a proper abstraction here, but as we're
-        # already kind of deep into potential YAGNI and early abstraction land ... let's
-        # stick with this for now.
-        if (self.id == "ram" and model.config.backend == "cpu") or (
-            self.id == model.config.backend
-        ):
-            return model.file_size
-
-        return 0
+        return self._model_usage.get(model.config.id, 0)
 
 
 class RAMMonitor(MemoryMonitor):
     """Memory monitor using psutil for system RAM."""
 
     id = "ram"
-
-    def __init__(self):
-        self._model_usage = {}
 
     async def update_global_usage(self) -> None:
         mem = psutil.virtual_memory()
@@ -138,15 +129,22 @@ class RAMMonitor(MemoryMonitor):
             f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
         )
 
-    async def update_model_usage(self, model: "Model") -> None:
-        if not model.process:
-            return
-
-        proc = psutil.Process(model.process.pid)
-        usage = proc.memory_info().rss
-
-        current = self._model_usage.setdefault(model.config.id, 0)
-        self._model_usage[model.config.id] = max([current, usage])
+    async def update_model_usage(self) -> None:
+        for model in self._manager.list_models():
+            if not model.process:
+                continue
+            try:
+                proc = psutil.Process(model.process.pid)
+                usage = proc.memory_info().rss
+                for child in proc.children(recursive=True):
+                    try:
+                        usage += child.memory_info().rss
+                    except psutil.NoSuchProcess:
+                        pass
+                current = self._model_usage.get(model.config.id, 0)
+                self._model_usage[model.config.id] = max(current, usage)
+            except psutil.NoSuchProcess:
+                pass
 
         # Update Prometheus metrics
         metrics.inference_memory_bytes.labels(
@@ -159,10 +157,7 @@ class ROCmMemoryMonitor(MemoryMonitor):
 
     id = "rocm"
 
-    def __init__(self):
-        self._model_usage = {}
-
-    async def update_global_usage(self):
+    async def update_global_usage(self) -> None:
         """Update ROCm card VRAM memory statistics."""
         proc = await asyncio.create_subprocess_exec(
             "rocm-smi",
@@ -220,10 +215,23 @@ class ROCmMemoryMonitor(MemoryMonitor):
             f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
         )
 
-    async def update_model_usage(self, model: "Model") -> None:
-        """Return VRAM usage for a process by calling rocm-smi."""
-        if not model.process:
+    async def update_model_usage(self) -> None:
+        """Update VRAM usage for all models with a single rocm-smi call."""
+        pid_to_model: dict[int, str] = {}
+        for model in self._manager.list_models():
+            if not model.process:
+                continue
+            pid_to_model[model.process.pid] = model.config.id
+            try:
+                proc = psutil.Process(model.process.pid)
+                for child in proc.children(recursive=True):
+                    pid_to_model[child.pid] = model.config.id
+            except psutil.NoSuchProcess:
+                pass
+
+        if not pid_to_model:
             return
+
         proc = await asyncio.create_subprocess_exec(
             "rocm-smi",
             "--json",
@@ -252,14 +260,23 @@ class ROCmMemoryMonitor(MemoryMonitor):
         data = json.loads(stdout.decode("utf-8"))
         system_data = data.get("system", {})
 
-        # Find this PID in the output
+        # Sum up VRAM usage per model (may have multiple PIDs per model)
+        model_usage: dict[str, int] = {}
         # Format: "PID123456": "process_name, gpu_count, vram_bytes, cpu_mem, unknown"
-        pid_key = f"PID{model.process.pid}"
-        parts = system_data[pid_key].split(",")
-        usage = int(parts[2].strip())
+        for pid_key, value in system_data.items():
+            if not pid_key.startswith("PID"):
+                continue
+            pid = int(pid_key[3:])
+            if pid not in pid_to_model:
+                continue
+            model_id = pid_to_model[pid]
+            parts = value.split(",")
+            usage = int(parts[2].strip())
+            model_usage[model_id] = model_usage.get(model_id, 0) + usage
 
-        current = self._model_usage.setdefault(model.config.id, 0)
-        self._model_usage[model.config.id] = max([current, usage])
+        for model_id, usage in model_usage.items():
+            current = self._model_usage.get(model_id, 0)
+            self._model_usage[model_id] = max(current, usage)
 
 
 class Model:
@@ -724,12 +741,13 @@ class Manager:
         self.models = {}
         self._lock = asyncio.Lock()
 
-        self.monitors = {"ram": RAMMonitor()}
+        self.monitors = {"ram": RAMMonitor(self)}
         if shutil.which("rocm-smi"):
-            self.monitors["rocm"] = ROCmMemoryMonitor()
+            self.monitors["rocm"] = ROCmMemoryMonitor(self)
 
         for monitor in self.monitors.values():
             self.tasks.poll(monitor.update_global_usage, interval=10)
+            self.tasks.poll(monitor.update_model_usage, interval=10)
 
     def add_model(self, model: Model) -> None:
         assert model.config.id is not None
@@ -737,17 +755,6 @@ class Manager:
         self.models[model.config.id] = model
         model.datadir = self.models_dir / model.slug
         model.datadir.mkdir(exist_ok=True)
-
-        # Always monitor RAM usage
-        ram_monitor = self.monitors["ram"]
-        self.tasks.poll(ram_monitor.update_model_usage, model, interval=10)
-
-        # Also monitor ROCm VRAM if backend is rocm
-        if model.config.backend == "rocm":
-            if "rocm" not in self.monitors:
-                raise ValueError("Memory monitor for rocm is not available.")
-            rocm_monitor = self.monitors["rocm"]
-            self.tasks.poll(rocm_monitor.update_model_usage, model, interval=10)
 
     def list_models(self) -> list[Model]:
         return list(self.models.values())

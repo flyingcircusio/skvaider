@@ -34,7 +34,6 @@ def test_model_config_normalizes_id_to_lowercase():
     """
     config = ModelConfig(
         id="Gemma-2-2b",
-        backend="cpu",
         files=[
             ModelFile(
                 url="https://example.com/model.gguf",

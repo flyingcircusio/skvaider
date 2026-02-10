@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -23,7 +22,6 @@ class LoggingConfig(BaseLoggingConfig):
 
 class ModelConfig(BaseModel):
     id: str
-    backend: Literal["cpu", "rocm"]
     cmd_args: list[str] = []
     context_size: int = 0
     llama_server: Path = Path("llama-server")
