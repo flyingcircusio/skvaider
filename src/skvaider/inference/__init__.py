@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 import skvaider.inference.manager
 import skvaider.inference.routers.manager
+import skvaider.inference.routers.metrics
 import skvaider.inference.routers.models
 from skvaider import global_exception_handler
 from skvaider.inference.config import Config
@@ -112,6 +113,7 @@ def app_factory(lifespan: Any = lifespan) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.include_router(skvaider.inference.routers.models.router)
     app.include_router(skvaider.inference.routers.manager.router)
+    app.include_router(skvaider.inference.routers.metrics.router)
 
     app.add_middleware(
         LoggingMiddleware, logger=getLogger("skvaider.accesslog")
