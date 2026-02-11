@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 import skvaider.auth
 import skvaider.proxy.backends
 import skvaider.proxy.pool
+import skvaider.routers.metrics
 import skvaider.routers.openai
 from aramaki import Manager as AramakiManager
 from skvaider.auth import verify_token
@@ -118,6 +119,7 @@ def app_factory(
         prefix="/openai",
         dependencies=[Security(verify_token)],
     )
+    app.include_router(skvaider.routers.metrics.router)
     app.add_middleware(
         LoggingMiddleware, logger=getLogger("skvaider.accesslog")
     )

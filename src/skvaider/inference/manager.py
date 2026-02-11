@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -15,6 +16,7 @@ import httpx
 import psutil
 import structlog
 
+from skvaider.inference import metrics
 from skvaider.inference.config import ModelConfig
 from skvaider.utils import TaskManager, slugify
 
@@ -120,6 +122,18 @@ class RAMMonitor(MemoryMonitor):
         self.total = mem.total
         self.used = mem.used
         self.free = mem.available
+
+        # Update Prometheus metrics
+        metrics.inference_memory_bytes.labels(model="", type="total").set(
+            self.total
+        )
+        metrics.inference_memory_bytes.labels(model="", type="used").set(
+            self.used
+        )
+        metrics.inference_memory_bytes.labels(model="", type="free").set(
+            self.free
+        )
+
         log.info(
             f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
         )
@@ -133,6 +147,11 @@ class RAMMonitor(MemoryMonitor):
 
         current = self._model_usage.setdefault(model.config.id, 0)
         self._model_usage[model.config.id] = max([current, usage])
+
+        # Update Prometheus metrics
+        metrics.inference_memory_bytes.labels(
+            model=model.config.id, type="model"
+        ).set(self._model_usage[model.config.id])
 
 
 class ROCmMemoryMonitor(MemoryMonitor):
@@ -185,6 +204,18 @@ class ROCmMemoryMonitor(MemoryMonitor):
         self.total = total
         self.used = used
         self.free = total - used
+
+        # Update Prometheus metrics
+        metrics.inference_vram_bytes.labels(backend=self.id, type="total").set(
+            self.total
+        )
+        metrics.inference_vram_bytes.labels(backend=self.id, type="used").set(
+            self.used
+        )
+        metrics.inference_vram_bytes.labels(backend=self.id, type="free").set(
+            self.free
+        )
+
         log.info(
             f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
         )
@@ -407,6 +438,7 @@ class Model:
         assert self.process is None
         assert self.process_status == "stopped"
 
+        start_time = time.time()
         self.process_status = "starting"
         llama_server = self.config.llama_server
         if len(llama_server.parts) == 1:
@@ -462,6 +494,13 @@ class Model:
         self.process_status = "running"
         self._notify_status_changed()
 
+        # Update metrics
+        duration = time.time() - start_time
+        metrics.inference_model_load_duration_seconds.labels(
+            model=self.config.id
+        ).observe(duration)
+        metrics.inference_model_status.labels(model=self.config.id).set(1)
+
     async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model", model=self.config.id)
@@ -498,6 +537,9 @@ class Model:
         self.process = None
         self.endpoint = None
         self.process_status = "stopped"
+
+        # Update metrics
+        metrics.inference_model_status.labels(model=self.config.id).set(0)
         self.health_status = ""
         self._notify_status_changed()
 

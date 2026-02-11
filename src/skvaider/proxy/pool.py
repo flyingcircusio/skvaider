@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from fastapi import HTTPException
 
-from skvaider import utils
+from skvaider import metrics, utils
 from skvaider.utils import TaskManager
 
 from .models import AIModel
@@ -368,13 +368,21 @@ class Pool:
         log.debug("queueing request", model=model_id)
         queue = self.queues[model_id]
         await queue.put(request)
+
+        # Update queue size metric
+        metrics.gateway_active_requests.labels(model=model_id).inc()
+
         log.debug("waiting for backend to become available", model=model_id)
         await request.backend_available.wait()
         if request.error:
+            metrics.gateway_active_requests.labels(model=model_id).dec()
             raise request.error
         assert request.model is not None
         log.debug(
             "got backend", backend=request.model.backend.url, model=model_id
         )
-        async with request.model.use():
-            yield request.model.backend
+        try:
+            async with request.model.use():
+                yield request.model.backend
+        finally:
+            metrics.gateway_active_requests.labels(model=model_id).dec()

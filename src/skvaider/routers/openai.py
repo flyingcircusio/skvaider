@@ -1,5 +1,6 @@
 """Open-AI compatible API."""
 
+import time
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Generic, TypeVar
@@ -10,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from skvaider import metrics
 from skvaider.proxy.backends import Backend
 from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
@@ -52,12 +54,28 @@ class OpenAIProxy:
                     request.state.model,
                     excluded_backends=excluded_backends,
                 ) as backend:
-                    return await backend.post(endpoint, data)
+                    result = await backend.post(endpoint, data)
+
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url, status="success"
+                    ).inc()
+
+                    return result
             except HTTPException as e:
+                # Track backend request failure
+                if backend:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url, status="error"
+                    ).inc()
+
                 # 540: Backend unavailable
                 if e.status_code == 540 and attempt < self.max_retries - 1:
                     if backend:
                         excluded_backends.add(backend.url)
+
+                    metrics.gateway_backend_retry_total.labels(
+                        model=request.state.model, reason="backend_unavailable"
+                    ).inc()
 
                     log.warning(
                         "Backend unavailable, retrying",
@@ -87,9 +105,21 @@ class OpenAIProxy:
                 backend = await context.__aenter__()
                 stream_aws = backend.post_stream(endpoint, data)
                 first_chunk = await anext(stream_aws)
+
+                # Track backend request success
+                metrics.gateway_backend_requests_total.labels(
+                    backend=backend.url, status="success"
+                ).inc()
+
             except (StopAsyncIteration, HTTPException, Exception) as e:
                 # Cleanup context on error
                 await context.__aexit__(None, None, None)
+
+                # Track backend request failure
+                if backend:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url, status="error"
+                    ).inc()
 
                 if isinstance(e, StopAsyncIteration):
                     # Empty stream
@@ -109,6 +139,11 @@ class OpenAIProxy:
                 ):
                     if backend:
                         excluded_backends.add(backend.url)
+
+                    metrics.gateway_backend_retry_total.labels(
+                        model=request.state.model, reason="backend_unavailable"
+                    ).inc()
+
                     log.warning(
                         "Backend unavailable, retrying",
                         model=request.state.model,
@@ -162,16 +197,39 @@ class OpenAIProxy:
                 f"The model `{request.state.model}` is currently not available.",
             )
 
-        if request.state.stream:
-            return await self._execute_stream_with_retry(
-                request, endpoint, request_data
-            )
-        else:
-            return await self._execute_with_retry(
-                request,
-                endpoint,
-                request_data,
-            )
+        # Track active requests
+        metrics.gateway_active_requests.labels(model=request.state.model).inc()
+        start_time = time.time()
+        status = "success"
+
+        try:
+            if request.state.stream:
+                result = await self._execute_stream_with_retry(
+                    request, endpoint, request_data
+                )
+            else:
+                result = await self._execute_with_retry(
+                    request,
+                    endpoint,
+                    request_data,
+                )
+
+            return result
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            # Track request completion
+            metrics.gateway_active_requests.labels(
+                model=request.state.model
+            ).dec()
+            duration = time.time() - start_time
+            metrics.gateway_request_duration_seconds.labels(
+                model=request.state.model, endpoint=endpoint
+            ).observe(duration)
+            metrics.gateway_requests_total.labels(
+                model=request.state.model, endpoint=endpoint, status=status
+            ).inc()
 
 
 @router.get("/v1/models")
