@@ -1,4 +1,3 @@
-import asyncio
 from typing import Any, AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,23 +6,25 @@ import structlog
 import svcs
 from fastapi import HTTPException, Request
 
+from skvaider.config import ModelInstanceConfig, parse_size
 from skvaider.proxy.backends import Backend
 from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
 from skvaider.routers.openai import OpenAIProxy
+from skvaider.utils import TaskManager
 
 log = structlog.stdlib.get_logger()
 
 
 class MockBackend(Backend):
-    def __init__(self, url: str, pool: Pool, fail_count: int = 0):
-        super().__init__(url, pool)
+    def __init__(self, url: str, fail_count: int = 0):
+        super().__init__(url)
         self.fail_count = fail_count
         self.call_count = 0
         self.models = {}
-        self.memory = {"gpu": {"free": 100, "total": 100}}
-        self._idle_event = asyncio.Event()
-        self._idle_event.set()
+        self.memory = {
+            "ram": {"free": parse_size("100K"), "total": parse_size("100K")}
+        }
 
     async def post(self, path: str, data: dict[str, Any]) -> None:  # type: ignore[override]
         self.call_count += 1
@@ -51,23 +52,6 @@ class MockBackend(Backend):
     async def monitor_health_and_update_models(self):
         pass
 
-    async def wait_for_idle(self):
-        await self._idle_event.wait()
-
-
-@pytest.fixture
-async def pool() -> AsyncGenerator[Pool, None]:  # type: ignore[misc]
-    p = Pool()
-    yield p
-    p.close()
-
-
-@pytest.fixture
-def services(pool: Pool) -> MagicMock:  # type: ignore[misc]
-    s = MagicMock(spec=svcs.fastapi.DepContainer)
-    s.get.return_value = pool
-    return s
-
 
 @pytest.fixture
 def request_factory():  # type: ignore[misc]
@@ -85,18 +69,29 @@ def request_factory():  # type: ignore[misc]
 
 
 @pytest.mark.asyncio
-async def test_proxy_retry_all_fail(pool: Pool, services: MagicMock, request_factory) -> None:  # type: ignore[misc]
+async def test_proxy_retry_all_fail(
+    request_factory,  # type: ignore[misc]
+    task_managers: list[TaskManager],
+) -> None:
     """Test that proxy raises 503 when all backends are unavailable."""
-    b1 = MockBackend("http://b1", pool, fail_count=100)
-    pool.add_backend(b1)
+    backend = MockBackend("http://b1", fail_count=100)
+    backend.healthy = True
 
-    model = AIModel(id="test-model", owned_by="me", backend=b1)
-    model.memory_usage = {"gpu": 10}
+    model = AIModel(id="test-model", owned_by="me", backend=backend)
+    model.memory_usage = {"ram": parse_size("10K")}
     model.is_loaded = True
-    model.limit = 100
-    b1.models["test-model"] = model
+    backend.models["test-model"] = model
 
-    pool.update_model_maps()
+    model_config = ModelInstanceConfig(
+        id="test-model", instances=1, memory={"ram": parse_size("10K")}
+    )
+    pool = Pool([model_config], [backend])
+    task_managers.append(pool.tasks)
+
+    await pool.rebalance()
+
+    services = MagicMock(spec=svcs.fastapi.DepContainer)
+    services.get.return_value = pool
 
     proxy = OpenAIProxy(services)
     req = request_factory(stream=False)  # type: ignore[misc]
@@ -108,22 +103,39 @@ async def test_proxy_retry_all_fail(pool: Pool, services: MagicMock, request_fac
 
 
 @pytest.mark.asyncio
-async def test_proxy_retry_verifies_backend_switching(pool: Pool, services: MagicMock, request_factory) -> None:  # type: ignore[misc]
+async def test_proxy_retry_verifies_backend_switching(
+    request_factory,  # type: ignore[misc]
+    task_managers: list[TaskManager],
+) -> None:
     """Test that request goes to failing backend (540), then retries with next backend."""
-    # Backend 1 fails once with 540
-    b1 = MockBackend("http://b1", pool, fail_count=1)
-    # Backend 2 always succeeds
-    b2 = MockBackend("http://b2", pool, fail_count=0)
+    pool = Pool(
+        [
+            ModelInstanceConfig(
+                id="test-model", instances=2, memory={"ram": parse_size("10K")}
+            )
+        ]
+    )
+    task_managers.append(pool.tasks)
+
+    b1 = MockBackend("http://b1", fail_count=1)
+    b1.healthy = True
+    b2 = MockBackend("http://b2", fail_count=0)
+    b2.healthy = True
 
     for b in [b1, b2]:
-        pool.add_backend(b)
+        b.pool = pool
+        pool.backends.append(b)
+        pool.tasks.create(b.monitor_health_and_update_models)
         model = AIModel(id="test-model", owned_by="me", backend=b)
-        model.memory_usage = {"gpu": 10}
+        model.memory_usage = {"ram": parse_size("10K")}
         model.is_loaded = True
         model.limit = 100
         b.models["test-model"] = model
 
-    pool.update_model_maps()
+    await pool.rebalance()
+
+    services = MagicMock(spec=svcs.fastapi.DepContainer)
+    services.get.return_value = pool
 
     proxy = OpenAIProxy(services)
     req = request_factory(stream=False)  # type: ignore[misc]

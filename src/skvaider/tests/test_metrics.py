@@ -1,54 +1,34 @@
 """Tests for gateway Prometheus metrics instrumentation."""
 
 import asyncio
-import contextlib
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Generator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import svcs
 from fastapi import HTTPException, Request
-from prometheus_client import Counter, Gauge, Histogram
+from prometheus_client import REGISTRY
 
-from skvaider import metrics
+from skvaider.config import ModelInstanceConfig
 from skvaider.proxy.backends import Backend
 from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
 from skvaider.routers.openai import OpenAIProxy
 
 
-def _counter_value(counter: Counter, **labels: str) -> float:
-    """Read the current value of a prometheus Counter with the given labels."""
-    return counter.labels(
-        **labels
-    )._value.get()  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType, reportAttributeAccessIssue, reportUnknownVariableType, reportReturnType]
-
-
-def _gauge_value(gauge: Gauge, **labels: str) -> float:
-    """Read the current value of a prometheus Gauge with the given labels."""
-    return gauge.labels(
-        **labels
-    )._value.get()  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType, reportAttributeAccessIssue, reportUnknownVariableType, reportReturnType]
-
-
-def _histogram_count(histogram: Histogram, **labels: str) -> float:
-    """Read the observation count of a prometheus Histogram."""
-    for metric in histogram.collect():
-        for sample in metric.samples:
-            if sample.name.endswith("_count") and all(
-                sample.labels.get(k) == v for k, v in labels.items()
-            ):
-                return sample.value  # pyright: ignore[reportReturnType]
-    return 0
+def prometheus_value(metric: str, **labels: str) -> float | None:
+    return REGISTRY.get_sample_value(metric, labels)
 
 
 class MockBackend(Backend):
     """Minimal mock backend for metrics tests."""
 
-    def __init__(self, url: str, pool: Pool, fail_count: int = 0):
-        super().__init__(url, pool)
+    def __init__(self, url: str, fail_count: int = 0):
+        super().__init__(url)
         self.fail_count = fail_count
         self.call_count = 0
         self.models = {}
+        self.healthy = True
         self.memory = {"gpu": {"free": 100, "total": 100}}
         self._idle_event = asyncio.Event()
         self._idle_event.set()
@@ -79,273 +59,240 @@ class MockBackend(Backend):
     async def monitor_health_and_update_models(self) -> None:
         pass
 
-    async def wait_for_idle(self) -> None:
-        await self._idle_event.wait()
 
-
-def _setup_pool_with_backends(
-    pool: Pool, *backends: MockBackend, model_id: str = "test-model"
-) -> None:
-    """Register backends + a loaded model in the pool."""
-    for b in backends:
-        pool.add_backend(b)
-        model = AIModel(id=model_id, owned_by="test", backend=b)
-        model.memory_usage = {"gpu": 10}
-        model.is_loaded = True
-        model.limit = 100
-        b.models[model_id] = model
-    pool.update_model_maps()
-
-
-def _make_services(pool: Pool) -> MagicMock:
-    s = MagicMock(spec=["get"])
-    s.get.return_value = pool
-    return s
-
-
-def _make_request(model: str = "test-model", stream: bool = False) -> MagicMock:
+@pytest.fixture
+def simple_request() -> MagicMock:
     req = MagicMock(spec=Request)
-    req.json = AsyncMock(return_value={"model": model, "stream": stream})
+    req.json = AsyncMock(return_value={"model": "test-model", "stream": False})
     req.state = MagicMock()
-    req.state.model = model
-    req.state.stream = stream
+    req.state.model = "test-model"
+    req.state.stream = False
     return req
 
 
 @pytest.fixture
-async def pool() -> AsyncGenerator[Pool, None]:  # type: ignore[misc]
-    p = Pool()
-    yield p
-    p.close()
+def streaming_request() -> MagicMock:
+    req = MagicMock(spec=Request)
+    req.json = AsyncMock(return_value={"model": "test-model", "stream": True})
+    req.state = MagicMock()
+    req.state.model = "test-model"
+    req.state.stream = True
+    return req
 
 
-async def test_requests_total_increments_on_success(pool: Pool) -> None:
-    b = MockBackend("http://metrics-b1", pool)
-    _setup_pool_with_backends(pool, b)
+@pytest.fixture
+def backend():
+    return MockBackend("http://backend-1")
 
-    before = _counter_value(
-        metrics.gateway_requests_total,
-        model="test-model",
-        endpoint="/v1/chat/completions",
-        status="success",
+
+@pytest.fixture
+async def pool(
+    svcs_registry: svcs.Registry, backend: MockBackend
+) -> AsyncGenerator[Pool, None]:
+    pool = Pool(
+        model_configs=[
+            ModelInstanceConfig(
+                id="test-model", instances=1, memory={"gpu": 10}
+            )
+        ],
+        backends=[backend],
     )
 
-    proxy = OpenAIProxy(_make_services(pool))
-    req = _make_request()
-    await proxy.proxy(req, "/v1/chat/completions")
+    for b in pool.backends:
+        model = AIModel(id="test-model", owned_by="test", backend=b)
+        model.memory_usage = {"gpu": 10}
+        model.is_loaded = True
+        b.models["test-model"] = model
 
-    after = _counter_value(
-        metrics.gateway_requests_total,
+    await pool.rebalance()
+
+    svcs_registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        Pool, pool
+    )
+
+    yield pool
+
+    pool.close()
+
+
+@pytest.fixture
+def proxy(
+    pool: Pool, services: svcs.Container
+) -> Generator[OpenAIProxy, None, None]:
+    yield OpenAIProxy(services)
+
+
+async def test_requests_total_increments_on_success(
+    proxy: OpenAIProxy, simple_request: MagicMock
+):
+    await proxy.proxy(simple_request, "/v1/chat/completions")
+
+    value = prometheus_value(
+        "skvaider_gateway_requests_total",
         model="test-model",
         endpoint="/v1/chat/completions",
+        streaming="False",
         status="success",
     )
-    assert after == before + 1
+    assert value == 1
 
 
-async def test_requests_total_increments_on_error(pool: Pool) -> None:
+async def test_requests_total_increments_on_error(
+    pool: Pool,
+    proxy: OpenAIProxy,
+    backend: MockBackend,
+    simple_request: MagicMock,
+):
     """All backends fail with 540 → 503 raised → status='error'."""
-    b = MockBackend("http://metrics-b2", pool, fail_count=100)
-    _setup_pool_with_backends(pool, b)
-
-    before = _counter_value(
-        metrics.gateway_requests_total,
-        model="test-model",
-        endpoint="/v1/chat/completions",
-        status="error",
-    )
-
-    proxy = OpenAIProxy(_make_services(pool))
-    req = _make_request()
+    backend.fail_count = 100
 
     with pytest.raises(HTTPException) as exc:
-        await proxy.proxy(req, "/v1/chat/completions")
+        await proxy.proxy(simple_request, "/v1/chat/completions")
     assert exc.value.status_code == 503
 
-    after = _counter_value(
-        metrics.gateway_requests_total,
+    value = prometheus_value(
+        "skvaider_gateway_requests_total",
         model="test-model",
+        streaming="False",
         endpoint="/v1/chat/completions",
         status="error",
     )
-    assert after == before + 1
+    assert value == 1
 
 
-async def test_backend_requests_total_success(pool: Pool) -> None:
-    b = MockBackend("http://metrics-b3", pool)
-    _setup_pool_with_backends(pool, b)
+async def test_backend_requests_total_success(
+    proxy: OpenAIProxy, simple_request: MagicMock
+):
+    await proxy.proxy(simple_request, "/v1/chat/completions")
 
-    before = _counter_value(
-        metrics.gateway_backend_requests_total,
-        backend="http://metrics-b3",
+    value = prometheus_value(
+        "skvaider_gateway_backend_requests_total",
+        model="test-model",
+        backend="http://backend-1",
+        endpoint="/v1/chat/completions",
         status="success",
+        streaming="False",
     )
-
-    proxy = OpenAIProxy(_make_services(pool))
-    req = _make_request()
-    await proxy.proxy(req, "/v1/chat/completions")
-
-    after = _counter_value(
-        metrics.gateway_backend_requests_total,
-        backend="http://metrics-b3",
-        status="success",
-    )
-    assert after == before + 1
+    assert value == 1
 
 
-async def test_backend_requests_total_error_on_failure(pool: Pool) -> None:
+async def test_backend_requests_total_error_on_failure(
+    pool: Pool,
+    proxy: OpenAIProxy,
+    backend: MockBackend,
+    simple_request: MagicMock,
+):
     """All backends fail → backend error counter goes up."""
-    b = MockBackend("http://metrics-b4", pool, fail_count=100)
-    _setup_pool_with_backends(pool, b)
-
-    before = _counter_value(
-        metrics.gateway_backend_requests_total,
-        backend="http://metrics-b4",
-        status="error",
-    )
-
-    proxy = OpenAIProxy(_make_services(pool))
-    req = _make_request()
+    backend.fail_count = 100
 
     with pytest.raises(HTTPException):
-        await proxy.proxy(req, "/v1/chat/completions")
+        await proxy.proxy(simple_request, "/v1/chat/completions")
 
-    after = _counter_value(
-        metrics.gateway_backend_requests_total,
-        backend="http://metrics-b4",
+    value = prometheus_value(
+        "skvaider_gateway_backend_requests_total",
+        model="test-model",
+        backend="http://backend-1",
+        endpoint="/v1/chat/completions",
         status="error",
+        streaming="False",
     )
-    assert after > before
+    assert value == 1
 
 
 async def test_retry_total_increments_on_backend_unavailable(
     pool: Pool,
-) -> None:
+    proxy: OpenAIProxy,
+    backend: MockBackend,
+    simple_request: MagicMock,
+):
     """Backend fails once with 540, retry happens → retry counter increments."""
-    b_fail = MockBackend("http://metrics-b5", pool, fail_count=1)
-    b_ok = MockBackend("http://metrics-b6", pool)
-    _setup_pool_with_backends(pool, b_fail, b_ok, model_id="retry-model")
+    backend.fail_count = 1
 
-    before = _counter_value(
-        metrics.gateway_backend_retry_total,
-        model="retry-model",
+    b2 = MockBackend("http://backend-2")
+    b2.pool = pool
+    model = AIModel(id="test-model", owned_by="test", backend=b2)
+    model.memory_usage = {"gpu": 10}
+    model.is_loaded = True
+    b2.models["test-model"] = model
+    pool.backends.append(b2)
+
+    await proxy.proxy(simple_request, "/v1/chat/completions")
+
+    value = prometheus_value(
+        "skvaider_gateway_backend_retry_total",
+        model="test-model",
+        backend="http://backend-1",
+        endpoint="/v1/chat/completions",
         reason="backend_unavailable",
+        streaming="False",
     )
-
-    # Patch pool.use to guarantee the failing backend is returned first.
-    original_use = pool.use
-    call_count = 0
-
-    @contextlib.asynccontextmanager
-    async def ordered_use(
-        model_id: str, excluded_backends: set[str] | None = None
-    ) -> AsyncGenerator[Backend, None]:
-        nonlocal call_count
-        excluded = excluded_backends or set()
-        # On first call, return failing backend; on retry, return good one.
-        backends = [b_fail, b_ok]
-        for b in backends:
-            if b.url not in excluded:
-                call_count += 1
-                yield b
-                return
-        raise HTTPException(503, "All excluded")
-
-    pool.use = ordered_use  # type: ignore[assignment]
-    try:
-        proxy = OpenAIProxy(_make_services(pool))
-        req = _make_request(model="retry-model")
-        await proxy.proxy(req, "/v1/chat/completions")
-
-        after = _counter_value(
-            metrics.gateway_backend_retry_total,
-            model="retry-model",
-            reason="backend_unavailable",
-        )
-        assert after >= before + 1
-    finally:
-        pool.use = original_use  # type: ignore[assignment]
+    assert value == 1
 
 
-async def test_request_duration_is_observed(pool: Pool) -> None:
-    b = MockBackend("http://metrics-b7", pool)
-    _setup_pool_with_backends(pool, b)
+async def test_request_duration_is_observed(
+    proxy: OpenAIProxy, simple_request: MagicMock
+):
+    await proxy.proxy(simple_request, "/v1/chat/completions")
 
-    before_count = _histogram_count(
-        metrics.gateway_request_duration_seconds,
+    value = prometheus_value(
+        "skvaider_gateway_request_duration_seconds_bucket",
         model="test-model",
         endpoint="/v1/chat/completions",
+        streaming="False",
+        le="0.5",
     )
 
-    proxy = OpenAIProxy(_make_services(pool))
-    req = _make_request()
-    await proxy.proxy(req, "/v1/chat/completions")
-
-    after_count = _histogram_count(
-        metrics.gateway_request_duration_seconds,
-        model="test-model",
-        endpoint="/v1/chat/completions",
-    )
-
-    assert after_count == before_count + 1
+    assert value == 1
 
 
 async def test_active_requests_returns_to_zero_after_success(
-    pool: Pool,
-) -> None:
-    b = MockBackend("http://metrics-b8", pool)
-    _setup_pool_with_backends(pool, b)
+    proxy: OpenAIProxy, simple_request: MagicMock
+):
+    await proxy.proxy(simple_request, "/v1/chat/completions")
 
-    proxy = OpenAIProxy(_make_services(pool))
-    req = _make_request()
-    await proxy.proxy(req, "/v1/chat/completions")
-
-    # After a completed request, the gauge should be back to its
-    # pre-request value (or zero if no other concurrent requests).
-    val = _gauge_value(metrics.gateway_active_requests, model="test-model")
-    assert val == 0
+    value = prometheus_value(
+        "skvaider_gateway_active_requests",
+        model="test-model",
+        endpoint="/v1/chat/completions",
+        streaming="False",
+    )
+    assert value == 0
 
 
 async def test_active_requests_returns_to_zero_after_error(
     pool: Pool,
-) -> None:
-    b = MockBackend("http://metrics-b9", pool, fail_count=100)
-    _setup_pool_with_backends(pool, b)
-
-    proxy = OpenAIProxy(_make_services(pool))
-    req = _make_request()
+    proxy: OpenAIProxy,
+    backend: MockBackend,
+    simple_request: MagicMock,
+):
+    backend.fail_count = 100
 
     with pytest.raises(HTTPException):
-        await proxy.proxy(req, "/v1/chat/completions")
+        await proxy.proxy(simple_request, "/v1/chat/completions")
 
-    val = _gauge_value(metrics.gateway_active_requests, model="test-model")
-    assert val == 0
-
-
-async def test_streaming_request_increments_metrics(pool: Pool) -> None:
-    """Streaming requests should also update gateway_requests_total."""
-    b = MockBackend("http://metrics-b10", pool)
-    _setup_pool_with_backends(pool, b)
-
-    before = _counter_value(
-        metrics.gateway_requests_total,
+    value = prometheus_value(
+        "skvaider_gateway_active_requests",
         model="test-model",
         endpoint="/v1/chat/completions",
-        status="success",
+        streaming="False",
     )
+    assert value == 0
 
-    proxy = OpenAIProxy(_make_services(pool))
-    req = _make_request(stream=True)
-    result = await proxy.proxy(req, "/v1/chat/completions")
 
-    # Consume the stream to trigger the finally block
+async def test_streaming_request_increments_metrics(
+    proxy: OpenAIProxy, streaming_request: MagicMock
+):
+    """Streaming requests should also update gateway_requests_total."""
+    result = await proxy.proxy(streaming_request, "/v1/chat/completions")
+
     async for _ in result.body_iterator:
         pass
 
-    after = _counter_value(
-        metrics.gateway_requests_total,
+    value = prometheus_value(
+        "skvaider_gateway_requests_total",
         model="test-model",
+        streaming="True",
         endpoint="/v1/chat/completions",
         status="success",
     )
-    assert after == before + 1
+    assert value == 1

@@ -9,6 +9,7 @@ from typing import Generator, Any
 
 
 import httpx
+import prometheus_client
 import pytest
 import svcs
 from argon2 import PasswordHasher
@@ -19,6 +20,10 @@ import aramaki
 import skvaider.auth
 import skvaider.proxy.backends
 import skvaider.proxy.pool
+from aramaki.typing import JSONObject
+from skvaider import app_factory, metrics
+from skvaider.config import ModelInstanceConfig, parse_size
+from skvaider.utils import TaskManager
 import skvaider.routers.openai
 from skvaider import app_factory
 
@@ -126,12 +131,27 @@ async def backend_connection_is_up(url: str) -> bool:
 async def test_lifespan(
     app: FastAPI, registry: svcs.Registry
 ) -> AsyncGenerator[None, None]:
-    pool = skvaider.proxy.pool.Pool()
+    pool = skvaider.proxy.pool.Pool(
+        [
+            ModelInstanceConfig(
+                id="gemma", instances=1, memory={"ram": parse_size("1.3G")}
+            ),
+            ModelInstanceConfig(
+                id="embeddinggemma",
+                instances=1,
+                memory={"ram": parse_size("250M")},
+            ),
+        ]
+    )
 
+    # This is one of the backends from the devenv.
     url = "http://127.0.0.1:8001"
     await backend_connection_is_up(url)
 
-    pool.add_backend(skvaider.proxy.backends.SkvaiderBackend(url, pool))
+    backend = skvaider.proxy.backends.SkvaiderBackend(url)
+    backend.pool = pool
+    pool.backends.append(backend)
+    pool.tasks.create(backend.monitor_health_and_update_models)
 
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         skvaider.proxy.pool.Pool, pool
@@ -151,18 +171,23 @@ async def test_lifespan(
     @wait_for_condition()
     async def wait_for_models_active() -> bool:
         # Wait for at least one instance of each model to be active
-        for model_id in pool.models:
-            if not any(
-                model_id in b.models and b.models[model_id].is_loaded
-                for b in pool.backends
-            ):
-                return False
-        return True
+        for model_id in pool.model_configs.keys():
+            if pool.count_loaded_instances(model_id):
+                return True
+        return False
 
     await wait_for_models_active()
 
     yield
     pool.close()
+
+
+@pytest.fixture
+async def task_managers():
+    task_managers: list[TaskManager] = []
+    yield task_managers
+    for tm in task_managers:
+        tm.terminate()
 
 
 @pytest.fixture(params=["gemma"])
@@ -203,3 +228,10 @@ async def auth_header(
 def client() -> Generator[TestClient, None, None]:
     with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def cleanup_prometheus_metrics():
+    for m in metrics.__dict__.values():
+        if isinstance(m, prometheus_client.metrics.MetricWrapperBase):
+            m.clear()

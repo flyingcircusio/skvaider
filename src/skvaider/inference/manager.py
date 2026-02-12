@@ -146,10 +146,10 @@ class RAMMonitor(MemoryMonitor):
             except psutil.NoSuchProcess:
                 pass
 
-        # Update Prometheus metrics
-        metrics.inference_memory_bytes.labels(
-            model=model.config.id, type="model"
-        ).set(self._model_usage[model.config.id])
+            # Update Prometheus metrics
+            metrics.inference_memory_bytes.labels(
+                model=model.config.id, type="model"
+            ).set(self._model_usage[model.config.id])
 
 
 class ROCmMemoryMonitor(MemoryMonitor):

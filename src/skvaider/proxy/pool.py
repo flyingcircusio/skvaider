@@ -1,12 +1,12 @@
 import asyncio
 import contextlib
 import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Iterable
 
 import structlog
-from fastapi import HTTPException
 
-from skvaider import metrics, utils
+from skvaider import utils
+from skvaider.config import ModelInstanceConfig
 from skvaider.utils import TaskManager
 
 from .models import AIModel
@@ -17,22 +17,84 @@ if TYPE_CHECKING:
 log = structlog.stdlib.get_logger()
 
 
-class ProxyRequest:
-    backend_available: asyncio.Event
-    model: AIModel | None = None
-    excluded_backends: set[str]
-    error: Exception | None = None
+class ModelSemaphore:
+    """Controls concurrent access to a model across all backends.
 
-    def __init__(self, excluded_backends: set[str] | None = None):
-        self.backend_available = asyncio.Event()
-        self.excluded_backends = excluded_backends or set()
+    Acts like a semaphore where the total capacity is the sum of
+    each backend's per-model limit. Acquiring a slot selects the
+    least-busy backend with available capacity.
+
+    """
+
+    model_id: str
+    pool: "Pool"
+    _condition: asyncio.Condition
+
+    def __init__(self, model_id: str, pool: "Pool"):
+        self.model_id = model_id
+        self.pool = pool
+        self.lock = asyncio.Lock()
+        self.released = asyncio.Event()
+
+    def _candidates(
+        self, excluded_backends: Iterable[str] = ()
+    ) -> list[AIModel]:
+        return [
+            b.models[self.model_id]
+            for b in self.pool.backends
+            if self.model_id in b.models
+            and b.models[self.model_id].is_loaded
+            and b.url not in excluded_backends
+        ]
+
+    async def acquire(
+        self, excluded_backends: Iterable[str] = ()
+    ) -> AIModel | None:
+        deadline = utils.now() + datetime.timedelta(seconds=120)
+        async with self.lock:
+            # Ok, we got the lock - we're the next allowed to acquire a free slot.
+            # This may take a while and we might not find one right now, but we're
+            # still next, so that's why we keep the lock maybe longer.
+            while candidates := self._candidates(excluded_backends):
+                available = [m for m in candidates if m.in_progress < m.limit]
+                if not available:
+                    timeout = (deadline - utils.now()).total_seconds()
+                    if timeout < 0:
+                        return
+                    try:
+                        await asyncio.wait_for(
+                            self.released.wait(), timeout=timeout
+                        )
+                        self.released.clear()
+                    except asyncio.TimeoutError:
+                        return
+
+                best = min(available, key=lambda m: m.in_progress)
+                best.in_progress += 1
+                best.idle.clear()
+                return best
+
+    async def release(self, model: AIModel) -> None:
+        """Release a used slot in a model."""
+        model.in_progress -= 1
+        if model.in_progress == 0:
+            model.idle.set()
+        self.released.set()
+
+    @contextlib.asynccontextmanager
+    async def use(self, excluded_backends: Iterable[str] = ()):
+        model = await self.acquire(excluded_backends)
+        try:
+            yield model.backend if model else None
+        finally:
+            if model:
+                await self.release(model)
 
 
 class Pool:
     backends: list["Backend"]
-    health_check_tasks: list[asyncio.Task[None]]
     tasks: TaskManager
-    queues: dict[str, asyncio.Queue[ProxyRequest]]  # one queue per model
+    semaphores: dict[str, ModelSemaphore]
 
     # Protect against multiple operations performing larger scale
     # model management tasks like loading/unloading over multiple backends.
@@ -40,306 +102,167 @@ class Pool:
     # loading/unloading models mixed throughout as this will cause confusion
     model_management_lock: asyncio.Lock
 
-    def __init__(self):
-        self.backends = []
+    def __init__(
+        self,
+        model_configs: Iterable[ModelInstanceConfig] = (),
+        backends: Iterable["Backend"] = (),
+    ):
         self.tasks = TaskManager()
-        self.queues = {}
+        self.semaphores = {}
 
-        # This keeps track of the globally known model IDs
-        self.models: set[str] = set()
+        # Model configurations from config file
+        self.model_configs: dict[str, ModelInstanceConfig] = {
+            m.id: m for m in model_configs
+        }
 
         self.model_management_lock = asyncio.Lock()
 
-    def add_backend(self, backend: "Backend"):
-        self.backends.append(backend)
-        self.tasks.create(backend.monitor_health_and_update_models)
+        for model_id in self.model_configs:
+            self.semaphores[model_id] = ModelSemaphore(model_id, self)
 
-    def update_model_maps(self):
-        # XXX the same model must not be owned by different organizations!
-        # This requires a bit more thought how to handle consistency if
-        # backends answer with conflicting/differing model data.
+        self.backends = []
+        for backend in backends:
+            self.backends.append(backend)
+            backend.pool = self
+            self.tasks.create(backend.monitor_health_and_update_models)
 
-        current_backend_models: set[str] = set()
+    def placement_map(self) -> dict[str, set[str]]:
+        """Create a placement map of "which model should go where."
+
+        The idea here is that we have a stable sorting that doesn't flap around too much
+        when backends disappear and come back.
+
+        Returns a map of backend IDs -> set of model ids to be loaded there.
+
+        """
+        available_resources: dict[str, dict[str, int]] = (
+            {}
+        )  # backend -> resource_type -> total resource
+        map: dict[str, set[str]] = {}
+        # Fill the usage projection with the total memory.
         for backend in self.backends:
-            current_backend_models.update(backend.models.keys())
+            available_resources[backend.url] = resources = {}
+            for resource, params in backend.memory.items():
+                resources[resource] = params["total"]
+            map[backend.url] = set()
 
-        new_models = current_backend_models - self.models
-        deleted_models = self.models - current_backend_models
+        log.info("resources", resources=available_resources)
 
-        # Add new models
-        for model_id in new_models:
-            self.queues[model_id] = asyncio.Queue()
-            self.tasks.create(
-                self.assign_backends, args=(model_id,), id=f"{model_id}:queue"
-            )
-
-        # Cleanup after deleted models
-        for task_id in self.tasks.unique_task_map.keys():
-            model_id, _ = task_id.split(":")
-            if model_id in deleted_models:
-                self.tasks.cancel(task_id)
-        for model_id in deleted_models:
-            del self.queues[model_id]
-
-        self.models = current_backend_models
-
-        # Ensure reserved instances for remaining models
-        for model_id in self.models:
-            self.ensure_reserved_instance(model_id)
-
-    def ensure_reserved_instance(self, model_id: str):
-        """Ensure there is at least 1 instance of this model running."""
-        if any(
-            model_id in b.models and b.models[model_id].is_loaded
-            for b in self.backends
+        for model in sorted(
+            self.model_configs.values(),
+            key=lambda m: m.total_size(),
+            reverse=True,
         ):
-            return
-        self.tasks.create(
-            self.add_model_instance,
-            args=(model_id,),
-            id=f"{model_id}:add_model_instance",  # needs to be consistent with continuous assignment
-        )
-
-        # XXX testing code
-        # async def trigger_unload():
-        #     await asyncio.sleep(20)
-        #     log.warning("unloading models")
-        #     for backend in self.backends:
-        #         for model_id in backend.models:
-        #             log.warning(f"unloading {backend.url} {model_id}")
-        #             await backend.unload_model(model_id)
-
-        # self.tasks.create(trigger_unload)
-
-    def find_backends_for_new_model_instance(
-        self, model_id: str
-    ) -> list["Backend"]:
-        """Find backends that could host a new instance of a given model.
-
-        Backends that already run the model are excluded and backends that do not
-        have sufficient space are excluded, too.
-
-        Return a list of backends ordered by best fitness first.
-
-        """
-        candidate_backends = [
-            (b, b.models[model_id].fit_score())
-            for b in self.backends
-            if model_id in b.models
-            and not b.models[model_id].is_loaded
-            and b.models[model_id].fits_generally()
-        ]
-        # Eliminate backends where the score is 0
-        candidate_backends = list(
-            filter(lambda b: b[1] > 0, candidate_backends)
-        )
-        candidate_backends.sort(key=lambda b: b[1], reverse=True)
-        for b, score in candidate_backends:
-            log.debug("model eval", model=model_id, backend=b.url, score=score)
-        return [b[0] for b in candidate_backends]
-
-    async def add_model_instance(self, model_id: str):
-        """Try to add a(nother) instance of this model.
-
-        WARNING: This method should be called using the task manager with a
-        unique id as it doesn't make sense to have it called multiple times
-        concurrently.
-
-        Models are only placed on servers where the model is not yet loaded.
-
-        We prefer putting models on servers that have the best fitness (see `AIModel.fit_score()`).
-
-        If there is no room, then we will try to make room.
-
-        We retry up to 3 times, but give up after that.
-
-        """
-        retry = 0
-        async with self.model_management_lock:
-            candidate_backends = self.find_backends_for_new_model_instance(
-                model_id
-            )
-            while not candidate_backends and retry < 3:
-                retry += 1
-                await self.make_room(model_id)
-                candidate_backends = self.find_backends_for_new_model_instance(
-                    model_id
-                )
-
-            if not candidate_backends:
-                log.error("no backend available to load model", model=model_id)
-                return
-            await candidate_backends[0].load_model(model_id)
-
-    async def make_room(self, model_id: str):
-        """Make room in the cluster to fit the given model.
-
-        This likely always should be called while holding the model management lock.
-
-        """
-        candidate_backends = [
-            b
-            for b in self.backends
-            if model_id in b.models
-            and not b.models[model_id].is_loaded
-            and b.models[model_id].fits_generally()
-        ]
-        candidate_backends.sort(
-            key=lambda b: b.models[model_id].fit_score(), reverse=True
-        )
-        # We could assume the fitness is 0, but maybe something changed in between,
-        # so we can just check that.
-        for backend in candidate_backends:
-            while True:
-                if backend.models[model_id].fit_score() > 0:
-                    # There should be sufficient space now!
-                    return
-
-                def loaded_instances(model_id: str) -> int:
-                    counter = 0
-                    for backend in self.backends:
-                        if model_id not in backend.models:
-                            continue
-                        if backend.models[model_id].is_loaded:
-                            counter += 1
-                    return counter
-
-                # Try to find a model that has
-                # - more than 1 instance
-                # - has not been used in the last 60 seconds
-                now = utils.now()
-                unload_candidates = [
-                    m
-                    for m in backend.models.values()
-                    if m.is_loaded
-                    and loaded_instances(m.id) > 1
-                    and (now - m.last_used > datetime.timedelta(seconds=60))
-                ]
-
-                if not unload_candidates:
-                    # No progress to be made here.
-                    break
-
-                # try to unload smaller models first. This is likely not a perfect strategy
-                # but avoids unnecessarily unloading very large models.
-
-                unload_candidates.sort(key=lambda m: m.total_size())
-                await backend.unload_model(unload_candidates[0].id)
-
-    async def assign_backends(self, model_id: str):
-        """Continuously assign requests to backends.
-
-        All requests for this model are seen here in a serialized
-        fashion and then we send them off for processing outside
-        of this loop.
-
-        At the same time we peek forward into the buffer to ensure
-        we can send off multiple requests to the same backend quickly
-        after each other to help with batching on the backends, too.
-
-        """
-        while True:
-            log.debug("waiting for request", model=model_id)
-            queue = self.queues[model_id]
-            request_batch = [await queue.get()]
-
-            log.debug("got request", model=model_id)
-
-            # 1. Try up to 3 seconds to locate a free backend. As we're in a serialized loop here
-            # we don't have to pay attention whether other requests are coming in for now.
+            log.info("placing model", model=model.id, size=model.total_size())
+            unplaced_instances = model.instances
             candidates = [
-                b.models[model_id]
-                for b in self.backends
-                if model_id in b.models
-                and b.url not in request_batch[0].excluded_backends
+                b for b in self.backends if b.healthy and model.id in b.models
             ]
-
-            if not candidates:
-                # All backends excluded for this request
-                for request in request_batch:
-                    request.error = HTTPException(
-                        503, "All available backends excluded for this request."
-                    )
-                    request.backend_available.set()
-                continue
-
-            log.info("waiting for first idle backend", model=model_id)
-            done, pending = await asyncio.wait(
-                [asyncio.create_task(b.wait_for_idle()) for b in candidates],
-                timeout=3,
-                return_when=asyncio.FIRST_COMPLETED,
+            candidates.sort(
+                key=lambda b: (
+                    b.models[model.id].fit_score(available_resources[b.url]),
+                    b.url,
+                ),
+                reverse=True,
             )
-
-            for p in pending:
-                p.cancel()
-
-            if not done:
+            for backend in candidates:
                 log.info(
-                    "no idle backend found, starting another instance",
-                    model=model_id,
+                    "considering backend",
+                    backend=backend.url,
+                    score=backend.models[model.id].fit_score(
+                        available_resources[backend.url]
+                    ),
                 )
-                # 2. We didn't get an idle backend within 3 seconds so we start another one
-                self.tasks.create(
-                    self.add_model_instance,
-                    args=(model_id,),
-                    id=f"{model_id}:add_model_instance",  # needs to be consistent with warmup
-                )
-                log.info("waiting for idle backend (2)", model=model_id)
-                # 3. And now we wait longer. There's a timeout to ensure we do not
-                # get stuck infinitely here, but loading models can take time.
-                done, pending = await asyncio.wait(
-                    [
-                        asyncio.create_task(b.wait_for_idle())
-                        for b in candidates
-                    ],
-                    timeout=120,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-
-            try:
-                model = list(done)[0].result()
-            except Exception:
-                log.exception(
-                    "An error occured waiting for an idle backend, starting over."
-                )
-                for r in request_batch:
-                    await self.queues[model_id].put(r)
-                continue
-            log.debug(
-                "got idle backend", backend=model.backend.url, model=model_id
-            )
-
-            log.debug("gathering more batchable requests", model=model_id)
-            # Wait a bit to gather more requests that might have piled up.
-            more_request_tasks = await asyncio.gather(
-                *[
-                    asyncio.wait_for(queue.get(), 0.05)
-                    for _ in range(model.limit - 1)
-                ],
-                return_exceptions=True,
-            )
-            request_batch.extend(
-                [
-                    t
-                    for t in more_request_tasks
-                    if not isinstance(t, BaseException)
-                ]
-            )
-            log.debug("got request batch", size=len(request_batch))
-            for request in request_batch:
-                # Skip requests that can't use this backend
-                if model.backend.url in request.excluded_backends:
-                    await queue.put(request)
+                use_this_backend = True
+                # First pass: check whether this model fits here.
+                for resource in available_resources[backend.url]:
+                    available = available_resources[backend.url][resource]
+                    required = model.memory[resource]
+                    if required > available:
+                        log.info(
+                            "ignoring overloaded backend",
+                            required=required,
+                            available=available,
+                        )
+                        use_this_backend = False
+                        break
+                if not use_this_backend:
                     continue
-                log.debug(
-                    "assigning request to backend",
-                    model=model_id,
-                    backend=model.backend.url,
+                # Make a second pass to update the usage map.
+                for resource in available_resources[backend.url]:
+                    available_resources[backend.url][resource] -= model.memory[
+                        resource
+                    ]
+                map[backend.url].add(model.id)
+                unplaced_instances -= 1
+                if not unplaced_instances:
+                    break
+            if unplaced_instances:
+                log.warning(
+                    "Could not place sufficient model instances in pool",
+                    model=model.id,
+                    desired=model.instances,
+                    unplaced=unplaced_instances,
                 )
-                model.in_progress += 1
-                model.idle = False
-                request.model = model
-                request.backend_available.set()
+        return map
+
+    async def rebalance(self) -> None:
+        """Rebalance model instances across backends to match desired state."""
+        async with self.model_management_lock:
+            map = self.placement_map()
+            log.info("New model distribution map", map=map)
+
+            # We need to unload models before loading models to ensure sufficient
+            # resources. However, we can optimize the impact by processing those
+            # hosts with the fewest required unloads first, to reduce the risk of
+            # taking the last instance of a model down completely.
+
+            actions: dict[str, dict[str, set[str]]] = (
+                {}
+            )  # backend -> load/unload -> set of model names
+
+            for backend in self.backends:
+                wanted_models = map[backend.url]
+                actions[backend.url] = dict(load=set(), unload=set())
+                for model in backend.models.values():
+                    action = None
+                    if model.is_loaded and model.id not in wanted_models:
+                        action = "unload"
+                    if not model.is_loaded and model.id in wanted_models:
+                        action = "load"
+                    if not action:
+                        continue
+                    actions[backend.url][action].add(model.id)
+            log.info("Map actions", actions=actions)
+
+            # Perform the actions, backend by backend. First trigger all unloads,
+            # then all loads. Wait for the loads to finish, too, to avoid unnecessary
+            # downtimes.
+            for backend in sorted(
+                self.backends, key=lambda b: len(actions[b.url]["unload"])
+            ):
+                tasks: list[asyncio.Task[Any]] = []
+                for model_id in actions[backend.url]["unload"]:
+                    tasks.append(
+                        self.tasks.create(backend.unload_model, (model_id,))
+                    )
+                await asyncio.gather(*tasks)
+                tasks.clear()
+                for model_id in actions[backend.url]["load"]:
+                    tasks.append(
+                        self.tasks.create(backend.load_model, (model_id,))
+                    )
+                await asyncio.gather(*tasks)
+        log.info("done rebalancing")
+
+    def count_loaded_instances(self, model_id: str) -> int:
+        count = 0
+        for backend in self.backends:
+            if model_id not in backend.models:
+                continue
+            if backend.models[model_id].is_loaded:
+                count += 1
+        return count
 
     def report_map(self) -> dict[Any, Any]:
         """Return a report map of the status of known backends and models"""
@@ -351,38 +274,9 @@ class Pool:
             for model in backend.models.values():
                 br["models"][model.id] = {
                     "loaded": model.is_loaded,
-                    "last-used": model.last_used,
                     "memory": model.memory_usage,
                 }
         return report
 
     def close(self):
         self.tasks.terminate()
-
-    @contextlib.asynccontextmanager
-    async def use(
-        self, model_id: str, excluded_backends: set[str] | None = None
-    ):
-        request = ProxyRequest(excluded_backends=excluded_backends)
-        assert model_id in self.queues
-        log.debug("queueing request", model=model_id)
-        queue = self.queues[model_id]
-        await queue.put(request)
-
-        # Update queue size metric
-        metrics.gateway_active_requests.labels(model=model_id).inc()
-
-        log.debug("waiting for backend to become available", model=model_id)
-        await request.backend_available.wait()
-        if request.error:
-            metrics.gateway_active_requests.labels(model=model_id).dec()
-            raise request.error
-        assert request.model is not None
-        log.debug(
-            "got backend", backend=request.model.backend.url, model=model_id
-        )
-        try:
-            async with request.model.use():
-                yield request.model.backend
-        finally:
-            metrics.gateway_active_requests.labels(model=model_id).dec()
