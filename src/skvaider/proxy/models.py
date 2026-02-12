@@ -1,12 +1,8 @@
 import asyncio
-import contextlib
-import datetime
-from typing import Any, Self
+from typing import Any
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
-
-from skvaider import utils
 
 from .backends import Backend
 
@@ -23,43 +19,49 @@ class AIModel(BaseModel):
     created: int = 0
     owned_by: str
 
-    backend: Backend = Field(exclude=True)
-    last_used: datetime.datetime = Field(
-        default=utils.datetime_min, exclude=True
-    )
-    in_progress: int = Field(default=0, exclude=True)
-    limit: int = Field(default=5, exclude=True)
-    is_loaded: bool = Field(default=False, exclude=True)
-    memory_usage: dict[str, int] = Field(default_factory=dict, exclude=True)
     log: Any = Field(default=None, exclude=True)
 
-    __idle: asyncio.Event
+    backend: Backend = Field(exclude=True)
+    is_loaded: bool = Field(default=False, exclude=True)
+    memory_usage: dict[str, int] = Field(default_factory=dict, exclude=True)
+
+    limit: int = Field(default=1, exclude=True)
+    in_progress: int = Field(default=0, exclude=True)
+
+    # Urks, I hate this.
+    idle: asyncio.Event = Field(default_factory=asyncio.Event, exclude=True)
 
     def __init__(self, *args: Any, **kw: Any) -> None:
         super().__init__(*args, **kw)
-        self.__idle = asyncio.Event()
-        self.__idle.set()
         self.log = log.bind(model=self.id, backend=self.backend.url)
+        self.idle = asyncio.Event()
+        self.idle.set()
 
     @property
-    def idle(self) -> bool:
-        return self.__idle.is_set()
-
-    @idle.setter
-    def idle(self, value: bool) -> None:
-        if value:
-            self.__idle.set()
-        else:
-            self.__idle.clear()
-
-    async def wait_for_idle(self) -> Self:
-        await self.__idle.wait()
-        return self
+    def configured_memory(self) -> dict[str, int]:
+        """Get the configured memory for this model from pool config."""
+        config = self.backend.pool.model_configs.get(self.id)
+        if config is None:
+            return {}
+        return config.memory
 
     def total_size(self) -> int:
-        return sum(self.memory_usage.values())
+        return sum(self.configured_memory.values())
 
-    def fit_score(self) -> float:
+    def check_memory_usage(self) -> dict[str, tuple[int, int]]:
+        """Check actual vs configured memory usage.
+
+        Returns a dict of resource -> (actual, configured) for resources
+        where actual exceeds configured.
+        """
+        exceeding: dict[str, tuple[int, int]] = {}
+        for resource, actual in self.memory_usage.items():
+            configured = self.configured_memory.get(resource, 0)
+            if actual > configured:
+                exceeding[resource] = (actual, configured)
+        return exceeding
+
+    def fit_score(self, resources: dict[str, int] | None = None) -> float:
         """A score (higher) is better how well this model fits or would fit on it's backend
         compared to the same model on other backends.
 
@@ -77,42 +79,21 @@ class AIModel(BaseModel):
         If no data is available or the model doesn't fit, we return 0 as to not load this
         model until we have sufficient data.
 
+        If `resources` is given, calculate the score based on that, otherwise check
+        the backend's free resources.
+
         """
         score = 0.0
-        for backend, usage in self.memory_usage.items():
+        for resource, usage in self.configured_memory.items():
             if usage == 0:
                 continue
-            available = self.backend.memory.get(backend, {}).get("free", 0)
+            if resources:
+                available = resources.get(resource, 0)
+            else:
+                available = self.backend.memory.get(resource, {}).get("free", 0)
             if self.is_loaded:
                 available += usage
             if available < usage:
                 continue
             score += 1 - (usage / available)
         return score
-
-    def fits_generally(self) -> bool:
-        """Check whether this model fits on this backend at all."""
-        for backend, usage in self.memory_usage.items():
-            if usage == 0:
-                continue
-            total = self.backend.memory.get(backend, {}).get("total", 0)
-            if total <= usage:
-                return False
-        return True
-
-    @contextlib.asynccontextmanager
-    async def use(self):
-        try:
-            self.last_used = utils.now()
-            yield
-        finally:
-            self.last_used = utils.now()
-            self.in_progress -= 1
-            self.log.debug("done", in_progress=self.in_progress)
-            if not self.in_progress:
-                self.log.debug("idling")
-                self.idle = True
-
-    async def wait(self):
-        await self.__idle.wait()
-        return self

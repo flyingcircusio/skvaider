@@ -24,6 +24,7 @@ def model_info(model: Model, manager: Manager) -> JSONObject:
     return {
         "id": model.config.id,
         "status": list(model.status),
+        "parallel_slots": model.config.parallel_slots,
         "memory_usage": {
             monitor.id: monitor.model_usage(model)
             for monitor in manager.monitors.values()

@@ -1,179 +1,341 @@
-import asyncio
-
-from skvaider import utils
+from skvaider.config import ModelInstanceConfig, parse_size
+from skvaider.utils import TaskManager
 
 from ..backends import DummyBackend
 from ..models import AIModel
 from ..pool import Pool
 
 
-async def wait_for_cancelled_tasks():
-    tasks = [
-        t
-        for t in asyncio.all_tasks()
-        if t is not asyncio.current_task() and t.cancelling()
-    ]
+async def test_maps_only_includes_desired_models(
+    task_managers: list[TaskManager],
+):
 
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-
-async def test_update_model_maps():
-    pool = Pool()
-    assert pool.tasks.count == 0
-
-    backend = DummyBackend("http://example.com/", pool)
-    pool.add_backend(backend)
-    assert pool.tasks.count == 1
+    backend = DummyBackend("http://example.com/")
+    backend.healthy = True
 
     model1 = AIModel(id="m1", owned_by="fcio", backend=backend)
-    model1.memory_usage = {"cpu": 1}
+    model1.memory_usage = {"ram": 1}
+    model2 = AIModel(id="m2", owned_by="fcio", backend=backend)
+    model2.memory_usage = {"ram": 1}
+
+    backend.memory = {"ram": {"free": 1025, "total": 1024}}
+    backend.models["m1"] = model1
+    backend.models["m2"] = model2
+
+    pool = Pool(
+        [ModelInstanceConfig(id="m1", instances=1, memory={"ram": 1})],
+        [backend],
+    )
+    task_managers.append(pool.tasks)
+    await pool.rebalance()
+
+    assert pool.model_configs.keys() == {"m1"}
+    assert "m1" in pool.semaphores
+    assert "m2" not in pool.semaphores
+
+
+async def test_rebalance_loads_desired_instances(
+    task_managers: list[TaskManager],
+):
+    """rebalance loads model instances to match desired count."""
+    backend = DummyBackend("http://example.com/")
+    backend.healthy = True
+    backend.memory = {"ram": {"free": 1024, "total": 1024}}
+
+    model1 = AIModel(id="m1", owned_by="fcio", backend=backend)
+    model1.memory_usage = {"ram": 100}
+    backend.models["m1"] = model1
+
     assert not model1.is_loaded
 
-    model2 = AIModel(id="m2", owned_by="fcio", backend=backend)
-    model2.memory_usage = {"cpu": 1}
-    assert not model2.is_loaded
+    pool = Pool(
+        [ModelInstanceConfig(id="m1", instances=1, memory={"ram": 100})],
+        [backend],
+    )
+    task_managers.append(pool.tasks)
 
-    backend.memory = {"cpu": {"free": 1024, "total": 1024}}
-
-    assert not pool.models
-    pool.update_model_maps()
-    assert not pool.models
-
-    # Add a model
-    backend.models["m1"] = model1
-    pool.update_model_maps()
-    assert pool.tasks.count == 3
-    await pool.tasks.unique_task_map["m1:add_model_instance"]
-    assert pool.tasks.count == 2
-    assert pool.tasks.unique_task_map.keys() == {
-        "m1:queue",
-    }
-    assert pool.models == {"m1"}
+    await pool.rebalance()
     assert model1.is_loaded
 
-    # Add another model
-    backend.models["m2"] = model2
-    pool.update_model_maps()
-    assert pool.tasks.count == 4
-    await pool.tasks.unique_task_map["m2:add_model_instance"]
-    assert pool.tasks.count == 3
-    assert pool.tasks.unique_task_map.keys() == {
-        "m1:queue",
-        "m2:queue",
+
+async def test_rebalance_distributes_across_backends(
+    task_managers: list[TaskManager],
+):
+    """rebalance loads instances across multiple backends."""
+
+    backend1 = DummyBackend("http://example.com/1")
+    backend1.healthy = True
+    backend1.memory = {"ram": {"free": 500, "total": 500}}
+
+    backend2 = DummyBackend("http://example.com/2")
+    backend2.healthy = True
+    backend2.memory = {"ram": {"free": 500, "total": 500}}
+
+    model1_b1 = AIModel(id="m1", owned_by="fcio", backend=backend1)
+    model1_b1.memory_usage = {"ram": 100}
+    backend1.models["m1"] = model1_b1
+
+    model1_b2 = AIModel(id="m1", owned_by="fcio", backend=backend2)
+    model1_b2.memory_usage = {"ram": 100}
+    backend2.models["m1"] = model1_b2
+
+    pool = Pool(
+        [ModelInstanceConfig(id="m1", instances=2, memory={"ram": 100})],
+        [backend1, backend2],
+    )
+    task_managers.append(pool.tasks)
+
+    await pool.rebalance()
+
+    assert model1_b1.is_loaded
+    assert model1_b2.is_loaded
+    assert pool.count_loaded_instances("m1") == 2
+
+
+async def test_rebalance_unloads_excess_instances(
+    task_managers: list[TaskManager],
+):
+    """rebalance unloads instances when there are more than desired."""
+    backend1 = DummyBackend("http://example.com/1")
+    backend1.healthy = True
+    backend1.memory = {
+        "ram": {"free": parse_size("500K"), "total": parse_size("500K")}
     }
-    assert pool.models == {"m1", "m2"}
-    assert model2.is_loaded
 
-    # Remove a model
-    del backend.models["m2"]
-    pool.update_model_maps()
-    await wait_for_cancelled_tasks()
-    assert pool.tasks.count == 2
-    assert pool.tasks.unique_task_map.keys() == {
-        "m1:queue",
+    backend2 = DummyBackend("http://example.com/2")
+    backend2.healthy = True
+    backend2.memory = {
+        "ram": {"free": parse_size("500K"), "total": parse_size("500K")}
     }
-    assert pool.models == {"m1"}
 
-    # Remove last model
-    del backend.models["m1"]
-    pool.update_model_maps()
-    await wait_for_cancelled_tasks()
-    assert pool.tasks.count == 1
-    assert not pool.tasks.unique_task_map
-    assert not pool.models
+    model1_b1 = AIModel(id="m1", owned_by="fcio", backend=backend1)
+    model1_b1.memory_usage = {"ram": parse_size("100K")}
+    backend1.models["m1"] = model1_b1
+
+    model1_b2 = AIModel(id="m1", owned_by="fcio", backend=backend2)
+    model1_b2.memory_usage = {"ram": parse_size("100K")}
+    backend2.models["m1"] = model1_b2
+
+    model1_config = ModelInstanceConfig(
+        id="m1", instances=2, memory={"ram": parse_size("100K")}
+    )
+
+    pool = Pool([model1_config], [backend1, backend2])
+    task_managers.append(pool.tasks)
+
+    await pool.rebalance()
+    assert pool.count_loaded_instances("m1") == 2
+
+    pool.model_configs["m1"].instances = 1
+    await pool.rebalance()
+    assert pool.count_loaded_instances("m1") == 1
 
 
-async def test_add_model_instance_gives_up():
-    pool = Pool()
-    backend = DummyBackend("http://example.com/", pool)
-    pool.add_backend(backend)
-    assert pool.tasks.count == 1
+async def test_rebalance_respects_capacity(task_managers: list[TaskManager]):
+    backend = DummyBackend("http://example.com/")
+    backend.healthy = True
+    backend.memory = {
+        "ram": {"free": parse_size("150K"), "total": parse_size("150K")}
+    }
 
     model1 = AIModel(id="m1", owned_by="fcio", backend=backend)
-    model1.memory_usage = {"cpu": 1}
-    assert not model1.is_loaded
-
-    # The model won't fit.
-    backend.memory = {"cpu": {"free": 0, "total": 0}}
-
+    model1.memory_usage = {"ram": parse_size("100K")}
     backend.models["m1"] = model1
-    pool.update_model_maps()
-    await pool.tasks.unique_task_map["m1:add_model_instance"]
-    assert pool.tasks.count == 2
-    assert pool.tasks.unique_task_map.keys() == {
-        "m1:queue",
+
+    model2 = AIModel(id="m2", owned_by="fcio", backend=backend)
+    model2.memory_usage = {"ram": parse_size("100K")}
+    backend.models["m2"] = model2
+
+    model1_config = ModelInstanceConfig(
+        id="m1", instances=1, memory={"ram": parse_size("100K")}
+    )
+    model2_config = ModelInstanceConfig(
+        id="m2", instances=1, memory={"ram": parse_size("100K")}
+    )
+    pool = Pool([model1_config, model2_config], [backend])
+    task_managers.append(pool.tasks)
+    await pool.rebalance()
+
+    total_loaded = pool.count_loaded_instances(
+        "m1"
+    ) + pool.count_loaded_instances("m2")
+    assert total_loaded == 1
+
+
+async def test_rebalance_handles_unhealthy_backend(
+    task_managers: list[TaskManager],
+):
+    """rebalance ignores unhealthy backends."""
+    backend1 = DummyBackend("http://example.com/1")
+    backend1.healthy = True
+    backend1.memory = {
+        "ram": {"free": parse_size("500K"), "total": parse_size("500K")}
     }
-    assert not model1.is_loaded
+
+    backend2 = DummyBackend("http://example.com/2")
+    backend2.healthy = False
+    backend2.memory = {
+        "ram": {"free": parse_size("500K"), "total": parse_size("500K")}
+    }
+
+    model1_b1 = AIModel(id="m1", owned_by="fcio", backend=backend1)
+    model1_b1.memory_usage = {"ram": parse_size("100K")}
+    backend1.models["m1"] = model1_b1
+
+    model1_b2 = AIModel(id="m1", owned_by="fcio", backend=backend2)
+    model1_b2.memory_usage = {"ram": parse_size("100K")}
+    backend2.models["m1"] = model1_b2
+
+    model1_config = ModelInstanceConfig(
+        id="m1", instances=2, memory={"ram": parse_size("100K")}
+    )
+    pool = Pool([model1_config], [backend1, backend2])
+    task_managers.append(pool.tasks)
+
+    await pool.rebalance()
+    assert model1_b1.is_loaded
+
+    assert not model1_b2.is_loaded
+    assert pool.count_loaded_instances("m1") == 1
 
 
-async def test_make_room():
-    pool = Pool()
+async def test_rebalance_after_backend_becomes_healthy(
+    task_managers: list[TaskManager],
+):
+    backend1 = DummyBackend("http://example.com/1")
+    backend1.healthy = True
+    backend1.memory = {
+        "ram": {"free": parse_size("200K"), "total": parse_size("200K")}
+    }
 
-    backends: dict[int, DummyBackend] = {}
-    models: dict[tuple[int, int], AIModel] = dict()
+    backend2 = DummyBackend("http://example.com/2")
+    backend2.healthy = False
+    backend2.memory = {
+        "ram": {"free": parse_size("200K"), "total": parse_size("200K")}
+    }
 
-    # First backend will load all models
-    backends[0] = b = DummyBackend("http://example.com/0", pool)
-    pool.add_backend(b)
-    b.memory = {"ram": {"free": 1001, "total": 1001}}
+    model1_b1 = AIModel(id="m1", owned_by="fcio", backend=backend1)
+    model1_b1.memory_usage = {"ram": parse_size("100K")}
+    backend1.models["m1"] = model1_b1
 
-    for i_m in range(5):
-        models[(0, i_m)] = m = AIModel(
-            id=f"m_{i_m}", owned_by="fcio", backend=b
-        )
-        m.memory_usage = {"ram": 250}
+    model1_b2 = AIModel(id="m1", owned_by="fcio", backend=backend2)
+    model1_b2.memory_usage = {"ram": parse_size("100K")}
+    backend2.models["m1"] = model1_b2
 
-        if i_m < 4:
-            b.models[m.id] = m
-            pool.update_model_maps()
-            await pool.tasks.unique_task_map[f"{m.id}:add_model_instance"]
-            assert m.is_loaded
+    model1_config = ModelInstanceConfig(
+        id="m1", instances=2, memory={"ram": parse_size("100K")}
+    )
+    pool = Pool([model1_config], [backend1, backend2])
+    task_managers.append(pool.tasks)
 
-    # We can fit 4 models in the pool and then we have to make room for the 5th. Note: we never
-    # allocate the last byte (to keep the math in fit_score() simpler).
+    await pool.rebalance()
+    assert pool.count_loaded_instances("m1") == 1
 
-    # Second backend is empty for now. Lets also load all 4 first models there
-    backends[1] = b = DummyBackend("http://example.com/1", pool)
-    b.memory = {"ram": {"free": 1001, "total": 1001}}
-    pool.add_backend(b)
-    for i_m in range(5):
-        models[(1, i_m)] = m = AIModel(
-            id=f"m_{i_m}", owned_by="fcio", backend=b
-        )
-        m.memory_usage = {"ram": 250}
+    backend2.healthy = True
+    await pool.rebalance()
+    assert pool.count_loaded_instances("m1") == 2
+    assert model1_b1.is_loaded
+    assert model1_b2.is_loaded
 
-        if i_m < 4:
-            b.models[m.id] = m
-            pool.update_model_maps()
-            await pool.add_model_instance(m.id)
-            assert m.is_loaded
 
-    assert backends[0].memory == {"ram": {"free": 1, "total": 1001}}
-    assert backends[1].memory == {"ram": {"free": 1, "total": 1001}}
+async def test_rebalance_after_backend_becomes_unhealthy(
+    task_managers: list[TaskManager],
+):
+    """When backend becomes unhealthy, its models don't count."""
 
-    loaded_models_1 = set([m.id for m in models.values() if m.is_loaded])
+    backend1 = DummyBackend("http://example.com/1")
+    backend1.healthy = True
+    backend1.memory = {
+        "ram": {"free": parse_size("200K"), "total": parse_size("200K")}
+    }
 
-    backends[0].models["m_4"] = models[(0, 4)]
-    pool.update_model_maps()
-    # This will trigger trying to load model 8, but that won't happen
-    # as the other models have only just been loaded.
-    await pool.tasks.unique_task_map["m_4:add_model_instance"]
-    loaded_models_2 = set([m.id for m in models.values() if m.is_loaded])
-    assert loaded_models_1 == loaded_models_2
-    assert not models[(0, 4)].is_loaded
+    backend2 = DummyBackend("http://example.com/2")
+    backend2.healthy = True
+    backend2.memory = {
+        "ram": {"free": parse_size("200K"), "total": parse_size("200K")}
+    }
 
-    # Now, set the last used flag of an already loaded model on backend 0
-    # and then explicitly try to load model 4 again.
-    loaded = [
-        m for m in models.values() if m.is_loaded and m.backend is backends[0]
-    ][0]
-    loaded.last_used = utils.datetime_min
-    not_loaded = models[(0, 4)]
-    pool.ensure_reserved_instance(not_loaded.id)
-    await pool.tasks.unique_task_map["m_4:add_model_instance"]
-    assert not loaded.is_loaded
-    assert not_loaded.is_loaded
+    model1_b1 = AIModel(id="m1", owned_by="fcio", backend=backend1)
+    model1_b1.memory_usage = {"ram": parse_size("100K")}
+    backend1.models["m1"] = model1_b1
 
-    assert backends[0].memory == {"ram": {"free": 1, "total": 1001}}
-    assert backends[1].memory == {"ram": {"free": 1, "total": 1001}}
+    model1_b2 = AIModel(id="m1", owned_by="fcio", backend=backend2)
+    model1_b2.memory_usage = {"ram": parse_size("100K")}
+    backend2.models["m1"] = model1_b2
+
+    model1_config = ModelInstanceConfig(
+        id="m1", instances=2, memory={"ram": parse_size("100K")}
+    )
+    pool = Pool([model1_config], [backend1, backend2])
+    task_managers.append(pool.tasks)
+
+    await pool.rebalance()
+    assert pool.count_loaded_instances("m1") == 2
+
+    backend2.healthy = False
+
+    await pool.rebalance()
+    assert pool.count_loaded_instances("m1") == 1
+
+
+async def test_complex_rebalance_multiple_models(
+    task_managers: list[TaskManager],
+):
+    """In complex scenarios we want to see that models get moved around."""
+    backend1 = DummyBackend("http://example.com/1")
+    backend1.healthy = True
+    backend1.memory = {
+        "ram": {"free": parse_size("400K"), "total": parse_size("400K")}
+    }
+
+    backend2 = DummyBackend("http://example.com/2")
+    backend2.healthy = True
+    backend2.memory = {
+        "ram": {"free": parse_size("400K"), "total": parse_size("400K")}
+    }
+
+    backend3 = DummyBackend("http://example.com/3")
+    backend3.healthy = True
+    backend3.memory = {
+        "ram": {"free": parse_size("400K"), "total": parse_size("400K")}
+    }
+
+    model1_b1 = AIModel(id="m1", owned_by="fcio", backend=backend1)
+    backend1.models["m1"] = model1_b1
+
+    model1_b2 = AIModel(id="m1", owned_by="fcio", backend=backend2)
+    backend2.models["m1"] = model1_b2
+
+    model1_b3 = AIModel(id="m1", owned_by="fcio", backend=backend3)
+    backend3.models["m1"] = model1_b3
+
+    model2_b1 = AIModel(id="m2", owned_by="fcio", backend=backend1)
+    backend1.models["m2"] = model2_b1
+
+    model2_b2 = AIModel(id="m2", owned_by="fcio", backend=backend2)
+    backend2.models["m2"] = model2_b2
+
+    model2_b3 = AIModel(id="m2", owned_by="fcio", backend=backend3)
+    backend3.models["m2"] = model2_b3
+
+    model1_config = ModelInstanceConfig(
+        id="m1", instances=2, memory={"ram": parse_size("100K")}
+    )
+    model2_config = ModelInstanceConfig(
+        id="m2", instances=2, memory={"ram": parse_size("200K")}
+    )
+    pool = Pool(
+        [model1_config, model2_config],
+        [backend1, backend2, backend3],
+    )
+    task_managers.append(pool.tasks)
+
+    await pool.rebalance()
+    assert pool.count_loaded_instances("m1") == 2
+    assert pool.count_loaded_instances("m2") == 2
+
+    backend2.healthy = False
+    await pool.rebalance()
+
+    assert pool.count_loaded_instances("m1") == 2
+    assert pool.count_loaded_instances("m2") == 2

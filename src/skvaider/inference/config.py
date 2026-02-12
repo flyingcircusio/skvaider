@@ -24,6 +24,7 @@ class ModelConfig(BaseModel):
     id: str
     cmd_args: list[str] = []
     context_size: int = 0
+    parallel_slots: int = 128
     llama_server: Path = Path("llama-server")
     files: list["ModelFile"]
 

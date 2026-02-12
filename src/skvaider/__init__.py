@@ -74,16 +74,16 @@ async def lifespan(
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(global_exception_handler)
 
-    pool = skvaider.proxy.pool.Pool()
+    backends: list[skvaider.proxy.backends.Backend] = []
     for backend_config in config.backend:
         if backend_config.type == "skvaider":
-            pool.add_backend(
-                skvaider.proxy.backends.SkvaiderBackend(
-                    backend_config.url, pool
-                )
+            backends.append(
+                skvaider.proxy.backends.SkvaiderBackend(backend_config.url)
             )
         else:
             raise TypeError(backend_config.type)
+
+    pool = skvaider.proxy.pool.Pool(config.models, backends)
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         skvaider.proxy.pool.Pool, pool
     )

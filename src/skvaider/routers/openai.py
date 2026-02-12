@@ -46,46 +46,48 @@ class OpenAIProxy:
         data: dict[str, Any],
     ) -> Any:
         excluded_backends: set[str] = set()
+        semaphore = self.pool.semaphores[request.state.model]
 
         for attempt in range(self.max_retries):
-            backend = None
-            try:
-                async with self.pool.use(
-                    request.state.model,
-                    excluded_backends=excluded_backends,
-                ) as backend:
+            async with semaphore.use(
+                excluded_backends=excluded_backends
+            ) as backend:
+                if not backend:
+                    break
+                excluded_backends.add(backend.url)
+                try:
                     result = await backend.post(endpoint, data)
-
                     metrics.gateway_backend_requests_total.labels(
-                        backend=backend.url, status="success"
-                    ).inc()
-
-                    return result
-            except HTTPException as e:
-                # Track backend request failure
-                if backend:
-                    metrics.gateway_backend_requests_total.labels(
-                        backend=backend.url, status="error"
-                    ).inc()
-
-                # 540: Backend unavailable
-                if e.status_code == 540 and attempt < self.max_retries - 1:
-                    if backend:
-                        excluded_backends.add(backend.url)
-
-                    metrics.gateway_backend_retry_total.labels(
-                        model=request.state.model, reason="backend_unavailable"
-                    ).inc()
-
-                    log.warning(
-                        "Backend unavailable, retrying",
                         model=request.state.model,
-                        attempt=attempt + 1,
-                        excluded_backends=excluded_backends,
-                    )
-                    continue
-                raise
-        # This should never be reached since we always raise on the last retry
+                        backend=backend.url,
+                        status="success",
+                        endpoint=endpoint,
+                        streaming=False,
+                    ).inc()
+                    return result
+                except HTTPException as e:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url,
+                        model=request.state.model,
+                        status="error",
+                        endpoint=endpoint,
+                        streaming=False,
+                    ).inc()
+                    if e.status_code == 540:  # Backend currently unavailable
+                        metrics.gateway_backend_retry_total.labels(
+                            model=request.state.model,
+                            backend=backend.url,
+                            endpoint=endpoint,
+                            streaming=False,
+                            reason="backend_unavailable",
+                        ).inc()
+                        log.warning(
+                            "Backend unavailable, retrying",
+                            model=request.state.model,
+                            attempt=attempt + 1,
+                            excluded_backends=excluded_backends,
+                        )
+
         raise HTTPException(status_code=503, detail="Service unavailable")
 
     async def _execute_stream_with_retry(
@@ -95,69 +97,76 @@ class OpenAIProxy:
         data: dict[str, Any],
     ) -> StreamingResponse:
         excluded_backends: set[str] = set()
+        semaphore = self.pool.semaphores[request.state.model]
 
         for attempt in range(self.max_retries):
-            context = self.pool.use(
-                request.state.model, excluded_backends=excluded_backends
-            )
-            backend = None
+            context = semaphore.use(excluded_backends=excluded_backends)
+            backend = await context.__aenter__()
+            if backend is None:
+                break
+            excluded_backends.add(backend.url)
             try:
-                backend = await context.__aenter__()
                 stream_aws = backend.post_stream(endpoint, data)
                 first_chunk = await anext(stream_aws)
-
-                # Track backend request success
                 metrics.gateway_backend_requests_total.labels(
-                    backend=backend.url, status="success"
+                    backend=backend.url,
+                    endpoint=endpoint,
+                    model=request.state.model,
+                    status="success",
+                    streaming=True,
                 ).inc()
-
-            except (StopAsyncIteration, HTTPException, Exception) as e:
-                # Cleanup context on error
+            except StopAsyncIteration:
                 await context.__aexit__(None, None, None)
-
                 # Track backend request failure
                 if backend:
                     metrics.gateway_backend_requests_total.labels(
-                        backend=backend.url, status="error"
+                        backend=backend.url,
+                        endpoint=endpoint,
+                        model=request.state.model,
+                        status="error",
+                        streaming=True,
                     ).inc()
-
-                if isinstance(e, StopAsyncIteration):
-                    # Empty stream
-                    return StreamingResponse(
-                        iter([]),
-                        media_type="text/event-stream",
-                        headers={
-                            "Cache-Control": "no-cache",
-                            "Connection": "keep-alive",
-                        },
-                    )
-
-                if (
-                    isinstance(e, HTTPException)
-                    and e.status_code == 540
-                    and attempt < self.max_retries - 1
-                ):
-                    if backend:
-                        excluded_backends.add(backend.url)
-
+                # Empty stream
+                return StreamingResponse(
+                    iter([]),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    },
+                )
+            except HTTPException as e:
+                await context.__aexit__(None, None, None)
+                # Track backend request failure
+                if backend:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url,
+                        endpoint=endpoint,
+                        model=request.state.model,
+                        status="error",
+                        streaming=True,
+                    ).inc()
+                if e.status_code == 540:
                     metrics.gateway_backend_retry_total.labels(
-                        model=request.state.model, reason="backend_unavailable"
+                        backend=backend.url,
+                        endpoint=endpoint,
+                        model=request.state.model,
+                        reason="backend_unavailable",
+                        streaming=True,
                     ).inc()
-
                     log.warning(
                         "Backend unavailable, retrying",
                         model=request.state.model,
                         attempt=attempt + 1,
                         excluded_backends=excluded_backends,
                     )
-                    continue
-                raise
+                continue
 
             # Success
             async def stream(
                 first: str,
                 stream_aws: AsyncGenerator[str],
-                context: AbstractAsyncContextManager[Backend],
+                context: AbstractAsyncContextManager[Backend | None],
             ) -> AsyncGenerator[str]:
                 try:
                     yield first
@@ -175,7 +184,8 @@ class OpenAIProxy:
                     "Connection": "keep-alive",
                 },
             )
-        raise HTTPException(502, "No backend available after retries")
+
+        raise HTTPException(status_code=503, detail="Service unavailable")
 
     async def proxy(
         self,
@@ -191,14 +201,18 @@ class OpenAIProxy:
             "stream", False
         )
 
-        if request.state.model not in self.pool.queues:
+        if request.state.model not in self.pool.model_configs:
             raise HTTPException(
                 400,
-                f"The model `{request.state.model}` is currently not available.",
+                f"The model `{request.state.model}` is not known.",
             )
 
         # Track active requests
-        metrics.gateway_active_requests.labels(model=request.state.model).inc()
+        metrics.gateway_active_requests.labels(
+            model=request.state.model,
+            endpoint=endpoint,
+            streaming=request.state.stream,
+        ).inc()
         start_time = time.time()
         status = "success"
 
@@ -221,14 +235,21 @@ class OpenAIProxy:
         finally:
             # Track request completion
             metrics.gateway_active_requests.labels(
-                model=request.state.model
+                model=request.state.model,
+                endpoint=endpoint,
+                streaming=request.state.stream,
             ).dec()
             duration = time.time() - start_time
             metrics.gateway_request_duration_seconds.labels(
-                model=request.state.model, endpoint=endpoint
+                model=request.state.model,
+                endpoint=endpoint,
+                streaming=request.state.stream,
             ).observe(duration)
             metrics.gateway_requests_total.labels(
-                model=request.state.model, endpoint=endpoint, status=status
+                model=request.state.model,
+                endpoint=endpoint,
+                status=status,
+                streaming=request.state.stream,
             ).inc()
 
 

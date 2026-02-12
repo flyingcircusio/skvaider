@@ -16,6 +16,16 @@ url = "http://127.0.0.1:8001"
 type = "skvaider"
 url = "http://127.0.0.1:8002"
 
+[[models]]
+id = "gemma"
+instances = 2
+memory = { ram = "1.3G" }
+
+[[models]]
+id = "embeddinggemma"
+instances = 1
+memory = { ram = "1.4G" }
+
 [logging]
 log_level = "DEBUG"
 access_log_path = ".access_log"
