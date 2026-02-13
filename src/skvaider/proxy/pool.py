@@ -183,6 +183,8 @@ class Pool:
                             "ignoring overloaded backend",
                             required=required,
                             available=available,
+                            resource=resource,
+                            backend=backend.url,
                         )
                         use_this_backend = False
                         break
