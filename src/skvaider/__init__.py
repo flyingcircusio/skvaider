@@ -98,7 +98,9 @@ async def lifespan(
     aramaki.start()
     auth_tokens = aramaki.register_collection(skvaider.auth.AuthTokens)
     registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
-        skvaider.auth.AuthTokens, auth_tokens.get_collection_with_session
+        skvaider.auth.AuthTokens,
+        auth_tokens.get_collection_with_session,
+        enter=False,
     )
 
     dictConfig(

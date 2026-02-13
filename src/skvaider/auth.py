@@ -24,8 +24,9 @@ async def verify_token(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_auth)],
     services: svcs.fastapi.DepContainer,
 ) -> None:
-    authtokens = await services.aget(AuthTokens)
-
+    # XXX There's a lot of type issues going on here, because the mechanics of passing through
+    # the correct types from services.aget() with a factory for a context manager that isn't entered
+    # are just too hard for the type system for now afaict.
     try:
         client_token: dict[str, str] = json.loads(
             base64.b64decode(
@@ -34,13 +35,16 @@ async def verify_token(
         )
     except (binascii.Error, ValueError, JSONDecodeError):
         raise HTTPException(401, detail="Bad authentication")
-
-    db_token = await authtokens.get(client_token["id"])
-    if not db_token:
-        raise HTTPException(401, detail="Bad authentication")
-    try:
-        assert isinstance(db_token["secret_hash"], str)
-        hasher.verify(db_token["secret_hash"], client_token["secret"])
-    # We could specify explicit exceptions here but go the safe route and just catch all in case the lib addes one
-    except Exception:
-        raise HTTPException(401, detail="Bad authentication")
+    async with await services.aget(AuthTokens) as authtokens:  # type: ignore
+        # Keep the DB access session scope confined to this part of the request,
+        # otherwise DB sessions stay open while waiting for responses.
+        # See PL-135110.
+        db_token = await authtokens.get(client_token["id"])  # type: ignore
+        if not db_token:
+            raise HTTPException(401, detail="Bad authentication")
+        try:
+            assert isinstance(db_token["secret_hash"], str)
+            hasher.verify(db_token["secret_hash"], client_token["secret"])  # type: ignore
+        # We could specify explicit exceptions here but go the safe route and just catch all in case the lib addes one
+        except Exception:
+            raise HTTPException(401, detail="Bad authentication")

@@ -211,7 +211,7 @@ class ReplicationManager:
     @asynccontextmanager
     async def get_collection_with_session(
         self,
-    ) -> AsyncGenerator["Collection"]:
+    ) -> AsyncGenerator[Collection]:
         async with self.aramaki.db.session() as db_session:
             yield self.collection(db_session)
 

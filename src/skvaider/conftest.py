@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from contextlib import asynccontextmanager
 from typing import Any, Generator
 
 import httpx
@@ -38,6 +39,12 @@ class DummyTokens(aramaki.AbstractCollection):
     async def keys(self) -> list[str]:
         return list(self.data.keys())
 
+    @asynccontextmanager
+    async def get_collection_with_session(
+        self,
+    ) -> AsyncGenerator["DummyTokens"]:
+        yield self
+
 
 DUMMY_TOKENS = DummyTokens()
 
@@ -51,8 +58,10 @@ def svcs_registry():
 def services(
     svcs_registry: svcs.Registry,
 ) -> Generator[svcs.Container, None, None]:
-    svcs_registry.register_value(  # pyright: ignore[reportUnknownMemberType]
-        skvaider.auth.AuthTokens, DUMMY_TOKENS
+    svcs_registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AuthTokens,
+        DUMMY_TOKENS.get_collection_with_session,
+        enter=False,
     )
     with svcs.Container(svcs_registry) as container:
         yield container
@@ -117,6 +126,12 @@ async def backend_connection_is_up(url: str) -> bool:
 async def test_lifespan(
     app: FastAPI, registry: svcs.Registry
 ) -> AsyncGenerator[None, None]:
+    # This is one of the backends from the devenv.
+    url = "http://127.0.0.1:8001"
+    await backend_connection_is_up(url)
+
+    backend = skvaider.proxy.backends.SkvaiderBackend(url)
+
     pool = skvaider.proxy.pool.Pool(
         [
             ModelInstanceConfig(
@@ -127,23 +142,17 @@ async def test_lifespan(
                 instances=1,
                 memory={"ram": parse_size("250M")},
             ),
-        ]
+        ],
+        [backend],
     )
-
-    # This is one of the backends from the devenv.
-    url = "http://127.0.0.1:8001"
-    await backend_connection_is_up(url)
-
-    backend = skvaider.proxy.backends.SkvaiderBackend(url)
-    backend.pool = pool
-    pool.backends.append(backend)
-    pool.tasks.create(backend.monitor_health_and_update_models)
 
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         skvaider.proxy.pool.Pool, pool
     )
-    registry.register_value(  # pyright: ignore[reportUnknownMemberType]
-        skvaider.auth.AuthTokens, DUMMY_TOKENS
+    registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AuthTokens,
+        DUMMY_TOKENS.get_collection_with_session,
+        enter=False,
     )
 
     @wait_for_condition()
