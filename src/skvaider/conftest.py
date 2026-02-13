@@ -1,6 +1,9 @@
 import asyncio
 import base64
 import json
+from collections.abc import AsyncGenerator, Callable, Coroutine
+from contextlib import asynccontextmanager
+from typing import Any, Generator
 
 import pytest
 import svcs
@@ -24,15 +27,31 @@ class DummyTokens:
     async def keys(self):
         return self.data.keys()
 
+    @asynccontextmanager
+    async def get_collection_with_session(
+        self,
+    ) -> AsyncGenerator["DummyTokens"]:
+        yield self
+
 
 DUMMY_TOKENS = DummyTokens()
 
 
 @pytest.fixture
-def services():
-    reg = svcs.Registry()
-    reg.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
-    with svcs.Container(reg) as container:
+def svcs_registry():
+    yield svcs.Registry()
+
+
+@pytest.fixture
+def services(
+    svcs_registry: svcs.Registry,
+) -> Generator[svcs.Container, None, None]:
+    svcs_registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AuthTokens,
+        DUMMY_TOKENS.get_collection_with_session,
+        enter=False,
+    )
+    with svcs.Container(svcs_registry) as container:
         yield container
 
 
@@ -46,7 +65,11 @@ async def test_lifespan(app: FastAPI, registry: svcs.Registry):
         skvaider.routers.openai.Backend("http://localhost:11435", model_config)
     )
     registry.register_value(skvaider.routers.openai.Pool, pool)
-    registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
+    registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AuthTokens,
+        DUMMY_TOKENS.get_collection_with_session,
+        enter=False,
+    )
 
     tries = 10
     while tries := tries - 1:
