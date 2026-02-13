@@ -174,7 +174,9 @@ async def proxy_request(
         if request.query_params:
             url += f"?{request.query_params}"
 
-        client = httpx.AsyncClient(timeout=60)  # LLM requests may take time
+        client = httpx.AsyncClient(
+            timeout=300
+        )  # XXX make configurable and/or recommend streaming?
         req = client.build_request(
             request.method, url, content=await request.body()
         )
