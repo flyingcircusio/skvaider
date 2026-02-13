@@ -288,8 +288,10 @@ class Model:
         "stopped"
     )
     health_status: Literal["healthy", "unhealthy", ""] = ""
-    health_check_interval: float = 30
-    health_check_timeout: float = 10
+    health_check_interval: float = 300  # every 5 minutes
+    health_check_timeout: float = (
+        600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
+    )
     verification_data: dict[str, list[float]] | None = None
 
     file_size: int = 0
