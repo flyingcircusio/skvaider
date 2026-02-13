@@ -5,8 +5,7 @@ import os
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Generator, Any
-
+from typing import Any, Generator
 
 import httpx
 import prometheus_client
@@ -131,6 +130,12 @@ async def backend_connection_is_up(url: str) -> bool:
 async def test_lifespan(
     app: FastAPI, registry: svcs.Registry
 ) -> AsyncGenerator[None, None]:
+    # This is one of the backends from the devenv.
+    url = "http://127.0.0.1:8001"
+    await backend_connection_is_up(url)
+
+    backend = skvaider.proxy.backends.SkvaiderBackend(url)
+
     pool = skvaider.proxy.pool.Pool(
         [
             ModelInstanceConfig(
@@ -141,17 +146,9 @@ async def test_lifespan(
                 instances=1,
                 memory={"ram": parse_size("250M")},
             ),
-        ]
+        ],
+        [backend],
     )
-
-    # This is one of the backends from the devenv.
-    url = "http://127.0.0.1:8001"
-    await backend_connection_is_up(url)
-
-    backend = skvaider.proxy.backends.SkvaiderBackend(url)
-    backend.pool = pool
-    pool.backends.append(backend)
-    pool.tasks.create(backend.monitor_health_and_update_models)
 
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         skvaider.proxy.pool.Pool, pool
