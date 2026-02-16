@@ -28,6 +28,10 @@ dependencies = [
     "prometheus-client>=0.21.0",
 ]
 
+[project.scripts]
+check-skavider-config = "skvaider.cli:check_skvaider_config"
+check-skavider-inference-config = "skvaider.cli:check_inference_config"
+
 [build-system]
 requires = ["uv_build>=0.8.2,<0.9.0"]
 build-backend = "uv_build"
