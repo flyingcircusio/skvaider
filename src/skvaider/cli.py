@@ -8,7 +8,10 @@ from skvaider.inference.config import Config as InferenceConfig
 
 
 def check_skvaider_config() -> None:
-    config_file = os.environ.get("SKVAIDER_CONFIG_FILE", "config.toml")
+    if len(sys.argv) > 1:
+        config_file = sys.argv[1]
+    else:
+        config_file = os.environ.get("SKVAIDER_CONFIG_FILE", "config.toml")
     path = Path(config_file)
     if not path.exists():
         print(f"Configuration file {config_file} not found.")
@@ -27,9 +30,12 @@ def check_skvaider_config() -> None:
 
 
 def check_inference_config() -> None:
-    config_file = os.environ.get(
-        "SKVAIDER_CONFIG_FILE", "config-inference.toml"
-    )
+    if len(sys.argv) > 1:
+        config_file = sys.argv[1]
+    else:
+        config_file = os.environ.get(
+            "SKVAIDER_CONFIG_FILE", "config-inference.toml"
+        )
     path = Path(config_file)
     if not path.exists():
         print(f"Inference configuration file {config_file} not found.")
