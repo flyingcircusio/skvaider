@@ -185,6 +185,14 @@ class ROCmMemoryMonitor(MemoryMonitor):
                 stderr,
             )
 
+        # Instead of giving us a JSON with no data, it gives us an empty stdout and a warning on stderr
+        if not stdout:
+            log.debug(
+                "rocm-smi returned no data",
+                stderr=stderr.decode("utf-8", errors="replace"),
+            )
+            return
+
         data = json.loads(stdout.decode("utf-8"))
 
         # Sum VRAM across all cards
@@ -253,6 +261,13 @@ class ROCmMemoryMonitor(MemoryMonitor):
             log.warning(
                 "rocm-smi --showpids failed",
                 returncode=proc.returncode,
+                stderr=stderr.decode("utf-8", errors="replace"),
+            )
+            return
+
+        if not stdout:
+            log.debug(
+                "rocm-smi --showpids returned no data",
                 stderr=stderr.decode("utf-8", errors="replace"),
             )
             return
