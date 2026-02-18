@@ -1,6 +1,8 @@
 import asyncio
+import csv
 import functools
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -101,6 +103,25 @@ class MemoryMonitor(ABC):
 
     def model_usage(self, model: "Model") -> int:
         return self._model_usage.get(model.config.id, 0)
+
+    def _update_vram_metrics(self) -> None:
+        """Update Prometheus VRAM metrics (for GPU monitors)."""
+        metrics.inference_vram_bytes.labels(backend=self.id, type="total").set(
+            self.total
+        )
+        metrics.inference_vram_bytes.labels(backend=self.id, type="used").set(
+            self.used
+        )
+        metrics.inference_vram_bytes.labels(backend=self.id, type="free").set(
+            self.free
+        )
+
+    def _update_model_metrics(self) -> None:
+        """Update Prometheus per-model memory metrics."""
+        for model_id, usage in self._model_usage.items():
+            metrics.inference_memory_bytes.labels(
+                model=model_id, type="model"
+            ).set(usage)
 
 
 class RAMMonitor(MemoryMonitor):
@@ -208,16 +229,7 @@ class ROCmMemoryMonitor(MemoryMonitor):
         self.used = used
         self.free = total - used
 
-        # Update Prometheus metrics
-        metrics.inference_vram_bytes.labels(backend=self.id, type="total").set(
-            self.total
-        )
-        metrics.inference_vram_bytes.labels(backend=self.id, type="used").set(
-            self.used
-        )
-        metrics.inference_vram_bytes.labels(backend=self.id, type="free").set(
-            self.free
-        )
+        self._update_vram_metrics()
 
         log.info(
             f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
@@ -292,6 +304,134 @@ class ROCmMemoryMonitor(MemoryMonitor):
         for model_id, usage in model_usage.items():
             current = self._model_usage.get(model_id, 0)
             self._model_usage[model_id] = max(current, usage)
+
+        self._update_model_metrics()
+
+
+class NvidiaMemoryMonitor(MemoryMonitor):
+    """Memory monitor using nvidia-smi for Nvidia GPU VRAM."""
+
+    id = "nvidia"
+
+    async def update_global_usage(self) -> None:
+        """Update Nvidia GPU VRAM memory statistics."""
+        proc = await asyncio.create_subprocess_exec(
+            "nvidia-smi",
+            "--query-gpu=memory.total,memory.used,memory.free",
+            "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=5
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise
+        assert proc.returncode is not None
+
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(
+                proc.returncode,
+                "nvidia-smi",
+                stdout,
+                stderr,
+            )
+
+        if not stdout:
+            log.debug(
+                "nvidia-smi returned no data",
+                stderr=stderr.decode("utf-8", errors="replace"),
+            )
+            return
+
+        # Sum memory across all GPUs (one line per GPU, values in MiB)
+        total = 0
+        used = 0
+        free = 0
+        reader = csv.reader(io.StringIO(stdout.decode("utf-8")))
+        for row in reader:
+            if len(row) != 3:
+                continue
+            total += int(row[0].strip()) * 1024 * 1024  # MiB to bytes
+            used += int(row[1].strip()) * 1024 * 1024
+            free += int(row[2].strip()) * 1024 * 1024
+
+        self.total = total
+        self.used = used
+        self.free = free
+
+        self._update_vram_metrics()
+
+        log.info(
+            f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
+        )
+
+    async def update_model_usage(self) -> None:
+        """Update VRAM usage for all models with nvidia-smi."""
+        pid_to_model: dict[int, str] = {}
+        for model in self._manager.list_models():
+            if not model.process:
+                continue
+            pid_to_model[model.process.pid] = model.config.id
+            try:
+                proc = psutil.Process(model.process.pid)
+                for child in proc.children(recursive=True):
+                    pid_to_model[child.pid] = model.config.id
+            except psutil.NoSuchProcess:
+                pass
+
+        if not pid_to_model:
+            return
+
+        proc = await asyncio.create_subprocess_exec(
+            "nvidia-smi",
+            "--query-compute-apps=pid,used_memory",
+            "--format=csv,noheader,nounits",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=5
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return
+        assert proc.returncode is not None
+
+        if proc.returncode != 0:
+            log.warning(
+                "nvidia-smi --query-compute-apps failed",
+                returncode=proc.returncode,
+                stderr=stderr.decode("utf-8", errors="replace"),
+            )
+            return
+
+        if not stdout:
+            return
+
+        # Sum up VRAM usage per model (may have multiple PIDs per model)
+        model_usage: dict[str, int] = {}
+        reader = csv.reader(io.StringIO(stdout.decode("utf-8")))
+        for row in reader:
+            if len(row) != 2:
+                continue
+            pid = int(row[0].strip())
+            if pid not in pid_to_model:
+                continue
+            model_id = pid_to_model[pid]
+            usage = int(row[1].strip()) * 1024 * 1024  # MiB to bytes
+            model_usage[model_id] = model_usage.get(model_id, 0) + usage
+
+        for model_id, usage in model_usage.items():
+            current = self._model_usage.get(model_id, 0)
+            self._model_usage[model_id] = max(current, usage)
+
+        self._update_model_metrics()
 
 
 class Model:
@@ -761,6 +901,8 @@ class Manager:
         self.monitors = {"ram": RAMMonitor(self)}
         if shutil.which("rocm-smi"):
             self.monitors["rocm"] = ROCmMemoryMonitor(self)
+        if shutil.which("nvidia-smi"):
+            self.monitors["nvidia"] = NvidiaMemoryMonitor(self)
 
         for monitor in self.monitors.values():
             self.tasks.poll(monitor.update_global_usage, interval=10)
