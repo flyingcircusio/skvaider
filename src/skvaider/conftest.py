@@ -4,22 +4,26 @@ import json
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
 from typing import Any, Generator
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import prometheus_client
 import pytest
 import svcs
 from argon2 import PasswordHasher
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from openai import OpenAI
 
 import aramaki
 import skvaider.auth
-import skvaider.proxy.backends
-import skvaider.proxy.pool
 from aramaki.typing import JSONObject
 from skvaider import app_factory, metrics
 from skvaider.config import ModelInstanceConfig, parse_size
+from skvaider.proxy.backends import DummyBackend, SkvaiderBackend
+from skvaider.proxy.models import AIModel
+from skvaider.proxy.pool import Pool
+from skvaider.routers.openai import OpenAIProxy
 from skvaider.utils import TaskManager
 
 hasher = PasswordHasher()
@@ -130,9 +134,9 @@ async def test_lifespan(
     url = "http://127.0.0.1:8001"
     await backend_connection_is_up(url)
 
-    backend = skvaider.proxy.backends.SkvaiderBackend(url)
+    backend = SkvaiderBackend(url)
 
-    pool = skvaider.proxy.pool.Pool(
+    pool = Pool(
         [
             ModelInstanceConfig(
                 id="gemma", instances=1, memory={"ram": parse_size("1.3G")}
@@ -147,7 +151,7 @@ async def test_lifespan(
     )
 
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
-        skvaider.proxy.pool.Pool, pool
+        Pool, pool
     )
     registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
         skvaider.auth.AuthTokens,
@@ -181,6 +185,81 @@ async def task_managers():
     yield task_managers
     for tm in task_managers:
         tm.terminate()
+
+
+@pytest.fixture
+def mock_request_factory():
+    def _create(model: str = "test-model", stream: bool = False) -> MagicMock:
+        req = MagicMock(spec=Request)
+        req.json = AsyncMock(return_value={"model": model, "stream": stream})
+        req.state = MagicMock()
+        req.state.model = model
+        req.state.stream = stream
+        return req
+
+    return _create
+
+
+def backend_factory(
+    url: str, *, ram: int = 1000, fail_count: int = 0
+) -> DummyBackend:
+    b = DummyBackend(url, fail_count=fail_count)
+    b.healthy = True
+    b.memory = {"ram": {"free": ram, "total": ram}}
+    return b
+
+
+def registered_model_factory(
+    id: str,
+    backend: DummyBackend,
+    *,
+    ram: int = 0,
+    limit: int = 0,
+    loaded: bool = False,
+) -> AIModel:
+    m = AIModel(id=id, owned_by="test", backend=backend)
+    if ram:
+        m.memory_usage = {"ram": ram}
+    if limit:
+        m.limit = limit
+    m.is_loaded = loaded
+    backend.models[id] = m
+    return m
+
+
+@pytest.fixture
+def dummy_backend() -> DummyBackend:
+    return backend_factory("http://test-backend")
+
+
+@pytest.fixture
+async def pool(
+    svcs_registry: svcs.Registry,
+    dummy_backend: DummyBackend,
+    task_managers: list[TaskManager],
+) -> AsyncGenerator[Pool, None]:
+    config = ModelInstanceConfig(
+        id="test-model", instances=1, memory={"ram": 10}
+    )
+    p = Pool([config], [dummy_backend])
+    task_managers.append(p.tasks)
+
+    model = AIModel(id="test-model", owned_by="test", backend=dummy_backend)
+    model.memory_usage = {"ram": 10}
+    model.is_loaded = True
+    dummy_backend.models["test-model"] = model
+
+    await p.rebalance()
+    svcs_registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        Pool, p
+    )
+    yield p
+    p.close()
+
+
+@pytest.fixture
+def proxy(pool: Pool, services: svcs.Container) -> OpenAIProxy:
+    return OpenAIProxy(services)
 
 
 @pytest.fixture(params=["gemma"])
@@ -228,3 +307,14 @@ def cleanup_prometheus_metrics():
     for m in metrics.__dict__.values():
         if isinstance(m, prometheus_client.metrics.MetricWrapperBase):
             m.clear()
+
+
+@pytest.fixture
+def openai_client(
+    client: TestClient, auth_token: str
+) -> Generator[OpenAI, None, None]:
+    yield OpenAI(
+        base_url="http://testserver/openai/v1",
+        http_client=client,  # pyright: ignore[reportArgumentType]
+        api_key=auth_token,
+    )

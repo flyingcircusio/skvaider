@@ -52,7 +52,7 @@ class Backend(ABC):
         self.request_health_update = asyncio.Event()
 
     @abstractmethod
-    async def post(self, path: str, data: dict[str, Any]): ...
+    async def post(self, path: str, data: dict[str, Any]) -> Any: ...
 
     @abstractmethod
     def post_stream(
@@ -70,13 +70,30 @@ class Backend(ABC):
 
 
 class DummyBackend(Backend):
-    async def post(self, path: str, data: dict[str, Any]):
-        pass
+    """In-memory backend for tests.
+
+    Simulates model loading with memory accounting and optional
+    request failures via ``fail_count``.
+    """
+
+    def __init__(self, url: str, fail_count: int = 0):
+        super().__init__(url)
+        self.fail_count = fail_count
+        self.call_count = 0
+
+    async def post(self, path: str, data: dict[str, Any]) -> Any:
+        self.call_count += 1
+        if self.call_count <= self.fail_count:
+            raise HTTPException(status_code=540, detail="Backend unavailable")
+        return {"id": "cmpl-1", "choices": []}
 
     async def post_stream(
-        self, path: str, data: JSONObject
+        self, path: str, data: dict[str, Any]
     ) -> AsyncGenerator[str, None]:
-        yield ""
+        self.call_count += 1
+        if self.call_count <= self.fail_count:
+            raise HTTPException(status_code=540, detail="Backend unavailable")
+        yield f"data: chunk from {self.url}\n\n"
 
     async def load_model(self, model_id: str) -> bool:
         model = self.models[model_id]
@@ -92,7 +109,7 @@ class DummyBackend(Backend):
         model.is_loaded = True
         return True
 
-    async def unload_model(self, model_id: str):
+    async def unload_model(self, model_id: str) -> None:
         model = self.models[model_id]
         assert model.is_loaded
         for kind, usage in model.configured_memory.items():
@@ -100,9 +117,9 @@ class DummyBackend(Backend):
                 self.memory[kind]["free"] += usage
         model.is_loaded = False
 
-    async def monitor_health_and_update_models(self):
-        while True:
-            await asyncio.sleep(5)
+    async def monitor_health_and_update_models(self) -> None:
+        # No-op: looping here leaks an asyncio task that outlives the test.
+        pass
 
 
 class SkvaiderBackend(Backend):
