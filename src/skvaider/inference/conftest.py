@@ -1,8 +1,13 @@
+import asyncio
 import http.server
+import json
 import shutil
+import threading
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Generator
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import svcs
@@ -15,11 +20,105 @@ from skvaider.inference.config import ModelConfig, ModelFile
 from skvaider.inference.manager import Manager, Model
 
 
+class ServerState:
+    status = 200
+    body: dict[str, Any] | None = None
+    last_request_json: dict[str, Any] | None = None
+
+
 @pytest.fixture
-def services() -> Generator[svcs.Container, None, None]:
-    reg = svcs.Registry()
-    with svcs.Container(reg) as container:
-        yield container
+def fake_llama_server() -> Generator[tuple[str, ServerState, int], None, None]:
+    """In-process HTTP server mimicking the llama-server /health and inference endpoints.
+
+    Yields (url, state, port). Mutate `state` to control response behaviour.
+    """
+    state = ServerState()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/health":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            if self.path in ("/v1/completions", "/v1/embeddings"):
+                length = int(self.headers.get("content-length", 0))
+                if length > 0:
+                    try:
+                        state.last_request_json = json.loads(
+                            self.rfile.read(length)
+                        )
+                    except Exception:
+                        pass
+                self.send_response(state.status)
+                self.end_headers()
+                if state.body is not None:
+                    self.wfile.write(json.dumps(state.body).encode())
+                else:
+                    self.wfile.write(b"{}")
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}", state, port
+    finally:
+        shutdown_thread = threading.Thread(target=server.shutdown)
+        shutdown_thread.start()
+        shutdown_thread.join(timeout=1.0)
+
+
+@asynccontextmanager
+async def mock_llama_subprocess(
+    port: int,
+) -> AsyncGenerator[MagicMock, None]:
+    """Patch asyncio.create_subprocess_exec and emit a fake startup log line.
+
+    Context manager (not a fixture) so the patch scope around model.start() is
+    explicit. Takes port as a parameter to stay decoupled from fake_llama_server.
+    """
+    mock_proc = MagicMock()
+    mock_proc.returncode = None
+
+    fake_stderr = asyncio.StreamReader()
+    fake_stderr.feed_data(
+        f"main: server is listening on http://127.0.0.1:{port}\n".encode()
+    )
+    fake_stderr.feed_data(b"main: model loaded\n")
+    fake_stderr.feed_eof()
+
+    fake_stdout = asyncio.StreamReader()
+    fake_stdout.feed_eof()
+
+    mock_proc.stderr = fake_stderr
+    mock_proc.stdout = fake_stdout
+
+    async def _wait() -> None:
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            pass
+
+    mock_proc.wait = AsyncMock(side_effect=_wait)
+    mock_proc.terminate = MagicMock()
+    mock_proc.kill = MagicMock()
+
+    with patch(
+        "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)
+    ):
+        yield mock_proc
 
 
 @pytest.fixture
@@ -152,8 +251,6 @@ def gguf_http_server() -> Generator[str, None, None]:
 
     httpd = http.server.HTTPServer(server_address, CustomHandler)
     port = httpd.server_address[1]
-
-    import threading
 
     thread = threading.Thread(target=httpd.serve_forever)
     thread.daemon = True
