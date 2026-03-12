@@ -1,113 +1,21 @@
-import asyncio
-import http.server
-import json
-import threading
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator, Generator
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any
 
 import pytest
 
 from skvaider.conftest import wait_for_condition
 from skvaider.inference.config import ModelConfig, ModelFile
+from skvaider.inference.conftest import ServerState, mock_llama_subprocess
 from skvaider.inference.manager import Model
 
 
-class ServerState:
-    status = 200
-    body: dict[str, Any] | None = None
-    last_request_json: dict[str, Any] | None = None
-
-
-@pytest.fixture
-def fake_llama_server() -> Generator[tuple[str, ServerState], None, None]:
-    state = ServerState()
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            # Used by _wait_for_startup
-            if self.path == "/health":
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(b"{}")
-            else:
-                self.send_response(404)
-
-        def do_POST(self):
-            # Used by _monitor_health
-            if self.path == "/v1/completions" or self.path == "/v1/embeddings":
-                length = int(self.headers.get("content-length", 0))
-                if length > 0:
-                    try:
-                        state.last_request_json = json.loads(
-                            self.rfile.read(length)
-                        )
-                    except Exception:
-                        pass
-
-                self.send_response(state.status)
-                self.end_headers()
-                if state.body is not None:
-                    self.wfile.write(json.dumps(state.body).encode())
-                else:
-                    self.wfile.write(b"{}")
-            else:
-                self.send_response(404)
-
-        def log_message(self, format: str, *args: Any) -> None:
-            pass
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}", state
-    finally:
-        # Shutdown the server in a separate thread to avoid blocking
-        # if there are any lingering connections
-        shutdown_thread = threading.Thread(target=server.shutdown)
-        shutdown_thread.start()
-        shutdown_thread.join(timeout=1.0)
-        if shutdown_thread.is_alive():
-            # If shutdown is still hanging, just let the daemon thread die
-            pass
-
-
-@asynccontextmanager
-async def mock_llama_subprocess(port: int) -> AsyncGenerator[MagicMock, None]:
-    """Mocks the llama-server subprocess and feeds the startup log line."""
-    mock_proc = MagicMock()
-    mock_proc.returncode = None
-
-    fake_stderr = asyncio.StreamReader()
-    fake_stderr.feed_data(
-        f"main: server is listening on http://127.0.0.1:{port}\n".encode()
-    )
-    fake_stderr.feed_data(b"main: model loaded\n")
-    fake_stderr.feed_eof()
-
-    fake_stdout = asyncio.StreamReader()
-    fake_stdout.feed_eof()
-
-    mock_proc.stderr = fake_stderr
-    mock_proc.stdout = fake_stdout
-
-    async def wait():
-        try:
-            while True:
-                await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            pass
-
-    mock_proc.wait = AsyncMock(side_effect=wait)
-    mock_proc.terminate = MagicMock()
-    mock_proc.kill = MagicMock()
-
-    with patch(
-        "asyncio.create_subprocess_exec", new=AsyncMock(return_value=mock_proc)
-    ):
-        yield mock_proc
+def _make_fast_health_check_model(config: ModelConfig, tmp_path: Path) -> Model:
+    """Create a Model with accelerated health-check intervals for testing."""
+    model = Model(config)
+    model.datadir = tmp_path
+    model.health_check_interval = 0.01
+    model.health_check_timeout = 0.01
+    return model
 
 
 @wait_for_condition()
@@ -132,20 +40,12 @@ async def is_active(model: Model, expected: bool) -> bool:
     ],
 )
 async def test_health_check(
-    fake_llama_server: tuple[str, ServerState],
+    fake_llama_server: tuple[str, ServerState, int],
     tmp_path: Path,
     model_kwargs: dict[str, Any],
 ):
-    url, state = fake_llama_server
-    port = int(url.split(":")[-1])
-
-    config = ModelConfig(**model_kwargs)
-    model = Model(config)
-    model.datadir = tmp_path
-
-    # Configure fast health checks
-    model.health_check_interval = 0.01
-    model.health_check_timeout = 0.01
+    url, state, port = fake_llama_server
+    model = _make_fast_health_check_model(ModelConfig(**model_kwargs), tmp_path)
 
     async with mock_llama_subprocess(port):
         await model.start()
@@ -168,11 +68,10 @@ async def test_health_check(
 
 
 async def test_health_check_embeddings(
-    fake_llama_server: tuple[str, ServerState],
+    fake_llama_server: tuple[str, ServerState, int],
     tmp_path: Path,
 ):
-    url, state = fake_llama_server
-    port = int(url.split(":")[-1])
+    _, state, port = fake_llama_server
 
     expected_embedding = [0.1, 0.2, 0.3]
     state.body = {
@@ -189,13 +88,8 @@ async def test_health_check_embeddings(
         cmd_args=["--embeddings"],
         files=[ModelFile(url="u", hash="h")],
     )
-    model = Model(config)
-    model.datadir = tmp_path
+    model = _make_fast_health_check_model(config, tmp_path)
     model.verification_data = {"test input": expected_embedding}
-
-    # Configure fast health checks
-    model.health_check_interval = 0.01
-    model.health_check_timeout = 0.01
 
     async with mock_llama_subprocess(port):
         await model.start()
