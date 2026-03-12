@@ -63,7 +63,11 @@ async def test_manager_start_model(gemma: Model, manager: Manager):
         r = await client.get(f"{model.endpoint}/v1/models")
         r.raise_for_status()
         models = r.json()
-        del models["data"][0]["created"]
+        data0 = models["data"][0]
+        data0.pop("created", None)
+        # shows up in ci - differente llama-cpp version?
+        data0.pop("aliases", None)
+        data0.pop("tags", None)
         assert models == {
             "data": [
                 {

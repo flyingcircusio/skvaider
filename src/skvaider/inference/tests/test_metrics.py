@@ -3,7 +3,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
-from prometheus_client import Counter
+from prometheus_client import CONTENT_TYPE_LATEST, Counter
 
 from skvaider.inference import metrics
 from skvaider.inference.manager import Manager, Model
@@ -181,3 +181,20 @@ async def test_proxy_unavailable_increments_counter(
         status="unavailable",
     )
     assert after == before + 1
+
+
+async def test_metrics_content_type_is_prometheus(
+    client: TestClient, manager: Manager
+) -> None:
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == CONTENT_TYPE_LATEST
+
+
+async def test_metrics_includes_memory_bytes_after_monitor_update(
+    client: TestClient, manager: Manager
+) -> None:
+    await manager.monitors["ram"].update_global_usage()
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "skvaider_inference_memory_bytes" in response.text
