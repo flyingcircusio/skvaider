@@ -17,8 +17,11 @@ uv run pytest src/skvaider/inference/tests/test_manager.py -vv
 # Run a specific test
 uv run pytest src/skvaider/inference/tests/test_manager.py::test_manager_start_model -vv
 
-# Start all services (proxy + 2 inference servers)
-devenv up
+# Start all services in the background (terminal stays free)
+devenv up -d
+
+# Stop background services
+devenv down
 
 # Type checking, linting, formatting, etc. all in one:
 pre-commit run -a
