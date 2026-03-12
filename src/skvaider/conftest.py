@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import itertools
 import json
 import os
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -31,6 +32,7 @@ import skvaider.routers.openai
 from skvaider import app_factory
 
 hasher = PasswordHasher()
+_backend_id = itertools.count(1)
 
 
 class DummyTokens(aramaki.AbstractCollection):
@@ -205,9 +207,11 @@ def mock_request_factory():
 
 
 def backend_factory(
-    url: str, *, ram: int = 1000, fail_count: int = 0
+    url: str = "", *, ram: int = 1000, fail_count: int = 0
 ) -> DummyBackend:
-    b = DummyBackend(url, fail_count=fail_count)
+    b = DummyBackend(
+        url or f"http://backend-{next(_backend_id)}", fail_count=fail_count
+    )
     b.healthy = True
     b.memory = {"ram": {"free": ram, "total": ram}}
     return b
