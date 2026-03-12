@@ -69,6 +69,9 @@ class ModelSemaphore:
                     except asyncio.TimeoutError:
                         return
 
+                    # without this, min() gets the empty list
+                    continue  # must re-evaluate available; see test_semaphore_waiter_woken_on_release
+
                 best = min(available, key=lambda m: m.in_progress)
                 best.in_progress += 1
                 best.idle.clear()
