@@ -36,8 +36,8 @@ async def test_proxy_retry_verifies_backend_switching(
     with the lowest ``in_progress`` count, breaking ties by list order.
     b1 is appended first so it is always tried first.
     """
-    b1 = backend_factory("http://b1", fail_count=1)
-    b2 = backend_factory("http://b2")
+    b1 = backend_factory(fail_count=1)
+    b2 = backend_factory()
 
     config = ModelInstanceConfig(
         id="test-model", instances=2, memory={"ram": 10}
