@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import os
 import tomllib
@@ -10,6 +11,7 @@ from typing import Any
 import structlog.dev
 import structlog.stdlib
 import svcs
+import uvicorn
 from fastapi import FastAPI, Request, Security
 from fastapi.responses import JSONResponse
 
@@ -24,6 +26,21 @@ from skvaider.config import Config
 from skvaider.logging import LoggingMiddleware, logging_config
 
 log = structlog.stdlib.get_logger()
+
+
+def load_config() -> Config:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c",
+        "--config",
+        dest="config_path",
+        default="config.toml",
+        help="Path to the configuration file",
+    )
+    args = parser.parse_args()
+    with open(args.config_path, "rb") as f:
+        config_data = tomllib.load(f)
+    return Config.model_validate(config_data)
 
 
 def global_exception_handler(
@@ -144,3 +161,14 @@ def app_factory(
         )
 
     return app
+
+
+def main():
+    config = load_config()
+
+    uvicorn.run(
+        "skvaider:app_factory",
+        host=config.server.host,
+        port=config.server.port,
+        factory=True,
+    )

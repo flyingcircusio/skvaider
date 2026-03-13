@@ -1,5 +1,5 @@
+import argparse
 import asyncio
-import os
 import shutil
 import tomllib
 from collections.abc import AsyncGenerator
@@ -11,10 +11,10 @@ import structlog
 import structlog.dev
 import structlog.stdlib
 import svcs
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-import skvaider.inference.manager
 import skvaider.inference.routers.manager
 import skvaider.inference.routers.metrics
 import skvaider.inference.routers.models
@@ -24,19 +24,31 @@ from skvaider.inference.manager import Manager
 from skvaider.logging import LoggingMiddleware, logging_config
 from skvaider.utils import TaskManager
 
+from .config import ModelConfig
+
 log = structlog.stdlib.get_logger()
+
+
+def load_config() -> Config:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-c",
+        "--config",
+        dest="config_path",
+        default="config.toml",
+        help="Path to the configuration file",
+    )
+    args = parser.parse_args()
+    with open(args.config_path, "rb") as f:
+        config_data = tomllib.load(f)
+    return Config.model_validate(config_data)
 
 
 @svcs.fastapi.lifespan
 async def lifespan(
     app: FastAPI, registry: svcs.Registry
 ) -> AsyncGenerator[None]:
-    config_file = os.environ.get(
-        "SKVAIDER_CONFIG_FILE", "config-inference.toml"
-    )
-    with open(config_file, "rb") as f:
-        config_data = tomllib.load(f)
-    config = Config.model_validate(config_data)
+    config = load_config()
 
     verification_data = {}
     if config.embedding_verification_file:
@@ -137,3 +149,14 @@ def app_factory(lifespan: Any = lifespan) -> FastAPI:
         )
 
     return app
+
+
+def main():
+    config = load_config()
+
+    uvicorn.run(
+        "skvaider.inference:app_factory",
+        host=config.server.host,
+        port=config.server.port,
+        factory=True,
+    )
