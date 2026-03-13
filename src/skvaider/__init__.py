@@ -8,6 +8,7 @@ from logging import getLogger
 from logging.config import dictConfig
 from typing import Any
 
+import starlette.requests
 import structlog.dev
 import structlog.stdlib
 import svcs
@@ -89,6 +90,12 @@ async def lifespan(
     cr.exception_formatter = structlog.dev.plain_traceback
 
     loop = asyncio.get_running_loop()
+
+    loop.set_debug(True)
+    import logging
+
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+
     loop.set_exception_handler(global_exception_handler)
 
     backends: list[skvaider.proxy.backends.Backend] = []
@@ -150,10 +157,13 @@ def app_factory(
         """
         This catches all unhandled 500 errors anywhere in the app.
         """
-        log.error(
-            f"Unhandled exception for request: {request.method} {request.url}",
-            exc_info=exc,
-        )
+        if isinstance(exc, starlette.requests.ClientDisconnect):
+            pass
+        else:
+            log.error(
+                f"Unhandled exception for request: {request.method} {request.url}",
+                exc_info=exc,
+            )
 
         return JSONResponse(
             status_code=500,
