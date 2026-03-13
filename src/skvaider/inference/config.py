@@ -7,9 +7,15 @@ from skvaider.config import LoggingConfig as BaseLoggingConfig
 
 class Config(BaseModel):
     models_dir: Path
+    server: "ServerConfig"
     logging: "LoggingConfig"
     openai: "OpenAIConfig"
     embedding_verification_file: Path | None = None
+
+
+class ServerConfig(BaseModel):
+    host: str = "0.0.0.0"
+    port: int = 8000
 
 
 class OpenAIConfig(BaseModel):

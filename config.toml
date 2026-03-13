@@ -2,6 +2,10 @@
 [auth]
 source = "aramaki"
 
+[server]
+host = "127.0.0.1"
+port = 8000
+
 [aramaki]
 url = "wss://directory.0e9d93af.largo01.fcdev.fcio.net/aramaki"
 state_directory = ".aramaki-workdir"

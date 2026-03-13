@@ -44,9 +44,15 @@ class ModelInstanceConfig(BaseModel):
 
 class Config(BaseModel):
     aramaki: "AramakiConfig"
+    server: "ServerConfig"
     backend: list["BackendConfig"]
     models: list["ModelInstanceConfig"]
     logging: "LoggingConfig"
+
+
+class ServerConfig(BaseModel):
+    host: str = "0.0.0.0"
+    port: int = 8000
 
 
 class AramakiConfig(BaseModel):

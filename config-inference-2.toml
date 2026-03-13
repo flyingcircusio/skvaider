@@ -1,6 +1,10 @@
 # Sample config used by the development environment
 models_dir = "models-2"
 
+[server]
+host = "127.0.0.1"
+port = 8002
+
 [logging]
 log_level = "DEBUG"
 access_log_path = ".access_log-inference2"
