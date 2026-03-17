@@ -51,29 +51,37 @@ class ModelSemaphore:
         self, excluded_backends: Iterable[str] = ()
     ) -> AIModel | None:
         deadline = utils.now() + datetime.timedelta(seconds=120)
+        log.debug("waiting for semaphore lock")
         async with self.lock:
+            log.debug("got semaphore lock")
             # Ok, we got the lock - we're the next allowed to acquire a free slot.
             # This may take a while and we might not find one right now, but we're
             # still next, so that's why we keep the lock maybe longer.
             while candidates := self._candidates(excluded_backends):
                 available = [m for m in candidates if m.in_progress < m.limit]
+                log.debug(f"backends within limit: {len(available)}")
                 if not available:
                     timeout = (deadline - utils.now()).total_seconds()
                     if timeout < 0:
                         return
                     try:
+                        log.debug("waiting for limit to sink")
                         await asyncio.wait_for(
                             self.released.wait(), timeout=timeout
                         )
                         self.released.clear()
+                        log.debug("request released, checking backends again")
                     except asyncio.TimeoutError:
+                        log.debug("timed out waiting for limit")
                         return
+                    continue
 
                     # without this, min() gets the empty list
                     continue  # must re-evaluate available; see test_semaphore_waiter_woken_on_release
 
                 best = min(available, key=lambda m: m.in_progress)
                 best.in_progress += 1
+                print(f"in progress: {best.backend.url} - {best.in_progress}")
                 best.idle.clear()
                 return best
 
