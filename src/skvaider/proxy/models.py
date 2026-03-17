@@ -46,7 +46,10 @@ class AIModel(BaseModel):
     @property
     def configured_memory(self) -> dict[str, int]:
         """Get the configured memory for this model from pool config."""
-        return self.config.memory
+        try:
+            return self.config.memory
+        except KeyError:
+            return {}
 
     def total_size(self) -> int:
         return sum(self.configured_memory.values())

@@ -32,7 +32,6 @@ import skvaider.routers.openai
 from skvaider import app_factory
 
 hasher = PasswordHasher()
-_backend_id = itertools.count(1)
 
 
 class DummyTokens(aramaki.AbstractCollection):
@@ -208,15 +207,21 @@ def mock_request_factory():
     return _create
 
 
-def backend_factory(
-    url: str = "", *, ram: int = 1000, fail_count: int = 0
-) -> DummyBackend:
-    b = DummyBackend(
-        url or f"http://backend-{next(_backend_id)}", fail_count=fail_count
-    )
-    b.healthy = True
-    b.memory = {"ram": {"free": ram, "total": ram}}
-    return b
+@pytest.fixture
+def dummy_backend_factory() -> Callable[..., DummyBackend]:
+    backend_id = itertools.count(1)
+
+    def factory(
+        url: str = "", *, ram: int = 1000, fail_count: int = 0
+    ) -> DummyBackend:
+        b = DummyBackend(
+            url or f"http://backend-{next(backend_id)}", fail_count=fail_count
+        )
+        b.healthy = True
+        b.memory = {"ram": {"free": ram, "total": ram}}
+        return b
+
+    return factory
 
 
 def registered_model_factory(
@@ -238,8 +243,10 @@ def registered_model_factory(
 
 
 @pytest.fixture
-def dummy_backend() -> DummyBackend:
-    return backend_factory("http://test-backend")
+def dummy_backend(
+    dummy_backend_factory: Callable[..., DummyBackend],
+) -> DummyBackend:
+    return dummy_backend_factory("http://test-backend")
 
 
 @pytest.fixture

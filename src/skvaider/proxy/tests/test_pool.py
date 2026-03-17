@@ -1,9 +1,10 @@
 import asyncio
 import datetime
+from typing import Callable
 from unittest.mock import patch
 
 from skvaider.config import ModelInstanceConfig, parse_size
-from skvaider.conftest import backend_factory, registered_model_factory
+from skvaider.conftest import registered_model_factory
 from skvaider.proxy.backends import DummyBackend
 from skvaider.proxy.models import AIModel
 from skvaider.utils import TaskManager
@@ -51,9 +52,10 @@ async def test_rebalance_loads_desired_instances(
 
 async def test_rebalance_distributes_across_backends(
     task_managers: list[TaskManager],
+    dummy_backend_factory: Callable[..., DummyBackend],
 ):
-    backend1 = backend_factory(ram=500)
-    backend2 = backend_factory(ram=500)
+    backend1 = dummy_backend_factory(ram=500)
+    backend2 = dummy_backend_factory(ram=500)
     model1_b1 = registered_model_factory("m1", backend1, ram=100)
     model1_b2 = registered_model_factory("m1", backend2, ram=100)
 
@@ -72,9 +74,10 @@ async def test_rebalance_distributes_across_backends(
 
 async def test_rebalance_unloads_excess_instances(
     task_managers: list[TaskManager],
+    dummy_backend_factory: Callable[..., DummyBackend],
 ):
-    backend1 = backend_factory(ram=parse_size("500K"))
-    backend2 = backend_factory(ram=parse_size("500K"))
+    backend1 = dummy_backend_factory(ram=parse_size("500K"))
+    backend2 = dummy_backend_factory(ram=parse_size("500K"))
     registered_model_factory("m1", backend1, ram=parse_size("100K"))
     registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
@@ -121,9 +124,10 @@ async def test_rebalance_respects_capacity(
 
 async def test_rebalance_handles_unhealthy_backend(
     task_managers: list[TaskManager],
+    dummy_backend_factory: Callable[..., DummyBackend],
 ):
-    backend1 = backend_factory(ram=parse_size("500K"))
-    backend2 = backend_factory(ram=parse_size("500K"))
+    backend1 = dummy_backend_factory(ram=parse_size("500K"))
+    backend2 = dummy_backend_factory(ram=parse_size("500K"))
     backend2.healthy = False
     model1_b1 = registered_model_factory("m1", backend1, ram=parse_size("100K"))
     model1_b2 = registered_model_factory("m1", backend2, ram=parse_size("100K"))
@@ -143,9 +147,10 @@ async def test_rebalance_handles_unhealthy_backend(
 
 async def test_rebalance_after_backend_becomes_healthy(
     task_managers: list[TaskManager],
+    dummy_backend_factory: Callable[..., DummyBackend],
 ):
-    backend1 = backend_factory(ram=parse_size("200K"))
-    backend2 = backend_factory(ram=parse_size("200K"))
+    backend1 = dummy_backend_factory(ram=parse_size("200K"))
+    backend2 = dummy_backend_factory(ram=parse_size("200K"))
     backend2.healthy = False
     model1_b1 = registered_model_factory("m1", backend1, ram=parse_size("100K"))
     model1_b2 = registered_model_factory("m1", backend2, ram=parse_size("100K"))
@@ -168,9 +173,10 @@ async def test_rebalance_after_backend_becomes_healthy(
 
 async def test_rebalance_after_backend_becomes_unhealthy(
     task_managers: list[TaskManager],
+    dummy_backend_factory: Callable[..., DummyBackend],
 ):
-    backend1 = backend_factory(ram=parse_size("200K"))
-    backend2 = backend_factory(ram=parse_size("200K"))
+    backend1 = dummy_backend_factory(ram=parse_size("200K"))
+    backend2 = dummy_backend_factory(ram=parse_size("200K"))
     registered_model_factory("m1", backend1, ram=parse_size("100K"))
     registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
@@ -182,20 +188,32 @@ async def test_rebalance_after_backend_becomes_unhealthy(
 
     await pool.rebalance()
     assert pool.count_loaded_instances("m1") == 2
+    assert pool.placement_map() == {
+        "http://backend-1": {"m1"},
+        "http://backend-2": {"m1"},
+    }
 
     backend2.healthy = False
 
     await pool.rebalance()
-    assert pool.count_loaded_instances("m1") == 1
+
+    # This still says 2 as we do not issue unload requests
+    # on unhealthy backends to avoid noise.
+    assert pool.count_loaded_instances("m1") == 2
+    assert pool.placement_map() == {
+        "http://backend-1": {"m1"},
+        "http://backend-2": set(),
+    }
 
 
 async def test_complex_rebalance_multiple_models(
     task_managers: list[TaskManager],
+    dummy_backend_factory: Callable[..., DummyBackend],
 ):
     """Models get moved around when backends change health."""
-    backend1 = backend_factory(ram=parse_size("400K"))
-    backend2 = backend_factory(ram=parse_size("400K"))
-    backend3 = backend_factory(ram=parse_size("400K"))
+    backend1 = dummy_backend_factory(ram=parse_size("400K"))
+    backend2 = dummy_backend_factory(ram=parse_size("400K"))
+    backend3 = dummy_backend_factory(ram=parse_size("400K"))
 
     registered_model_factory("m1", backend1)
     registered_model_factory("m1", backend2)
@@ -219,12 +237,25 @@ async def test_complex_rebalance_multiple_models(
     await pool.rebalance()
     assert pool.count_loaded_instances("m1") == 2
     assert pool.count_loaded_instances("m2") == 2
+    assert pool.placement_map() == {
+        "http://backend-1": {"m1"},
+        "http://backend-2": {"m2"},
+        "http://backend-3": {"m2", "m1"},
+    }
 
     backend2.healthy = False
     await pool.rebalance()
 
     assert pool.count_loaded_instances("m1") == 2
-    assert pool.count_loaded_instances("m2") == 2
+    # this says 3 instead of 2 because we do not touch unhealthy
+    # backends to avoid superfluous loading/unloading during
+    # temporary disruptions.
+    assert pool.count_loaded_instances("m2") == 3
+    assert pool.placement_map() == {
+        "http://backend-1": {"m2", "m1"},
+        "http://backend-2": set(),
+        "http://backend-3": {"m2", "m1"},
+    }
 
 
 async def test_pool_report_map_contains_backends_and_models(
@@ -349,9 +380,10 @@ async def test_semaphore_acquire_returns_none_when_deadline_exceeded(
 
 async def test_semaphore_excluded_backend_not_chosen(
     task_managers: list[TaskManager],
+    dummy_backend_factory: Callable[..., DummyBackend],
 ):
-    backend1 = backend_factory("http://example.com/1")
-    backend2 = backend_factory("http://example.com/2")
+    backend1 = dummy_backend_factory("http://example.com/1")
+    backend2 = dummy_backend_factory("http://example.com/2")
     registered_model_factory("m", backend1, loaded=True)
     model2 = registered_model_factory("m", backend2, loaded=True)
     pool = Pool(

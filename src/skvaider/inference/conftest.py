@@ -64,7 +64,7 @@ USED_PORTS: set[int] = set()
 
 
 def get_port() -> int:
-    next = max(USED_PORTS, default=8000)
+    next = max(USED_PORTS, default=9000)
     USED_PORTS.add(next)
     return next
 
