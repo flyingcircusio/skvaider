@@ -73,7 +73,9 @@ def services(
         yield container
 
 
-def wait_for_condition(interval: float = 0.1, timeout: float = 30) -> Callable[
+def wait_for_condition(
+    interval: float = 0.1, timeout: float = 30
+) -> Callable[
     [Callable[..., Coroutine[Any, Any, bool]]],
     Callable[..., Coroutine[Any, Any, None]],
 ]:

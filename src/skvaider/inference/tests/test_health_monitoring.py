@@ -1,84 +1,93 @@
-from pathlib import Path
-from typing import Any
-
-import pytest
+import asyncio
 
 from skvaider.conftest import wait_for_condition
-from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
-from skvaider.inference.conftest import ServerState, mock_llama_subprocess
-from skvaider.inference.model import LlamaModel
-
-
-def _make_fast_health_check_model(
-    config: LlamaServerModelConfig, tmp_path: Path
-) -> LlamaModel:
-    """Create a Model with accelerated health-check intervals for testing."""
-    model = LlamaModel(config)
-    model.datadir = tmp_path
-    model.health_check_interval = 0.01
-    model.health_check_timeout = 0.01
-    return model
+from skvaider.inference.config import ModelConfig
+from skvaider.inference.conftest import OpenAIServerMock
+from skvaider.inference.model import Model
 
 
 @wait_for_condition()
-async def is_active(model: LlamaModel, expected: bool) -> bool:
-    if ("active" in model.status) == expected:
-        return True
-    return False
+async def has_health_status(model: Model, expected: str) -> bool:
+    return model.health_status == expected
 
 
-@pytest.mark.parametrize(
-    "model_kwargs",
-    [
-        {
-            "id": "test",
-            "files": [LlamaModelFile(url="u", hash="h")],
-        },
-        {
-            "id": "test-embed",
-            "cmd_args": ["--embeddings"],
-            "files": [LlamaModelFile(url="u", hash="h")],
-        },
-    ],
-)
-async def test_health_check(
-    fake_llama_server: tuple[str, ServerState, int],
-    tmp_path: Path,
-    model_kwargs: dict[str, Any],
-):
-    url, state, port = fake_llama_server
-    model = _make_fast_health_check_model(
-        LlamaServerModelConfig(**model_kwargs), tmp_path
+async def test_health_check_updates_model_status_completion():
+    model = Model(
+        ModelConfig(
+            id="test",
+            context_size=1024,
+            max_requests=10,
+            port=1000,
+        )
     )
+    model.health_check_interval = 0.01
+    model.health_check_timeout = 0.01
 
-    async with mock_llama_subprocess(port):
-        await model.start()
-        try:
-            assert model.endpoint == url
+    async def health_ok() -> bool:
+        return True
 
-            # 1. Verify it becomes healthy
-            await is_active(model, True)
+    async def health_not_ok() -> bool:
+        return False
 
-            # 2. Simulate failure
-            state.status = 500
-            await is_active(model, False)
+    # Phase 1: startup, no process, no health info
+    model._check_health = health_ok
+    asyncio.create_task(model._monitor_health())
 
-            # 3. Simulate recovery
-            state.status = 200
-            await is_active(model, True)
+    await asyncio.sleep(1)  # let some time pass so the checks can actually run
 
-        finally:
-            await model.terminate()
+    assert (
+        model._health_checks > 1
+    )  # ensure the loop has been run more than once
+
+    # The model isn't starting yet. That means we don't set a health status
+    assert model.health_status == ""
+    assert "inactive" in model.status
+
+    # Phase 2: expose an endpoint so that the health check starts running
+    model.process_status = "running"
+    model.endpoint = "http://"  # expose a dummy endpoint to trigger the check
+    await has_health_status(model, "healthy")
+    assert model.status == set(["running", "healthy", "active"])
+
+    # Phase 3: model fails, becomes unhealthy and inactive
+    model._check_health = health_not_ok
+    await has_health_status(model, "unhealthy")
+    assert model.status == set(["running", "unhealthy", "inactive"])
+
+    # Phase 4: model recovers, becomes healthy and active again
+    model._check_health = health_ok
+    await has_health_status(model, "healthy")
+    assert model.status == set(["running", "healthy", "active"])
+
+    # Phase 5: model check fails with an exception
+    async def health_exception():
+        raise Exception()
+
+    model._check_health = health_exception
+    await has_health_status(model, "unhealthy")
+    assert model.status == set(["running", "unhealthy", "inactive"])
+
+    # Phase 6: recover again
+    model._check_health = health_ok
+    await has_health_status(model, "healthy")
+    assert model.status == set(["running", "healthy", "active"])
 
 
-async def test_health_check_embeddings(
-    fake_llama_server: tuple[str, ServerState, int],
-    tmp_path: Path,
-):
-    _, state, port = fake_llama_server
+async def test_health_check_embeddings(openai_server: OpenAIServerMock):
+    model = Model(
+        ModelConfig(
+            id="test-embed",
+            context_size=1024,
+            port=openai_server.port,
+            max_requests=10,
+        )
+    )
+    model.endpoint = openai_server.endpoint
 
     expected_embedding = [0.1, 0.2, 0.3]
-    state.body = {
+    model.verification_data = {"test input": expected_embedding}
+
+    openai_server.response = {
         "model": "test-embed",
         "object": "list",
         "data": [
@@ -86,33 +95,29 @@ async def test_health_check_embeddings(
         ],
         "usage": {"prompt_tokens": 0, "total_tokens": 0},
     }
+    assert await model._check_embedding_health()
+    assert openai_server.last_request_json["input"] == ["test input"]
 
-    config = LlamaServerModelConfig(
-        id="test-embed",
-        cmd_args=["--embeddings"],
-        files=[LlamaModelFile(url="u", hash="h")],
-        context_size=1024,
-        port=port,
+    # 2. Simulate wrong embedding -> unhealthy
+    openai_server.response["data"][0]["embedding"] = [0.9, 0.9, 0.9]
+    assert not await model._check_embedding_health()
+
+
+async def test_health_check_completions(openai_server: OpenAIServerMock):
+    model = Model(
+        ModelConfig(
+            id="test-embed",
+            context_size=1024,
+            port=openai_server.port,
+            max_requests=10,
+        )
     )
+    model.endpoint = openai_server.endpoint
 
-    model = _make_fast_health_check_model(config, tmp_path)
-    model.verification_data = {"test input": expected_embedding}
+    openai_server.response = {}
+    assert await model._check_completion_health()
+    assert openai_server.last_request_json["prompt"] == "2+2="
 
-    async with mock_llama_subprocess(port):
-        await model.start()
-        try:
-            # 1. Verify it sends correct input and becomes healthy
-            await is_active(model, True)
-            assert state.last_request_json is not None
-            assert state.last_request_json["input"] == ["test input"]
-
-            # 2. Simulate wrong embedding -> unhealthy
-            state.body["data"][0]["embedding"] = [0.9, 0.9, 0.9]
-            await is_active(model, False)
-
-            # 3. Correct again -> healthy
-            state.body["data"][0]["embedding"] = expected_embedding
-            await is_active(model, True)
-
-        finally:
-            await model.terminate()
+    # 2. Simulate wrong response -> unhealthy
+    openai_server.response = {}
+    assert not await model._check_embedding_health()
