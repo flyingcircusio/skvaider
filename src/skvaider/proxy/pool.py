@@ -245,6 +245,11 @@ class Pool:
             for backend in sorted(
                 self.backends, key=lambda b: len(actions[b.url]["unload"])
             ):
+                if not backend.healthy:
+                    # Performing map actions on unhealthy backends can cause too much issues
+                    # with models getting thrashed unnecessarily.
+                    log.warning("Ignoring map action for unhealthy backend")
+                    continue
                 tasks: list[asyncio.Task[Any]] = []
                 for model_id in actions[backend.url]["unload"]:
                     tasks.append(
