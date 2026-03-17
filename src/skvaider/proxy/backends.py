@@ -295,6 +295,9 @@ class SkvaiderBackend(Backend):
         updated_models = {}
         for model in known_models:
             model_id = model["id"]
+            if model_id not in self.pool.model_configs:
+                # Ignore models that haven't been configured on the proxy.
+                continue
             if model_id not in current_models:
                 model_obj = AIModel(
                     id=model_id,
