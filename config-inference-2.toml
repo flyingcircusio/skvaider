@@ -15,6 +15,7 @@ id = "gemma"
 context_size = 4096
 cmd_args = []
 max_requests = 42
+port = 8200
 
 [[openai.models.files]]
 url = "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf"
@@ -24,6 +25,8 @@ hash = "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
 type = "llama-server"
 id = "embeddinggemma"
 cmd_args = ["--embeddings"]
+port = 8201
+context_size = 4096
 
 [[openai.models.files]]
 url = "https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf"

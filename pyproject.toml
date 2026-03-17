@@ -56,6 +56,15 @@ venvPath = "."
 venv = ".devenv/state/venv"
 exclude = ["doc/**"]
 
+[[tool.basedpyright.executionEnvironments]]
+root = "src/skvaider/inference/tests"
+reportPrivateUsage = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "src/skvaider/tests"
+reportPrivateUsage = "none"
+
+
 [dependency-groups]
 dev = [
     "openai>=1.100.2",

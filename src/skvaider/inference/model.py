@@ -82,18 +82,56 @@ def locked(
 
 class Model(ABC):
     config: ModelConfig
-    process: asyncio.subprocess.Process | None = None
     datadir: Path
+    verification_data: dict[str, list[float]] | None = None
+    _host = "127.0.0.1"
+
+    endpoint: str | None = None
+
     lock: UserManagerLock
+
+    process: asyncio.subprocess.Process | None = None
     process_status: Literal["stopped", "running", "starting", "stopping"] = (
         "stopped"
     )
+    status_changed: asyncio.Event
+
     health_status: Literal["healthy", "unhealthy", ""] = ""
-    endpoint: str | None = None
+    health_check_interval: float = 300  # every 5 minutes
+    health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
+    _health_checks: int = 0  # support testing
+
+    _tasks: TaskManager
+
+    _type: str
+
+    # This sub-classes must implement:
+    def is_embedding(self) -> bool: ...
+
+    @property
+    def slug(self) -> str: ...
+
+    async def download(self) -> None: ...
+
+    async def start(self) -> None: ...
+
+    # Shared implementation:
 
     def __init__(self, config: ModelConfig):
         self.config = config
         self.lock = UserManagerLock()
+        self.status_changed = asyncio.Event()
+        self._tasks = TaskManager()
+
+        if self.is_embedding():
+            self._check_health = self._check_embedding_health
+        else:
+            self._check_health = self._check_completion_health
+
+    def _notify_status_changed(self) -> None:
+        """Notify watchers that status changed. Set and immediately clear."""
+        self.status_changed.set()
+        self.status_changed.clear()
 
     @property
     def integrity_marker_file(self) -> Path:
@@ -121,44 +159,218 @@ class Model(ABC):
 
         return result
 
-    async def start(self) -> None:
-        pass
+    async def _check_health(self) -> bool: ...
+
+    async def _monitor_health(self) -> None:
+        """Periodically check if the model is responsive."""
+        new_status = ""
+        interval = 0
+        while True:
+            self._health_checks += 1
+            # This is a bit complicated to handle varying intervals during warmup
+            # and manage the event trigger
+            # 1. Status update and sleep
+            changed = new_status != self.health_status
+            self.health_status = new_status
+            if changed:
+                self._notify_status_changed()
+            await asyncio.sleep(interval)
+
+            # 2. Fast loop without an actual health check to wait until we see the
+            #    model starting or running and the endpoint exposed.
+            if not self.endpoint:
+                new_status = ""
+                interval = 0.1
+                continue
+
+            # 3. Real health check immediately afterwards and switching to a slower interval.
+            try:
+                new_status = (
+                    "healthy" if (await self._check_health()) else "unhealthy"
+                )
+            except Exception as e:
+                log.exception(
+                    "Health check error", model=self.config.id, error=str(e)
+                )
+                new_status = "unhealthy"
+
+            interval = self.health_check_interval
+
+    async def _wait_for_startup(self) -> None:
+        expected_endpoint = f"http://{self._host}:{self.config.port}"
+        async with httpx.AsyncClient() as client:
+            while True:
+                try:
+                    resp = await client.get(f"{expected_endpoint}/health")
+                    if resp.status_code == 200:
+                        self.endpoint = expected_endpoint
+                        return
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+
+    async def _monitor_process(self) -> None:
+        """Monitor whether our process has exited."""
+        assert self.process is not None
+        await self.process.wait()
+        if self.process_status in ["stopped", "stopping"]:
+            return
+        log.error(
+            "Process exited unexpectedly",
+            model=self.config.id,
+            returncode=self.process.returncode,
+        )
+        # Clean up
+        await self.terminate()
+
+    async def _monitor_output(
+        self,
+        stream: asyncio.StreamReader | None,
+        is_stderr: bool,
+    ) -> None:
+        stream_name = "stderr" if is_stderr else "stdout"
+        if stream is None:
+            log.warning(f"No stream for {stream_name}.")
+            return
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            line_str = line.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                continue
+            log.debug(
+                self._type,
+                model=self.config.id,
+                stream=stream_name,
+                line=line_str,
+            )
+
+    async def _check_embedding_health(self) -> bool:
+        async with httpx.AsyncClient(
+            timeout=self.health_check_timeout
+        ) as client:
+            input_texts = ["health check"]
+            expected_embeddings: list[list[float]] | None = None
+            if self.verification_data:
+                # input texts are keys
+                input_texts = list(self.verification_data.keys())
+                expected_embeddings = list(self.verification_data.values())
+
+            resp = await client.post(
+                f"{self.endpoint}/v1/embeddings",
+                json={
+                    "input": input_texts,
+                    "model": self.config.id,
+                },
+            )
+
+            if resp.status_code != 200:
+                log.warning(
+                    "Health check failed",
+                    model=self.config.id,
+                    status=resp.status_code,
+                )
+                return False
+
+            if expected_embeddings is not None:
+                data = resp.json()
+                for i, item in enumerate(data.get("data", [])):
+                    embedding = item.get("embedding", [])
+                    if not embedding:
+                        log.warning(
+                            "Health check failed: missing embedding",
+                            model=self.config.id,
+                        )
+                        return False
+                    # Compare with expected
+                    expected = expected_embeddings[i]
+                    if len(embedding) != len(expected):
+                        log.warning(
+                            "Health check failed: embedding size mismatch",
+                            model=self.config.id,
+                        )
+                        return False
+                    # Allow small numerical differences
+                    for a, b in zip(embedding, expected):
+                        if abs(a - b) > 1e-2:
+                            log.warning(
+                                "Health check failed: embedding value mismatch",
+                                model=self.config.id,
+                                index=i,
+                                expected=a,
+                                got=b,
+                                input_text=input_texts[i],
+                            )
+                            return False
+            return True
+
+    async def _check_completion_health(self) -> bool:
+        async with httpx.AsyncClient(
+            timeout=self.health_check_timeout
+        ) as client:
+            resp = await client.post(
+                f"{self.endpoint}/v1/completions",
+                json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
+            )
+            if resp.status_code != 200:
+                log.warning(
+                    "Health check failed",
+                    model=self.config.id,
+                    status=resp.status_code,
+                )
+                return False
+            return True
 
     async def terminate(self) -> None:
-        pass
+        """Terminate the process, escalating to kill if necessary."""
+        log.info("Terminating model", model=self.config.id)
+        self.process_status = "stopping"
 
-    @property
-    def slug(self) -> str: ...
+        self._tasks.terminate()
+
+        if self.process:
+            pid = self.process.pid
+            log.info(
+                "Terminating model process",
+                model=self.config.id,
+                pid=pid,
+            )
+            try:
+                self.process.terminate()
+            except ProcessLookupError:
+                log.exception("error terminating process", pid=pid)
+            try:
+                await asyncio.wait_for(self.process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                log.info(
+                    "Killing unresponsive model process",
+                    model=self.config.id,
+                )
+                try:
+                    self.process.kill()
+                except ProcessLookupError:
+                    pass
+                await self.process.wait()
+            log.info("process terminated", model=self.config.id, pid=pid)
+        log.info("resetting model state", model=self.config.id)
+        self.process = None
+        self.endpoint = None
+        self.process_status = "stopped"
+
+        # Update metrics
+        metrics.inference_model_status.labels(model=self.config.id).set(0)
+        self.health_status = ""
+        self._notify_status_changed()
 
 
 class LlamaModel(Model):
-    health_check_interval: float = 300  # every 5 minutes
-    health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
-    verification_data: dict[str, list[float]] | None = None
-
-    _tasks: TaskManager
-    _host = "127.0.0.1"
-    status_changed: asyncio.Event
-
-    async def _check_health(self) -> bool: ...
+    _type = "llama-server"
 
     def __init__(self, config: LlamaServerModelConfig):
         super().__init__(config)
         self._config = config  # Allow access to type-specific config
-        self._tasks = TaskManager()
-        self.status_changed = asyncio.Event()
 
-        if self.is_embedding:
-            self._check_health = self._check_embedding_health
-        else:
-            self._check_health = self._check_completion_health
-
-    def _notify_status_changed(self) -> None:
-        """Notify watchers that status changed. Set and immediately clear."""
-        self.status_changed.set()
-        self.status_changed.clear()
-
-    @property
     def is_embedding(self) -> bool:
         return bool(
             set(self.config.cmd_args) & set(["--embedding", "--embeddings"])
@@ -321,264 +533,14 @@ class LlamaModel(Model):
         ).observe(duration)
         metrics.inference_model_status.labels(model=self.config.id).set(1)
 
-    async def terminate(self) -> None:
-        """Terminate the process, escalating to kill if necessary."""
-        log.info("Terminating model", model=self.config.id)
-        self.process_status = "stopping"
-
-        self._tasks.terminate()
-
-        if self.process:
-            pid = self.process.pid
-            log.info(
-                "Terminating model process",
-                model=self.config.id,
-                pid=pid,
-            )
-            try:
-                self.process.terminate()
-            except ProcessLookupError:
-                log.exception("error terminating process", pid=pid)
-            try:
-                await asyncio.wait_for(self.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                log.info(
-                    "Killing unresponsive model process",
-                    model=self.config.id,
-                )
-                try:
-                    self.process.kill()
-                except ProcessLookupError:
-                    pass
-                await self.process.wait()
-            log.info("process terminated", model=self.config.id, pid=pid)
-        log.info("resetting model state", model=self.config.id)
-        self.process = None
-        self.endpoint = None
-        self.process_status = "stopped"
-
-        # Update metrics
-        metrics.inference_model_status.labels(model=self.config.id).set(0)
-        self.health_status = ""
-        self._notify_status_changed()
-
-    async def _monitor_process(self) -> None:
-        """Monitor whether our process has exited."""
-        assert self.process is not None
-        await self.process.wait()
-        if self.process_status in ["stopped", "stopping"]:
-            return
-        log.error(
-            "Process exited unexpectedly",
-            model=self.config.id,
-            returncode=self.process.returncode,
-        )
-        # Clean up
-        await self.terminate()
-
-    async def _monitor_output(
-        self,
-        stream: asyncio.StreamReader | None,
-        is_stderr: bool,
-    ) -> None:
-        stream_name = "stderr" if is_stderr else "stdout"
-        if stream is None:
-            log.warning(f"No stream for {stream_name}.")
-            return
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            line_str = line.decode("utf-8", errors="replace").strip()
-            if not line_str:
-                continue
-            log.debug(
-                "llama-server",
-                model=self.config.id,
-                stream=stream_name,
-                line=line_str,
-            )
-
-    async def _check_embedding_health(self) -> bool:
-        async with httpx.AsyncClient(
-            timeout=self.health_check_timeout
-        ) as client:
-            input_texts = ["health check"]
-            expected_embeddings: list[list[float]] | None = None
-            if self.verification_data:
-                # input texts are keys
-                input_texts = list(self.verification_data.keys())
-                expected_embeddings = list(self.verification_data.values())
-
-            resp = await client.post(
-                f"{self.endpoint}/v1/embeddings",
-                json={
-                    "input": input_texts,
-                    "model": self.config.id,
-                },
-            )
-
-            if resp.status_code != 200:
-                log.warning(
-                    "Health check failed",
-                    model=self.config.id,
-                    status=resp.status_code,
-                )
-                return False
-
-            if expected_embeddings is not None:
-                data = resp.json()
-                for i, item in enumerate(data.get("data", [])):
-                    embedding = item.get("embedding", [])
-                    if not embedding:
-                        log.warning(
-                            "Health check failed: missing embedding",
-                            model=self.config.id,
-                        )
-                        return False
-                    # Compare with expected
-                    expected = expected_embeddings[i]
-                    if len(embedding) != len(expected):
-                        log.warning(
-                            "Health check failed: embedding size mismatch",
-                            model=self.config.id,
-                        )
-                        return False
-                    # Allow small numerical differences
-                    for a, b in zip(embedding, expected):
-                        if abs(a - b) > 1e-2:
-                            log.warning(
-                                "Health check failed: embedding value mismatch",
-                                model=self.config.id,
-                                index=i,
-                                expected=a,
-                                got=b,
-                                input_text=input_texts[i],
-                            )
-                            return False
-            return True
-
-    async def _check_completion_health(self) -> bool:
-        async with httpx.AsyncClient(
-            timeout=self.health_check_timeout
-        ) as client:
-            resp = await client.post(
-                f"{self.endpoint}/v1/completions",
-                json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
-            )
-            if resp.status_code != 200:
-                log.warning(
-                    "Health check failed",
-                    model=self.config.id,
-                    status=resp.status_code,
-                )
-                return False
-            return True
-
-    async def _monitor_health(self) -> None:
-        """Periodically check if the model is responsive."""
-        new_status = ""
-        interval = 0
-        while True:
-            # This is a bit complicated to handle varying intervals during warmup
-            # and manage the event trigger
-            # 1. Status update and sleep
-            changed = new_status != self.health_status
-            self.health_status = new_status
-            if changed:
-                self._notify_status_changed()
-            await asyncio.sleep(interval)
-
-            # 2. Fast loop without an actual health check to wait until we see the
-            #    model starting or running and the endpoint exposed.
-            if set(["starting", "running"]) & self.status and not self.endpoint:
-                new_status = ""
-                interval = 0.1
-                continue
-
-            # 3. Real health check immediately afterwards and switching to a slower interval.
-            try:
-                new_status = (
-                    "healthy" if (await self._check_health()) else "unhealthy"
-                )
-            except Exception as e:
-                log.exception(
-                    "Health check error", model=self.config.id, error=str(e)
-                )
-                new_status = "unhealthy"
-
-            interval = self.health_check_interval
-
-    async def _wait_for_startup(self) -> None:
-        async with httpx.AsyncClient() as client:
-            while True:
-                try:
-                    resp = await client.get(f"{self.endpoint}/health")
-                    if resp.status_code == 200:
-                        return
-                except Exception:
-                    pass
-                await asyncio.sleep(0.5)
-
 
 class VllmModel(Model):
-    endpoint: str | None = None
-    datadir: Path
-    process_status: Literal["stopped", "running", "starting", "stopping"] = (
-        "stopped"
-    )
-    health_status: Literal["healthy", "unhealthy", ""] = ""
-    health_check_interval: float = 300  # every 5 minutes
-    health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
-    verification_data: dict[str, list[float]] | None = None
-
-    _tasks: TaskManager
-    _host = "127.0.0.1"
-    status_changed: asyncio.Event
-    lock: UserManagerLock
-
-    async def _check_health(self) -> bool: ...
+    _type = "vllm"
 
     def __init__(self, config: VllmModelConfig):
         super().__init__(config)
         self._config = config
-        self._tasks = TaskManager()
-        self.status_changed = asyncio.Event()
-        self.lock = UserManagerLock()
 
-        if self.is_embedding:
-            self._check_health = self._check_embedding_health
-        else:
-            self._check_health = self._check_completion_health
-
-    def _notify_status_changed(self) -> None:
-        """Notify watchers that status changed. Set and immediately clear."""
-        self.status_changed.set()
-        self.status_changed.clear()
-
-    @property
-    def status(self) -> set[str]:
-        """Return a set of status flags for this model.
-
-        This is modelled after Ceph's markers for placement group health to allow
-        different levels of granularity to support different use cases.
-
-        """
-        result: set[str] = set()
-        result.add(self.process_status)
-        result.add(self.health_status)
-
-        if set(["running", "healthy"]) <= result:
-            result.add("active")
-        else:
-            result.add("inactive")
-
-        # Some status might be an empty string. Filter that out.
-        result = result - set([""])
-
-        return result
-
-    @property
     def is_embedding(self) -> bool:
         return self.config.embedding
 
@@ -671,207 +633,6 @@ class VllmModel(Model):
             model=self.config.id
         ).observe(duration)
         metrics.inference_model_status.labels(model=self.config.id).set(1)
-
-    async def terminate(self) -> None:
-        """Terminate the process, escalating to kill if necessary."""
-        log.info("Terminating model", model=self.config.id)
-        self.process_status = "stopping"
-
-        self._tasks.terminate()
-
-        if self.process:
-            pid = self.process.pid
-            log.info(
-                "Terminating model process",
-                model=self.config.id,
-                pid=pid,
-            )
-            try:
-                self.process.terminate()
-            except ProcessLookupError:
-                log.exception("error terminating process", pid=pid)
-            try:
-                await asyncio.wait_for(self.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                log.info(
-                    "Killing unresponsive model process",
-                    model=self.config.id,
-                )
-                try:
-                    self.process.kill()
-                except ProcessLookupError:
-                    pass
-                await self.process.wait()
-            log.info("process terminated", model=self.config.id, pid=pid)
-        log.info("resetting model state", model=self.config.id)
-        self.process = None
-        self.endpoint = None
-        self.process_status = "stopped"
-
-        # Update metrics
-        metrics.inference_model_status.labels(model=self.config.id).set(0)
-        self.health_status = ""
-        self._notify_status_changed()
-
-    async def _monitor_process(self) -> None:
-        """Monitor whether our process has exited."""
-        assert self.process is not None
-        await self.process.wait()
-        if self.process_status in ["stopped", "stopping"]:
-            return
-        log.error(
-            "Process exited unexpectedly",
-            model=self.config.id,
-            returncode=self.process.returncode,
-        )
-        # Clean up
-        await self.terminate()
-
-    async def _monitor_output(
-        self,
-        stream: asyncio.StreamReader | None,
-        is_stderr: bool,
-    ) -> None:
-        stream_name = "stderr" if is_stderr else "stdout"
-        if stream is None:
-            log.warning(f"No stream for {stream_name}.")
-            return
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            line_str = line.decode("utf-8", errors="replace").strip()
-            if not line_str:
-                continue
-            log.debug(
-                "vllm",
-                model=self.config.id,
-                stream=stream_name,
-                line=line_str,
-            )
-
-    async def _check_embedding_health(self) -> bool:
-        async with httpx.AsyncClient(
-            timeout=self.health_check_timeout
-        ) as client:
-            input_texts = ["health check"]
-            expected_embeddings: list[list[float]] | None = None
-            if self.verification_data:
-                # input texts are keys
-                input_texts = list(self.verification_data.keys())
-                expected_embeddings = list(self.verification_data.values())
-
-            resp = await client.post(
-                f"{self.endpoint}/v1/embeddings",
-                json={
-                    "input": input_texts,
-                    "model": self.config.id,
-                },
-            )
-
-            if resp.status_code != 200:
-                log.warning(
-                    "Health check failed",
-                    model=self.config.id,
-                    status=resp.status_code,
-                )
-                return False
-
-            if expected_embeddings is not None:
-                data = resp.json()
-                for i, item in enumerate(data.get("data", [])):
-                    embedding = item.get("embedding", [])
-                    if not embedding:
-                        log.warning(
-                            "Health check failed: missing embedding",
-                            model=self.config.id,
-                        )
-                        return False
-                    # Compare with expected
-                    expected = expected_embeddings[i]
-                    if len(embedding) != len(expected):
-                        log.warning(
-                            "Health check failed: embedding size mismatch",
-                            model=self.config.id,
-                        )
-                        return False
-                    # Allow small numerical differences
-                    for a, b in zip(embedding, expected):
-                        if abs(a - b) > 1e-2:
-                            log.warning(
-                                "Health check failed: embedding value mismatch",
-                                model=self.config.id,
-                                index=i,
-                                expected=a,
-                                got=b,
-                                input_text=input_texts[i],
-                            )
-                            return False
-            return True
-
-    async def _check_completion_health(self) -> bool:
-        async with httpx.AsyncClient(
-            timeout=self.health_check_timeout
-        ) as client:
-            resp = await client.post(
-                f"{self.endpoint}/v1/completions",
-                json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
-            )
-            if resp.status_code != 200:
-                log.warning(
-                    "Health check failed",
-                    model=self.config.id,
-                    status=resp.status_code,
-                )
-                return False
-            return True
-
-    async def _monitor_health(self) -> None:
-        """Periodically check if the model is responsive."""
-        new_status = ""
-        interval = 0
-        while True:
-            # This is a bit complicated to handle varying intervals during warmup
-            # and manage the event trigger
-            # 1. Status update and sleep
-            changed = new_status != self.health_status
-            self.health_status = new_status
-            if changed:
-                self._notify_status_changed()
-            await asyncio.sleep(interval)
-
-            # 2. Fast loop without an actual health check to wait until we see the
-            #    model starting or running and the endpoint exposed.
-            if set(["starting", "running"]) & self.status and not self.endpoint:
-                new_status = ""
-                interval = 0.1
-                continue
-
-            # 3. Real health check immediately afterwards and switching to a slower interval.
-            try:
-                new_status = (
-                    "healthy" if (await self._check_health()) else "unhealthy"
-                )
-            except Exception as e:
-                log.exception(
-                    "Health check error", model=self.config.id, error=str(e)
-                )
-                new_status = "unhealthy"
-
-            interval = self.health_check_interval
-
-    async def _wait_for_startup(self) -> None:
-        expected_endpoint = f"http://{self._host}:{self.config.port}"
-        async with httpx.AsyncClient() as client:
-            while True:
-                try:
-                    resp = await client.get(f"{expected_endpoint}/health")
-                    if resp.status_code == 200:
-                        self.endpoint = expected_endpoint
-                        return
-                except Exception:
-                    pass
-                await asyncio.sleep(0.5)
 
     async def download(self) -> None:
         pass

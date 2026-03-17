@@ -13,6 +13,7 @@ access_log_path = ".access_log-inference1"
 type = "llama-server"
 id = "gemma"
 context_size = 4096
+port = 8100
 cmd_args = []
 max_requests = 21
 
@@ -24,6 +25,8 @@ hash = "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
 type = "llama-server"
 id = "embeddinggemma"
 cmd_args = ["--embeddings"]
+port = 8101
+context_size = 4096
 
 [[openai.models.files]]
 url = "https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf"
