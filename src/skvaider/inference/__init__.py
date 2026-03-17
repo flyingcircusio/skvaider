@@ -24,7 +24,7 @@ from skvaider.inference.manager import Manager
 from skvaider.logging import LoggingMiddleware, logging_config
 from skvaider.utils import TaskManager
 
-from .config import LlamaServerModelConfig
+from .config import LlamaServerModelConfig, ModelConfig
 from .model import LlamaModel, VllmModel
 
 log = structlog.stdlib.get_logger()
@@ -80,8 +80,13 @@ async def lifespan(
         Manager, manager
     )
 
+    seen_ports: dict[int, ModelConfig] = {}
     model_downloads: list[Awaitable[Any]] = []
     for model_config in config.openai.models:
+        if duplicate_port_model := seen_ports.get(model_config.port):
+            raise ValueError(
+                f"{model_config.id}: port {model_config.port} already in use by {duplicate_port_model.id}."
+            )
         if isinstance(model_config, LlamaServerModelConfig):
             model = LlamaModel(model_config)
         else:
