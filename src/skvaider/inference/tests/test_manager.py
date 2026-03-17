@@ -4,33 +4,38 @@ from pathlib import Path
 import httpx
 import pytest
 
-from skvaider.inference.config import ModelConfig, ModelFile
-from skvaider.inference.manager import Manager, Model
+from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
+from skvaider.inference.manager import Manager
+from skvaider.inference.model import LlamaModel
 
 
-async def test_manager_start_crash_quick_return(gemma: Model, manager: Manager):
+async def test_manager_start_crash_quick_return(
+    gemma: LlamaModel, manager: Manager
+):
     gemma.config.cmd_args = ["--asdf"]
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(manager.start_model("gemma"), timeout=10)
 
 
-async def test_download_model_success(gemma: Model):
+async def test_download_model_success(gemma: LlamaModel):
     await gemma.download()
     assert gemma.model_files[0].exists()
     assert gemma.integrity_marker_file.exists()
 
 
 async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
-    config = ModelConfig(
+    config = LlamaServerModelConfig(
         id="gemma",
         files=[
-            ModelFile(
+            LlamaModelFile(
                 url=f"{gguf_http_server}/not-a-model.gguf",
                 hash="foobar",
             )
         ],
+        context_size=1024,
+        port=0,
     )
-    model = Model(config)
+    model = LlamaModel(config)
     model.datadir = tmp_path
     with pytest.raises(ValueError) as e:
         await model.download()
@@ -42,7 +47,7 @@ async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
     assert not model.integrity_marker_file.exists()
 
 
-async def test_manager_start_model(gemma: Model, manager: Manager):
+async def test_manager_start_model(gemma: LlamaModel, manager: Manager):
     assert await manager.use_model("unknown-model") is None
 
     # not yet started, not usable
@@ -139,20 +144,22 @@ async def test_manager_start_model(gemma: Model, manager: Manager):
 
 
 async def test_download_split_model(tmp_path: Path, gguf_http_server: str):
-    config = ModelConfig(
+    config = LlamaServerModelConfig(
         id="split-gemma",
         files=[
-            ModelFile(
+            LlamaModelFile(
                 url=f"{gguf_http_server}/split-gguf-1.gguf",
                 hash="4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
             ),
-            ModelFile(
+            LlamaModelFile(
                 url=f"{gguf_http_server}/split-gguf-2.gguf",
                 hash="53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
             ),
         ],
+        port=0,
+        context_size=1024,
     )
-    model = Model(config)
+    model = LlamaModel(config)
     model.datadir = tmp_path
     await model.download()
     assert model.model_files[0].exists()

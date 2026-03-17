@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from skvaider.inference.config import ModelConfig, ModelFile
+from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
 from skvaider.inference.manager import Model
 
 
@@ -30,16 +30,18 @@ async def test_inference_endpoints_normalize_model_name(
 
 def test_model_config_normalizes_id_to_lowercase():
     """
-    Test that ModelConfig normalizes the ID to lowercase.
+    Test that LlamaServerModelConfig normalizes the ID to lowercase.
     """
-    config = ModelConfig(
+    config = LlamaServerModelConfig(
         id="Gemma-2-2b",
         files=[
-            ModelFile(
+            LlamaModelFile(
                 url="https://example.com/model.gguf",
                 hash="sha256:1234567890abcdef",
             )
         ],
         llama_server=Path("llama-server"),
+        context_size=1024,
+        port=0,
     )
     assert config.id == "gemma-2-2b"

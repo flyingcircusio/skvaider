@@ -36,4 +36,6 @@ async def test_backend_model_warmup(
 
     model_backends = [b for b in pool.backends if llm_model_name in b.models]
     models_in_backends = [b.models[llm_model_name] for b in model_backends]
-    assert any(m.is_loaded for m in models_in_backends)
+    loaded = [m for m in models_in_backends if m.is_loaded]
+    assert loaded
+    assert loaded[0].limit == 21

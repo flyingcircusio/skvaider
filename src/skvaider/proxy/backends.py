@@ -297,7 +297,7 @@ class SkvaiderBackend(Backend):
             updated_models[model_obj.id] = model_obj
 
             model_obj.is_loaded = "active" in model["status"]
-            model_obj.limit = model.get("parallel_slots", 1)
+            model_obj.limit = model["max_requests"]
             model_obj.memory_usage = model.get("memory_usage") or {}
 
             if model_obj.is_loaded:

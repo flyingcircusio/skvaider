@@ -1,6 +1,7 @@
 from pathlib import Path
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from skvaider.config import LoggingConfig as BaseLoggingConfig
 
@@ -19,20 +20,27 @@ class ServerConfig(BaseModel):
 
 
 class OpenAIConfig(BaseModel):
-    models: list["ModelConfig"]
+    models: list["AnyModelConfig"]
 
 
 class LoggingConfig(BaseLoggingConfig):
     access_log_path: Path = Path("/var/log/skvaider/inference-access.log")
 
 
+class LlamaModelFile(BaseModel):
+    url: str
+    hash: str
+
+
 class ModelConfig(BaseModel):
+    """Shared fields for all inference backend model configs."""
+
     id: str
+    embedding: bool = False
     cmd_args: list[str] = []
-    context_size: int = 0
-    parallel_slots: int = 128
-    llama_server: Path = Path("llama-server")
-    files: list["ModelFile"]
+    context_size: int
+    max_requests: int
+    port: int
 
     @field_validator("id")
     @classmethod
@@ -40,6 +48,22 @@ class ModelConfig(BaseModel):
         return v.lower()
 
 
-class ModelFile(BaseModel):
-    url: str
-    hash: str
+class LlamaServerModelConfig(ModelConfig):
+    type: Literal["llama-server"] = "llama-server"
+    llama_server: Path = Path("llama-server")
+    max_requests: int = 16
+    files: list[LlamaModelFile]
+
+
+class VllmModelConfig(ModelConfig):
+    type: Literal["vllm"] = "vllm"
+    vllm: Path = Path("vllm")
+    max_requests: int = 256
+    revision: str
+    repo: str
+
+
+AnyModelConfig = Annotated[
+    LlamaServerModelConfig | VllmModelConfig,
+    Field(discriminator="type"),
+]

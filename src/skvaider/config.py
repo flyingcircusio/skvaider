@@ -32,6 +32,7 @@ class ModelInstanceConfig(BaseModel):
     id: str
     instances: int
     memory: dict[str, int]  # e.g. {"ram": "8G"} or {"rocm-vram": "8G"}
+    limit: int = 0
 
     @field_validator("memory", mode="before")
     @classmethod

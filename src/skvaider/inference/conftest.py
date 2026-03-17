@@ -16,8 +16,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skvaider.inference import app_factory
-from skvaider.inference.config import ModelConfig, ModelFile
-from skvaider.inference.manager import Manager, Model
+from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
+from skvaider.inference.manager import Manager
+from skvaider.inference.model import LlamaModel
 
 
 class ServerState:
@@ -31,6 +32,7 @@ def fake_llama_server() -> Generator[tuple[str, ServerState, int], None, None]:
     """In-process HTTP server mimicking the llama-server /health and inference endpoints.
 
     Yields (url, state, port). Mutate `state` to control response behaviour.
+
     """
     state = ServerState()
 
@@ -122,7 +124,9 @@ async def mock_llama_subprocess(
 
 
 @pytest.fixture
-def client(manager: Manager, gemma: Model) -> Generator[TestClient, None, None]:
+def client(
+    manager: Manager, gemma: LlamaModel
+) -> Generator[TestClient, None, None]:
     @svcs.fastapi.lifespan
     async def test_lifespan(
         app: FastAPI, registry: svcs.Registry
@@ -161,22 +165,33 @@ async def manager(model_path: Path) -> AsyncGenerator[Manager, None]:
     await m.shutdown()
 
 
+USED_PORTS: set[int] = set()
+
+
+def get_port() -> int:
+    next = max(USED_PORTS, default=8000)
+    USED_PORTS.add(next)
+    return next
+
+
 async def prepare_model(
     id: str,
     context: int,
     args: list[str],
-    file: ModelFile,
+    file: LlamaModelFile,
     models_cache: Path,
     manager: Manager,
-) -> Model:
-    config = ModelConfig(
+) -> LlamaModel:
+
+    config = LlamaServerModelConfig(
         id=id,
         files=[file],
         context_size=context,
         cmd_args=args,
+        port=get_port(),
     )
 
-    model = Model(config)
+    model = LlamaModel(config)
     manager.add_model(model)
 
     cache_dir = models_cache / model.slug
@@ -201,12 +216,12 @@ async def prepare_model(
 
 
 @pytest.fixture
-async def gemma(models_cache: Path, manager: Manager) -> Model:
+async def gemma(models_cache: Path, manager: Manager) -> LlamaModel:
     return await prepare_model(
         "gemma",
         4096,
         [],
-        ModelFile(
+        LlamaModelFile(
             url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
             hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
         ),
@@ -216,12 +231,12 @@ async def gemma(models_cache: Path, manager: Manager) -> Model:
 
 
 @pytest.fixture
-async def embeddinggemma(models_cache: Path, manager: Manager) -> Model:
+async def embeddinggemma(models_cache: Path, manager: Manager) -> LlamaModel:
     return await prepare_model(
         "embeddinggemma",
         4096,
         ["--embeddings", "-ngl", "0"],
-        ModelFile(
+        LlamaModelFile(
             url="https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf",
             hash="a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57",
         ),
