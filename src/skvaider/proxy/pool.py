@@ -179,7 +179,7 @@ class Pool:
                 # First pass: check whether this model fits here.
                 for resource in available_resources[backend.url]:
                     available = available_resources[backend.url][resource]
-                    required = model.memory[resource]
+                    required = model.memory.get(resource, 0)
                     if required > available:
                         log.info(
                             "ignoring overloaded backend",
@@ -194,9 +194,9 @@ class Pool:
                     continue
                 # Make a second pass to update the usage map.
                 for resource in available_resources[backend.url]:
-                    available_resources[backend.url][resource] -= model.memory[
-                        resource
-                    ]
+                    available_resources[backend.url][resource] -= (
+                        model.memory.get(resource, 0)
+                    )
                 map[backend.url].add(model.id)
                 unplaced_instances -= 1
                 if not unplaced_instances:
