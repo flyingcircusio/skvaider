@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
-from skvaider.inference.manager import Model
+from skvaider.inference.model import Model
 
 
 @pytest.mark.asyncio

@@ -98,6 +98,7 @@ class Pool:
     backends: list["Backend"]
     tasks: TaskManager
     semaphores: dict[str, ModelSemaphore]
+    model_configs: dict[str, ModelInstanceConfig]
 
     # Protect against multiple operations performing larger scale
     # model management tasks like loading/unloading over multiple backends.
@@ -114,9 +115,7 @@ class Pool:
         self.semaphores = {}
 
         # Model configurations from config file
-        self.model_configs: dict[str, ModelInstanceConfig] = {
-            m.id: m for m in model_configs
-        }
+        self.model_configs = {m.id: m for m in model_configs}
 
         self.model_management_lock = asyncio.Lock()
 
@@ -138,9 +137,9 @@ class Pool:
         Returns a map of backend IDs -> set of model ids to be loaded there.
 
         """
-        available_resources: dict[str, dict[str, int]] = (
-            {}
-        )  # backend -> resource_type -> total resource
+        available_resources: dict[
+            str, dict[str, int]
+        ] = {}  # backend -> resource_type -> total resource
         map: dict[str, set[str]] = {}
         # Fill the usage projection with the total memory.
         for backend in self.backends:
@@ -222,9 +221,9 @@ class Pool:
             # hosts with the fewest required unloads first, to reduce the risk of
             # taking the last instance of a model down completely.
 
-            actions: dict[str, dict[str, set[str]]] = (
-                {}
-            )  # backend -> load/unload -> set of model names
+            actions: dict[
+                str, dict[str, set[str]]
+            ] = {}  # backend -> load/unload -> set of model names
 
             for backend in self.backends:
                 wanted_models = map[backend.url]
