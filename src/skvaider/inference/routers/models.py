@@ -178,8 +178,19 @@ async def proxy_request(
         client = httpx.AsyncClient(
             timeout=300
         )  # XXX make configurable and/or recommend streaming?
+
+        proxy_header_names = ["Content-Type"]
+        proxy_headers: dict[str, str] = {}
+        for candidate in proxy_header_names:
+            if candidate not in request.headers:
+                continue
+            proxy_headers[candidate] = request.headers[candidate]
+
         req = client.build_request(
-            request.method, url, content=await request.body()
+            request.method,
+            url,
+            content=await request.body(),
+            headers=proxy_headers,
         )
 
         try:
