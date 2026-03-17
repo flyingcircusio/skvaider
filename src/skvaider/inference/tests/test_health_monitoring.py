@@ -4,14 +4,16 @@ from typing import Any
 import pytest
 
 from skvaider.conftest import wait_for_condition
-from skvaider.inference.config import ModelConfig, ModelFile
+from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
 from skvaider.inference.conftest import ServerState, mock_llama_subprocess
-from skvaider.inference.manager import Model
+from skvaider.inference.model import LlamaModel
 
 
-def _make_fast_health_check_model(config: ModelConfig, tmp_path: Path) -> Model:
+def _make_fast_health_check_model(
+    config: LlamaServerModelConfig, tmp_path: Path
+) -> LlamaModel:
     """Create a Model with accelerated health-check intervals for testing."""
-    model = Model(config)
+    model = LlamaModel(config)
     model.datadir = tmp_path
     model.health_check_interval = 0.01
     model.health_check_timeout = 0.01
@@ -19,7 +21,7 @@ def _make_fast_health_check_model(config: ModelConfig, tmp_path: Path) -> Model:
 
 
 @wait_for_condition()
-async def is_active(model: Model, expected: bool) -> bool:
+async def is_active(model: LlamaModel, expected: bool) -> bool:
     if ("active" in model.status) == expected:
         return True
     return False
@@ -30,12 +32,12 @@ async def is_active(model: Model, expected: bool) -> bool:
     [
         {
             "id": "test",
-            "files": [ModelFile(url="u", hash="h")],
+            "files": [LlamaModelFile(url="u", hash="h")],
         },
         {
             "id": "test-embed",
             "cmd_args": ["--embeddings"],
-            "files": [ModelFile(url="u", hash="h")],
+            "files": [LlamaModelFile(url="u", hash="h")],
         },
     ],
 )
@@ -45,7 +47,9 @@ async def test_health_check(
     model_kwargs: dict[str, Any],
 ):
     url, state, port = fake_llama_server
-    model = _make_fast_health_check_model(ModelConfig(**model_kwargs), tmp_path)
+    model = _make_fast_health_check_model(
+        LlamaServerModelConfig(**model_kwargs), tmp_path
+    )
 
     async with mock_llama_subprocess(port):
         await model.start()
@@ -83,11 +87,14 @@ async def test_health_check_embeddings(
         "usage": {"prompt_tokens": 0, "total_tokens": 0},
     }
 
-    config = ModelConfig(
+    config = LlamaServerModelConfig(
         id="test-embed",
         cmd_args=["--embeddings"],
-        files=[ModelFile(url="u", hash="h")],
+        files=[LlamaModelFile(url="u", hash="h")],
+        context_size=1024,
+        port=port,
     )
+
     model = _make_fast_health_check_model(config, tmp_path)
     model.verification_data = {"test input": expected_embedding}
 

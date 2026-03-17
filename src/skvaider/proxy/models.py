@@ -4,6 +4,8 @@ from typing import Any
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
 
+from skvaider.config import ModelInstanceConfig
+
 from .backends import Backend
 
 log = structlog.stdlib.get_logger()
@@ -38,12 +40,13 @@ class AIModel(BaseModel):
         self.idle.set()
 
     @property
+    def config(self) -> ModelInstanceConfig:
+        return self.backend.pool.model_configs[self.id]
+
+    @property
     def configured_memory(self) -> dict[str, int]:
         """Get the configured memory for this model from pool config."""
-        config = self.backend.pool.model_configs.get(self.id)
-        if config is None:
-            return {}
-        return config.memory
+        return self.config.memory
 
     def total_size(self) -> int:
         return sum(self.configured_memory.values())

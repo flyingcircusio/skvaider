@@ -1,6 +1,6 @@
 import argparse
 import asyncio
-import shutil
+import os
 import tomllib
 from collections.abc import AsyncGenerator
 from logging import getLogger
@@ -24,7 +24,8 @@ from skvaider.inference.manager import Manager
 from skvaider.logging import LoggingMiddleware, logging_config
 from skvaider.utils import TaskManager
 
-from .config import ModelConfig
+from .config import LlamaServerModelConfig
+from .model import LlamaModel, VllmModel
 
 log = structlog.stdlib.get_logger()
 
@@ -71,6 +72,9 @@ async def lifespan(
         log.error("Failed to create models directory", error=str(e))
         raise
 
+    # The rust-based libraries can only be configured using an OS variable ... :
+    os.environ["HF_HOME"] = str(config.models_dir / ".hf")
+
     manager = Manager(models_dir=config.models_dir)
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         Manager, manager
@@ -78,7 +82,10 @@ async def lifespan(
 
     model_downloads: list[Awaitable[Any]] = []
     for model_config in config.openai.models:
-        model = skvaider.inference.manager.Model(model_config)
+        if isinstance(model_config, LlamaServerModelConfig):
+            model = LlamaModel(model_config)
+        else:
+            model = VllmModel(model_config)
         if model_config.id and model_config.id in verification_data:
             model.verification_data = verification_data[model_config.id]
         manager.add_model(model)
@@ -93,16 +100,9 @@ async def lifespan(
     log.info("Ready to handle requests.")
 
     def purge_outdated_models() -> None:
-        worklist = set(m.absolute() for m in manager.models_dir.glob("*"))
-        worklist = worklist - set(
-            m.datadir.absolute() for m in manager.models.values()
-        )
-        for dir in worklist:
-            log.info(f"Removing outdated model data: {dir}")
-            if not dir.is_dir():
-                dir.unlink()
-            else:
-                shutil.rmtree(dir, ignore_errors=True)
+        # Our previous approach killed too much data and wasn't compatible
+        # with how hugging face caches downloads.
+        return
 
     tasks = TaskManager()
     tasks.create(asyncio.to_thread, args=(purge_outdated_models,))

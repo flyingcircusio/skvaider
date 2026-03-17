@@ -10,7 +10,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from skvaider.inference import metrics
-from skvaider.inference.manager import Manager, Model
+from skvaider.inference.manager import Manager
+from skvaider.inference.model import Model
 from skvaider.typing import JSONObject
 
 router = APIRouter()
@@ -24,7 +25,7 @@ def model_info(model: Model, manager: Manager) -> JSONObject:
     return {
         "id": model.config.id,
         "status": list(model.status),
-        "parallel_slots": model.config.parallel_slots,
+        "max_requests": model.config.max_requests,
         "memory_usage": {
             monitor.id: monitor.model_usage(model)
             for monitor in manager.monitors.values()
