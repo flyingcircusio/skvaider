@@ -1,9 +1,11 @@
+from typing import Callable
+
 import pytest
 import svcs
 from fastapi import HTTPException
 
 from skvaider.config import ModelInstanceConfig
-from skvaider.conftest import backend_factory, registered_model_factory
+from skvaider.conftest import registered_model_factory
 from skvaider.proxy.backends import DummyBackend
 from skvaider.proxy.pool import Pool
 from skvaider.routers.openai import OpenAIProxy
@@ -29,6 +31,7 @@ async def test_proxy_retry_verifies_backend_switching(
     services: svcs.Container,
     task_managers: list[TaskManager],
     mock_request_factory,  # type: ignore[misc]
+    dummy_backend_factory: Callable[..., DummyBackend],
 ) -> None:
     """First backend returns 540, proxy retries on the second and succeeds.
 
@@ -36,8 +39,8 @@ async def test_proxy_retry_verifies_backend_switching(
     with the lowest ``in_progress`` count, breaking ties by list order.
     b1 is appended first so it is always tried first.
     """
-    b1 = backend_factory(fail_count=1)
-    b2 = backend_factory()
+    b1 = dummy_backend_factory(fail_count=1)
+    b2 = dummy_backend_factory()
 
     config = ModelInstanceConfig(
         id="test-model", instances=2, memory={"ram": 10}
@@ -60,7 +63,7 @@ async def test_proxy_retry_verifies_backend_switching(
     await proxy.proxy(req, "/test")  # type: ignore[misc]
 
     # b1 was tried first (list order), failed with 540, then b2 succeeded.
-    assert (
-        b1.call_count == 1
-    ), "b1 should have been called exactly once (and failed)"
+    assert b1.call_count == 1, (
+        "b1 should have been called exactly once (and failed)"
+    )
     assert b2.call_count == 1, "b2 should have handled the retry"

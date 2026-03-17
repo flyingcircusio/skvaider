@@ -11,7 +11,7 @@ async def has_health_status(model: Model, expected: str) -> bool:
     return model.health_status == expected
 
 
-async def test_health_check_updates_model_status_completion():
+async def test_monitor_health_updates_model_status_completion():
     model = Model(
         ModelConfig(
             id="test",
@@ -114,10 +114,12 @@ async def test_health_check_completions(openai_server: OpenAIServerMock):
     )
     model.endpoint = openai_server.endpoint
 
+    # 2. Simulate correct response -> healthy
     openai_server.response = {}
     assert await model._check_completion_health()
     assert openai_server.last_request_json["prompt"] == "2+2="
 
     # 2. Simulate wrong response -> unhealthy
-    openai_server.response = {}
-    assert not await model._check_embedding_health()
+    openai_server.response_status = 500
+    assert not await model._check_completion_health()
+    assert openai_server.last_request_json["prompt"] == "2+2="
