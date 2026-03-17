@@ -238,15 +238,27 @@ class SkvaiderBackend(Backend):
         self.log.debug("starting monitor")
         while True:
             was_healthy = self.healthy
+
+            in_progress = sum([x.in_progress for x in self.models.values()])
             try:
-                async with self.loading_lock:
-                    await self._update_usage()
-                    await self._update_models()
-                    self.healthy = True
-            except Exception as e:
-                self.log.error("monitor failed", error=str(e))
+                if in_progress:
+                    # XXX skip health check as we can't communicate out of band at the moment
+                    # otherwise we mark busy backends as dead too fast and cause superfluous
+                    # unloading of healthy models.
+                    pass
+                else:
+                    async with self.loading_lock:
+                        await self._update_usage()
+                        await self._update_models()
+                        self.healthy = True
+            except httpx.ConnectError as e:
+                self.log.warning("monitor failed to connect", error=str(e))
                 self.healthy = False
                 self.unhealthy_reason = str(e)
+            except Exception as e:
+                self.log.exception("monitor failed", error=repr(e))
+                self.healthy = False
+                self.unhealthy_reason = repr(e)
 
             if was_healthy != self.healthy:
                 self.log.info(
@@ -254,7 +266,6 @@ class SkvaiderBackend(Backend):
                     was_healthy=was_healthy,
                     is_healthy=self.healthy,
                 )
-
                 self.pool.tasks.create(self.pool.rebalance)
 
             self.request_health_update.clear()
