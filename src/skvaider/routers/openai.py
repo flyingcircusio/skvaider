@@ -279,7 +279,7 @@ async def get_model(
             return backend.models[model_id]
     raise HTTPException(
         404,
-        f"Unkonwn model `{model_id}`.",
+        f"Unknown model `{model_id}`.",
     )
 
 

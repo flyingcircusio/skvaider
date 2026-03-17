@@ -182,7 +182,6 @@ async def prepare_model(
     models_cache: Path,
     manager: Manager,
 ) -> LlamaModel:
-
     config = LlamaServerModelConfig(
         id=id,
         files=[file],

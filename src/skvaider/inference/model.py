@@ -133,9 +133,7 @@ class Model(ABC):
 
 class LlamaModel(Model):
     health_check_interval: float = 300  # every 5 minutes
-    health_check_timeout: float = (
-        600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
-    )
+    health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
     verification_data: dict[str, list[float]] | None = None
 
     _tasks: TaskManager
@@ -524,7 +522,6 @@ class LlamaModel(Model):
 
 
 class VllmModel(Model):
-    process: asyncio.subprocess.Process | None = None
     endpoint: str | None = None
     datadir: Path
     process_status: Literal["stopped", "running", "starting", "stopping"] = (
@@ -532,9 +529,7 @@ class VllmModel(Model):
     )
     health_status: Literal["healthy", "unhealthy", ""] = ""
     health_check_interval: float = 300  # every 5 minutes
-    health_check_timeout: float = (
-        600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
-    )
+    health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
     verification_data: dict[str, list[float]] | None = None
 
     _tasks: TaskManager
