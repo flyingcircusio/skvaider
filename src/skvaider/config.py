@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -33,6 +33,7 @@ class ModelInstanceConfig(BaseModel):
     instances: int
     memory: dict[str, int]  # e.g. {"ram": "8G"} or {"rocm-vram": "8G"}
     limit: int = 0
+    task: Literal["chat", "embedding"] = "chat"
 
     @field_validator("memory", mode="before")
     @classmethod
