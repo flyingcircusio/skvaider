@@ -4,7 +4,7 @@ import shutil
 import threading
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Generator, Literal
 
 import pytest
 import svcs
@@ -144,6 +144,7 @@ async def prepare_model(
     file: LlamaModelFile,
     models_cache: Path,
     manager: Manager,
+    task: Literal["chat", "embedding"] = "chat",
 ) -> LlamaModel:
     config = LlamaServerModelConfig(
         id=id,
@@ -151,6 +152,7 @@ async def prepare_model(
         context_size=context,
         cmd_args=args,
         port=get_port(),
+        task=task,
     )
 
     model = LlamaModel(config)
@@ -197,13 +199,14 @@ async def embeddinggemma(models_cache: Path, manager: Manager) -> LlamaModel:
     return await prepare_model(
         "embeddinggemma",
         4096,
-        ["--embeddings", "-ngl", "0"],
+        ["-ngl", "0"],
         LlamaModelFile(
             url="https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf",
             hash="a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57",
         ),
         models_cache,
         manager,
+        task="embedding",
     )
 
 
