@@ -36,7 +36,7 @@ class ModelConfig(BaseModel):
     """Shared fields for all inference backend model configs."""
 
     id: str
-    embedding: bool = False
+    task: Literal["chat", "embedding"] = "chat"
     cmd_args: list[str] = []
     context_size: int
     max_requests: int
@@ -49,14 +49,14 @@ class ModelConfig(BaseModel):
 
 
 class LlamaServerModelConfig(ModelConfig):
-    type: Literal["llama-server"] = "llama-server"
+    engine: Literal["llama-server"] = "llama-server"
     llama_server: Path = Path("llama-server")
     max_requests: int = 16
     files: list[LlamaModelFile]
 
 
 class VllmModelConfig(ModelConfig):
-    type: Literal["vllm"] = "vllm"
+    engine: Literal["vllm"] = "vllm"
     vllm: Path = Path("vllm")
     max_requests: int = 256
     revision: str
@@ -65,5 +65,5 @@ class VllmModelConfig(ModelConfig):
 
 AnyModelConfig = Annotated[
     LlamaServerModelConfig | VllmModelConfig,
-    Field(discriminator="type"),
+    Field(discriminator="engine"),
 ]

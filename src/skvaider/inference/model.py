@@ -103,7 +103,7 @@ class Model(ABC):
 
     _tasks: TaskManager
 
-    _type: str
+    _engine: str
 
     # This sub-classes must implement:
     def is_embedding(self) -> bool: ...
@@ -240,7 +240,7 @@ class Model(ABC):
             if not line_str:
                 continue
             log.debug(
-                self._type,
+                self._engine,
                 model=self.config.id,
                 stream=stream_name,
                 line=line_str,
@@ -365,16 +365,14 @@ class Model(ABC):
 
 
 class LlamaModel(Model):
-    _type = "llama-server"
+    _engine = "llama-server"
 
     def __init__(self, config: LlamaServerModelConfig):
         super().__init__(config)
         self._config = config  # Allow access to type-specific config
 
     def is_embedding(self) -> bool:
-        return bool(
-            set(self.config.cmd_args) & set(["--embedding", "--embeddings"])
-        )
+        return self.config.task == "embedding"
 
     @property
     def slug(self) -> str:
@@ -500,6 +498,8 @@ class LlamaModel(Model):
                 "--metrics",
                 "--slots",
             ]
+        if self.config.task == "embedding" and "--embeddings" not in self.config.cmd_args:
+            cmd += ["--embeddings"]
         cmd += self.config.cmd_args
         # fmt: on
         log.debug("cli", argv=" ".join(cmd))
@@ -535,14 +535,14 @@ class LlamaModel(Model):
 
 
 class VllmModel(Model):
-    _type = "vllm"
+    _engine = "vllm"
 
     def __init__(self, config: VllmModelConfig):
         super().__init__(config)
         self._config = config
 
     def is_embedding(self) -> bool:
-        return self.config.embedding
+        return self.config.task == "embedding"
 
     @property
     def slug(self) -> str:
@@ -601,6 +601,9 @@ class VllmModel(Model):
                 # Monitoring / Metrics
                 # XXX
             ]
+        if self.config.task == "embedding" and "--task" not in self.config.cmd_args:
+            # XXX: untested -- vllm embedding task flag, verify on real vllm deployment
+            cmd += ["--task", "embed"]
         cmd += self.config.cmd_args
         # fmt: on
         log.debug("cli", argv=" ".join(cmd))

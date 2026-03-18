@@ -10,7 +10,7 @@ log_level = "DEBUG"
 access_log_path = ".access_log-inference2"
 
 [[openai.models]]
-type = "llama-server"
+engine = "llama-server"
 id = "gemma"
 context_size = 4096
 cmd_args = []
@@ -22,9 +22,10 @@ url = "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-
 hash = "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
 
 [[openai.models]]
-type = "llama-server"
+engine = "llama-server"
 id = "embeddinggemma"
-cmd_args = ["--embeddings"]
+task = "embedding"
+cmd_args = []
 port = 8201
 context_size = 4096
 
