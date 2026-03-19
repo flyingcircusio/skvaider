@@ -26,7 +26,10 @@ async def test_configured_memory_returns_pool_config_memory(
     pool = Pool(
         [
             ModelInstanceConfig(
-                id="m", instances=1, memory={"ram": parse_size("100K")}
+                id="m",
+                instances=1,
+                memory={"ram": parse_size("100K")},
+                task="chat",
             )
         ],
         [dummy_backend],
@@ -46,6 +49,7 @@ async def test_total_size_sums_configured_memory(
                 id="m",
                 instances=1,
                 memory={"ram": parse_size("1K"), "vram": parse_size("2K")},
+                task="chat",
             )
         ],
         [dummy_backend],
@@ -70,7 +74,11 @@ async def test_check_memory_usage_returns_exceeding_resources(
 ):
     model = registered_model_factory("m", dummy_backend, ram=200)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -83,7 +91,11 @@ async def test_check_memory_usage_empty_when_within_limits(
 ):
     model = registered_model_factory("m", dummy_backend, ram=50)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -97,7 +109,11 @@ async def test_fit_score_uses_backend_free_memory(
     # available=1000, usage=200 → score = 1 - 200/1000 = 0.8
     model = registered_model_factory("m", dummy_backend)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 200})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 200}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -111,15 +127,16 @@ async def test_fit_score_adds_usage_back_when_already_loaded(
     # loaded: available = free(1000) + usage(200) = 1200 → score = 1 - 200/1200
     model = registered_model_factory("m", dummy_backend, loaded=True)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 200})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 200}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
-    assert (
-        model.fit_score()
-        == pytest.approx(  # pyright: ignore[reportUnknownMemberType]
-            1 - 200 / 1200
-        )
+    assert model.fit_score() == pytest.approx(  # pyright: ignore[reportUnknownMemberType]
+        1 - 200 / 1200
     )
 
 
@@ -131,7 +148,11 @@ async def test_fit_score_returns_zero_when_does_not_fit(
     dummy_backend.memory = {"ram": {"free": 100, "total": 100}}
     model = registered_model_factory("m", dummy_backend)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 200})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 200}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -145,12 +166,14 @@ async def test_fit_score_with_explicit_resources_dict(
     # explicit resources override backend free memory: 1 - 200/500 = 0.6
     model = registered_model_factory("m", dummy_backend)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 200})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 200}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
-    assert model.fit_score(
-        resources={"ram": 500}
-    ) == pytest.approx(  # pyright: ignore[reportUnknownMemberType]
+    assert model.fit_score(resources={"ram": 500}) == pytest.approx(  # pyright: ignore[reportUnknownMemberType]
         0.6
     )

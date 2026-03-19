@@ -16,6 +16,7 @@ context_size = 4096
 port = 8100
 cmd_args = []
 max_requests = 21
+task = "chat"
 
 [[openai.models.files]]
 url = "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true"

@@ -21,7 +21,11 @@ async def test_maps_only_includes_desired_models(
     registered_model_factory("m2", dummy_backend, ram=1)
 
     pool = Pool(
-        [ModelInstanceConfig(id="m1", instances=1, memory={"ram": 1})],
+        [
+            ModelInstanceConfig(
+                id="m1", instances=1, memory={"ram": 1}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -41,7 +45,11 @@ async def test_rebalance_loads_desired_instances(
     assert not model1.is_loaded
 
     pool = Pool(
-        [ModelInstanceConfig(id="m1", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m1", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -60,7 +68,11 @@ async def test_rebalance_distributes_across_backends(
     model1_b2 = registered_model_factory("m1", backend2, ram=100)
 
     pool = Pool(
-        [ModelInstanceConfig(id="m1", instances=2, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m1", instances=2, memory={"ram": 100}, task="chat"
+            )
+        ],
         [backend1, backend2],
     )
     task_managers.append(pool.tasks)
@@ -82,7 +94,7 @@ async def test_rebalance_unloads_excess_instances(
     registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
     model1_config = ModelInstanceConfig(
-        id="m1", instances=2, memory={"ram": parse_size("100K")}
+        id="m1", instances=2, memory={"ram": parse_size("100K")}, task="chat"
     )
 
     pool = Pool([model1_config], [backend1, backend2])
@@ -107,10 +119,10 @@ async def test_rebalance_respects_capacity(
     registered_model_factory("m2", dummy_backend, ram=parse_size("100K"))
 
     model1_config = ModelInstanceConfig(
-        id="m1", instances=1, memory={"ram": parse_size("100K")}
+        id="m1", instances=1, memory={"ram": parse_size("100K")}, task="chat"
     )
     model2_config = ModelInstanceConfig(
-        id="m2", instances=1, memory={"ram": parse_size("100K")}
+        id="m2", instances=1, memory={"ram": parse_size("100K")}, task="chat"
     )
     pool = Pool([model1_config, model2_config], [dummy_backend])
     task_managers.append(pool.tasks)
@@ -133,7 +145,7 @@ async def test_rebalance_handles_unhealthy_backend(
     model1_b2 = registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
     model1_config = ModelInstanceConfig(
-        id="m1", instances=2, memory={"ram": parse_size("100K")}
+        id="m1", instances=2, memory={"ram": parse_size("100K")}, task="chat"
     )
     pool = Pool([model1_config], [backend1, backend2])
     task_managers.append(pool.tasks)
@@ -156,7 +168,7 @@ async def test_rebalance_after_backend_becomes_healthy(
     model1_b2 = registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
     model1_config = ModelInstanceConfig(
-        id="m1", instances=2, memory={"ram": parse_size("100K")}
+        id="m1", instances=2, memory={"ram": parse_size("100K")}, task="chat"
     )
     pool = Pool([model1_config], [backend1, backend2])
     task_managers.append(pool.tasks)
@@ -181,7 +193,7 @@ async def test_rebalance_after_backend_becomes_unhealthy(
     registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
     model1_config = ModelInstanceConfig(
-        id="m1", instances=2, memory={"ram": parse_size("100K")}
+        id="m1", instances=2, memory={"ram": parse_size("100K")}, task="chat"
     )
     pool = Pool([model1_config], [backend1, backend2])
     task_managers.append(pool.tasks)
@@ -223,10 +235,10 @@ async def test_complex_rebalance_multiple_models(
     registered_model_factory("m2", backend3)
 
     model1_config = ModelInstanceConfig(
-        id="m1", instances=2, memory={"ram": parse_size("100K")}
+        id="m1", instances=2, memory={"ram": parse_size("100K")}, task="chat"
     )
     model2_config = ModelInstanceConfig(
-        id="m2", instances=2, memory={"ram": parse_size("200K")}
+        id="m2", instances=2, memory={"ram": parse_size("200K")}, task="chat"
     )
     pool = Pool(
         [model1_config, model2_config],
@@ -264,7 +276,11 @@ async def test_pool_report_map_contains_backends_and_models(
 ):
     registered_model_factory("m", dummy_backend, loaded=True, ram=100)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -295,7 +311,11 @@ async def test_semaphore_acquire_returns_loaded_model(
 ):
     model = registered_model_factory("m", dummy_backend, loaded=True)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -312,7 +332,11 @@ async def test_semaphore_acquire_returns_none_when_no_loaded_models(
     # _candidates returns [] when model is not loaded → while never entered → None
     registered_model_factory("m", dummy_backend, loaded=False)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -327,7 +351,11 @@ async def test_semaphore_waiter_woken_on_release(  # tests the continue in Model
 ):
     registered_model_factory("m", dummy_backend, loaded=True, limit=1)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -362,7 +390,11 @@ async def test_semaphore_acquire_returns_none_when_deadline_exceeded(
     # All capacity occupied — force timeout path
     model.in_progress = 1
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
@@ -387,7 +419,11 @@ async def test_semaphore_excluded_backend_not_chosen(
     registered_model_factory("m", backend1, loaded=True)
     model2 = registered_model_factory("m", backend2, loaded=True)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=2, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=2, memory={"ram": 100}, task="chat"
+            )
+        ],
         [backend1, backend2],
     )
     task_managers.append(pool.tasks)
@@ -404,7 +440,11 @@ async def test_semaphore_use_yields_backend_and_releases(
 ):
     model = registered_model_factory("m", dummy_backend, loaded=True)
     pool = Pool(
-        [ModelInstanceConfig(id="m", instances=1, memory={"ram": 100})],
+        [
+            ModelInstanceConfig(
+                id="m", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
         [dummy_backend],
     )
     task_managers.append(pool.tasks)

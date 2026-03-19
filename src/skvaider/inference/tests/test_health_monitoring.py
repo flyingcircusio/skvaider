@@ -18,6 +18,7 @@ async def test_monitor_health_updates_model_status_completion():
             context_size=1024,
             max_requests=10,
             port=1000,
+            task="chat",
         )
     )
     model.health_check_interval = 0.01
@@ -80,6 +81,7 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
             context_size=1024,
             port=openai_server.port,
             max_requests=10,
+            task="embedding",
         )
     )
     model.endpoint = openai_server.endpoint
@@ -110,6 +112,7 @@ async def test_health_check_completions(openai_server: OpenAIServerMock):
             context_size=1024,
             port=openai_server.port,
             max_requests=10,
+            task="chat",
         )
     )
     model.endpoint = openai_server.endpoint

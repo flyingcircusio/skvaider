@@ -28,7 +28,7 @@ def test_parse_size_invalid() -> None:
 
 def test_model_instance_config_parses_string_memory() -> None:
     cfg = ModelInstanceConfig(
-        id="m", instances=1, memory={"ram": parse_size("2G")}
+        id="m", instances=1, memory={"ram": parse_size("2G")}, task="chat"
     )
     assert cfg.memory["ram"] == 2 * 1024**3
 
@@ -38,5 +38,6 @@ def test_model_instance_config_total_size() -> None:
         id="m",
         instances=1,
         memory={"ram": parse_size("2G"), "vram": parse_size("1G")},
+        task="chat",
     )
     assert cfg.total_size() == 3 * 1024**3

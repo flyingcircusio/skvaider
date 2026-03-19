@@ -144,7 +144,7 @@ async def prepare_model(
     file: LlamaModelFile,
     models_cache: Path,
     manager: Manager,
-    task: Literal["chat", "embedding"] = "chat",
+    task: Literal["chat", "embedding"],
 ) -> LlamaModel:
     config = LlamaServerModelConfig(
         id=id,
@@ -191,6 +191,7 @@ async def gemma(models_cache: Path, manager: Manager) -> LlamaModel:
         ),
         models_cache,
         manager,
+        task="chat",
     )
 
 

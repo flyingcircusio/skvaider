@@ -24,6 +24,7 @@ async def test_backend_model_warmup(
         id=llm_model_name,
         instances=1,
         memory={"ram": parse_size("1.3G")},
+        task="chat",
     )
     backend = skvaider.proxy.backends.SkvaiderBackend(url)
     pool = skvaider.proxy.pool.Pool([model_config], [backend])
