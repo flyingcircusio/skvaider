@@ -146,12 +146,16 @@ async def test_lifespan(
     pool = Pool(
         [
             ModelInstanceConfig(
-                id="gemma", instances=1, memory={"ram": parse_size("1.3G")}
+                id="gemma",
+                instances=1,
+                memory={"ram": parse_size("1.3G")},
+                task="chat",
             ),
             ModelInstanceConfig(
                 id="embeddinggemma",
                 instances=1,
                 memory={"ram": parse_size("250M")},
+                task="embedding",
             ),
         ],
         [backend],
@@ -256,7 +260,7 @@ async def pool(
     task_managers: list[TaskManager],
 ) -> AsyncGenerator[Pool, None]:
     config = ModelInstanceConfig(
-        id="test-model", instances=1, memory={"ram": 10}
+        id="test-model", instances=1, memory={"ram": 10}, task="chat"
     )
     p = Pool([config], [dummy_backend])
     task_managers.append(p.tasks)

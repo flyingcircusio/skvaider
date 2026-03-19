@@ -36,7 +36,7 @@ class ModelConfig(BaseModel):
     """Shared fields for all inference backend model configs."""
 
     id: str
-    task: Literal["chat", "embedding"] = "chat"
+    task: Literal["chat", "embedding"]
     cmd_args: list[str] = []
     context_size: int
     max_requests: int

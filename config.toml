@@ -24,6 +24,7 @@ url = "http://127.0.0.1:8002"
 id = "gemma"
 instances = 2
 memory = { ram = "1.3G" }
+task = "chat"
 
 [[models]]
 id = "embeddinggemma"

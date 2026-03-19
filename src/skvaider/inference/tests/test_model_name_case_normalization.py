@@ -43,5 +43,6 @@ def test_model_config_normalizes_id_to_lowercase():
         llama_server=Path("llama-server"),
         context_size=1024,
         port=0,
+        task="chat",
     )
     assert config.id == "gemma-2-2b"

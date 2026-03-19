@@ -43,7 +43,7 @@ async def test_proxy_retry_verifies_backend_switching(
     b2 = dummy_backend_factory()
 
     config = ModelInstanceConfig(
-        id="test-model", instances=2, memory={"ram": 10}
+        id="test-model", instances=2, memory={"ram": 10}, task="chat"
     )
     pool = Pool([config], [b1, b2])
     task_managers.append(pool.tasks)

@@ -17,9 +17,7 @@ from skvaider.inference.routers.models import (
 
 def _counter_value(counter: Counter, **labels: str) -> float:
     """Read the current value of a prometheus Counter with the given labels."""
-    return counter.labels(
-        **labels
-    )._value.get()  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType, reportAttributeAccessIssue, reportUnknownVariableType, reportReturnType]
+    return counter.labels(**labels)._value.get()  # pyright: ignore[reportPrivateUsage, reportUnknownMemberType, reportAttributeAccessIssue, reportUnknownVariableType, reportReturnType]
 
 
 def _make_sse(*events: dict[str, Any] | str) -> bytes:

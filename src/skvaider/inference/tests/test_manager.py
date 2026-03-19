@@ -34,6 +34,7 @@ async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
         ],
         context_size=1024,
         port=0,
+        task="chat",
     )
     model = LlamaModel(config)
     model.datadir = tmp_path
@@ -158,6 +159,7 @@ async def test_download_split_model(tmp_path: Path, gguf_http_server: str):
         ],
         port=0,
         context_size=1024,
+        task="chat",
     )
     model = LlamaModel(config)
     model.datadir = tmp_path

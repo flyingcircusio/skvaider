@@ -339,9 +339,7 @@ async def test_manager_run_loop(
 
     await manager.send_message("foobar", {"key": "value"})
 
-    calls = (
-        websocket.send.call_args_list
-    )  # pyright: ignore[reportUnknownMemberType]
+    calls = websocket.send.call_args_list  # pyright: ignore[reportUnknownMemberType]
     assert calls == [
         unittest.mock.call(
             '{"key": "value", "@type": "foobar", "@context": "https://flyingcircus.io/ns/aramaki", "@version": 1, "@principal": "host1", "@application": "app", "@issued": "1970-01-01T00:00:00+00:00", "@expiry": "1970-01-01T01:00:00+00:00", "@id": "64473ce93de046988f93a3feb6e11914", "@signature": {"alg": "HS256", "signature": "5a97fe6881c6dbe8a73ba95ef63ca1dc2f9882d8494c58b2c6799b13f79e37da"}}'

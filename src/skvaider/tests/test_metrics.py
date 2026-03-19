@@ -13,7 +13,8 @@ def prometheus_value(metric: str, **labels: str) -> float | None:
 
 
 async def test_requests_total_increments_on_success(
-    proxy: OpenAIProxy, mock_request_factory  # type: ignore[misc]
+    proxy: OpenAIProxy,
+    mock_request_factory,  # type: ignore[misc]
 ):
     await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
 
@@ -48,7 +49,10 @@ async def test_requests_total_increments_on_error(
     assert value == 1
 
 
-async def test_backend_requests_total_success(proxy: OpenAIProxy, mock_request_factory):  # type: ignore[misc]
+async def test_backend_requests_total_success(
+    proxy: OpenAIProxy,
+    mock_request_factory,  # type: ignore[misc]
+):
     await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
 
     value = prometheus_value(
@@ -113,7 +117,10 @@ async def test_retry_total_increments_on_backend_unavailable(
     assert value == 1
 
 
-async def test_request_duration_is_observed(proxy: OpenAIProxy, mock_request_factory):  # type: ignore[misc]
+async def test_request_duration_is_observed(
+    proxy: OpenAIProxy,
+    mock_request_factory,  # type: ignore[misc]
+):
     await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
 
     value = prometheus_value(
@@ -127,7 +134,8 @@ async def test_request_duration_is_observed(proxy: OpenAIProxy, mock_request_fac
 
 
 async def test_active_requests_returns_to_zero_after_success(
-    proxy: OpenAIProxy, mock_request_factory  # type: ignore[misc]
+    proxy: OpenAIProxy,
+    mock_request_factory,  # type: ignore[misc]
 ):
     await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
 
@@ -160,11 +168,13 @@ async def test_active_requests_returns_to_zero_after_error(
 
 
 async def test_streaming_request_increments_metrics(
-    proxy: OpenAIProxy, mock_request_factory  # type: ignore[misc]
+    proxy: OpenAIProxy,
+    mock_request_factory,  # type: ignore[misc]
 ):
     req = mock_request_factory(stream=True)  # type: ignore[misc]
     result = await proxy.proxy(
-        req, "/v1/chat/completions"  # type: ignore[misc]
+        req,  # type: ignore[misc]
+        "/v1/chat/completions",  # type: ignore[misc]
     )
 
     async for _ in result.body_iterator:
