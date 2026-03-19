@@ -2,13 +2,18 @@
 # skvaider namespace and easier library extraction
 
 import asyncio
+from collections.abc import Coroutine
+from typing import Any, TypeVar
 
 import structlog.stdlib
 
 log = structlog.stdlib.get_logger()
 
+T = TypeVar("T")
+P = TypeVar("P")
 
-def log_task_exception(task: asyncio.Task) -> None:
+
+def log_task_exception(task: asyncio.Task[Any]) -> None:
     try:
         task.result()
     except asyncio.CancelledError:
@@ -17,7 +22,7 @@ def log_task_exception(task: asyncio.Task) -> None:
         log.exception("Exception raised by task = %r", task)
 
 
-def create_task(aw):
+def create_task(aw: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
     t = asyncio.create_task(aw)
     t.add_done_callback(log_task_exception)
     return t

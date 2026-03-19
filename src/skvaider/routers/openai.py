@@ -1,479 +1,22 @@
-"""Open-AI compatible API based on Ollama.
+"""Open-AI compatible API."""
 
-This uses Ollama-internal APIs for better load-balancing but exposes a pure OpenAI-compatible API.
+import time
+from collections.abc import AsyncGenerator
+from contextlib import AbstractAsyncContextManager
+from typing import Any, Generic, TypeVar
 
-"""
-
-import asyncio
-import contextlib
-from typing import Any, AsyncGenerator, Dict, Generic, Optional, TypeVar
-
-import httpx
 import structlog
 import svcs
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 
-from skvaider import utils
-
-router = APIRouter()
+from skvaider import metrics
+from skvaider.proxy.backends import Backend
+from skvaider.proxy.models import AIModel
+from skvaider.proxy.pool import Pool
 
 T = TypeVar("T")
-
-log = structlog.stdlib.get_logger()
-
-
-class AIModel(BaseModel):
-    """Model object per backend."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    id: str
-    object: str = "model"
-    created: int = 0
-    owned_by: str
-
-    backend: "Backend" = Field(exclude=True)
-    last_used: float = Field(default=0, exclude=True)
-    in_progress: int = Field(default=0, exclude=True)
-    limit: int = Field(default=5, exclude=True)
-    idle: asyncio.Event = Field(default=True, exclude=True)
-    is_loaded: bool = Field(default=False, exclude=True)
-    memory_usage: int = Field(default=0, exclude=True)
-    log: Any = Field(default=None, exclude=True)
-
-    def __init__(self, *args, **kw):
-        super().__init__(*args, **kw)
-        self.idle = asyncio.Event()
-        self.idle.set()
-
-        self.log = log.bind(model=self.id, backend=self.backend.url)
-
-    @contextlib.asynccontextmanager
-    async def use(self):
-        try:
-            yield
-        finally:
-            self.in_progress -= 1
-            self.log.debug("done", in_progress=self.in_progress)
-            if not self.in_progress:
-                self.log.debug("idling")
-                self.idle.set()
-
-    async def wait(self):
-        await self.idle.wait()
-        return self
-
-
-class ModelConfig:
-    """Configuration for model-specific options"""
-
-    # map model names (including or excluding tags) to dicts containing model-specific settings
-    config: Dict[str, Dict[str, Any]]
-
-    def __init__(self, config):
-        self.config = config
-
-    def get(self, model_id: str) -> Optional[Dict[str, Any]]:
-        """Get custom options for a specific model"""
-        for candidate in [model_id, model_id.split(":")[0], "__default__"]:
-            if candidate in self.config:
-                return self.config[candidate]
-        return {}
-
-
-class Backend:
-    """Connection to a single backend."""
-
-    url: str
-
-    health_interval: int = 15
-    healthy: bool = None
-    unhealthy_reason: str = ""
-    models: dict[str, AIModel]
-    model_config: ModelConfig
-
-    def __init__(self, url, model_config):
-        self.url = url
-        self.models = {}
-        self.model_config = model_config
-        self.log = structlog.stdlib.get_logger().bind(backend=self.url)
-
-    @property
-    def memory_usage(self):
-        return sum([v.memory_usage for v in self.models.values()])
-
-    async def post(self, path: str, data: dict):
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.post(self.url + path, json=data, timeout=120)
-            return r.json()
-
-    async def post_stream(
-        self, path: str, data: dict
-    ) -> AsyncGenerator[str, None]:
-        """Stream responses from the backend"""
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            async with client.stream(
-                "POST", self.url + path, json=data, timeout=120
-            ) as response:
-                async for chunk in response.aiter_text():
-                    if chunk.strip():
-                        yield chunk
-
-    async def load_model_with_options(self, model_id: str) -> bool:
-        """Load a model with custom options if configured"""
-        options = self.model_config.get(model_id)
-        # Load model with custom options using Ollama's /api/generate endpoint
-        load_data = {
-            "model": model_id,
-            "prompt": "",  # Empty prompt to just load the model
-            "options": options,
-        }
-        try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                r = await client.post(
-                    self.url + "/api/generate", json=load_data, timeout=120
-                )
-                result = r.json()
-                return result.get("done", False)
-            await self.update_model_load_status()
-        except Exception as e:
-            self.log("failed loading model", exception=e, model=model_id)
-            raise
-
-    async def update_model_load_status(self):
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.get(self.url + "/api/ps")
-            model_status = {}
-            for entry in r.json()["models"]:
-                model_status[entry["name"]] = entry
-
-        for model_id, model_obj in self.models.items():
-            if model_data := model_status.get(model_obj.id):
-                model_obj.is_loaded = True
-                model_obj.memory_usage = model_data["size_vram"]
-            else:
-                model_obj.is_loaded = False
-                model_obj.memory_usage = 0
-
-    async def monitor_health_and_update_models(self, pool):
-        self.log.debug("starting monitor")
-        while True:
-            try:
-                self.log.debug("probing backend")
-                async with httpx.AsyncClient(follow_redirects=True) as client:
-                    r = await client.get(self.url + "/v1/models")
-                    known_models = r.json()["data"] or ()
-                self.log.debug("updating backends")
-                current_models = self.models
-                updated_models = {}
-                for model in known_models:
-                    if model["id"] not in current_models:
-                        model_obj = AIModel(
-                            id=model["id"],
-                            created=model["created"],
-                            owned_by=model["owned_by"],
-                            backend=self,
-                        )
-                    else:
-                        model_obj = current_models.get(
-                            model["id"],
-                        )
-                        model_obj.created = model["created"]
-                        model_obj.owned_by = model["owned_by"]
-
-                    updated_models[model_obj.id] = model_obj
-
-                self.models = updated_models
-
-                await self.update_model_load_status()
-
-                pool.update_model_maps()
-
-            except Exception as e:
-                if self.healthy or self.healthy is None:
-                    self.log.error("marking as unhealthy", error=str(e))
-                self.healthy = False
-                self.unhealthy_reason = str(e)
-                # Reset our model knowledge, drop statistics
-                self.models = {}
-            else:
-                if not self.healthy:
-                    self.log.info("marking as healthy")
-                self.healthy = True
-                self.unhealthy_reason = ""
-
-            await asyncio.sleep(self.health_interval)
-
-    # XXX fail over to next ?
-    #                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_client.py", line 1730, in _send_single_request
-    #     response = await transport.handle_async_request(request)
-    #                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 393, in handle_async_request
-    #     with map_httpcore_exceptions():
-    #   File "/Users/ctheune/.nix-profile/lib/python3.11/contextlib.py", line 158, in __exit__
-    #     self.gen.throw(typ, value, traceback)
-    #   File "/Users/ctheune/Code/skvaider/.venv/lib/python3.11/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
-    #     raise mapped_exc(message) from exc
-    # httpx.ConnectError: All connection attempts failed
-
-
-class ProxyRequest:
-    backend_available: asyncio.Event
-    model: AIModel = None
-
-    def __init__(self):
-        self.backend_available = asyncio.Event()
-
-
-class Pool:
-    backends: list["Backend"]
-    health_check_tasks: list[asyncio.Task]
-    queues: dict[str, asyncio.Queue]  # one queue per model
-
-    def __init__(self):
-        self.backends = []
-        self.health_check_tasks = []
-        self.queues = {}
-        self.models = {}
-        self.queue_tasks = {}
-
-    def add_backend(self, backend):
-        self.backends.append(backend)
-        self.health_check_tasks.append(
-            utils.create_task(backend.monitor_health_and_update_models(self))
-        )
-
-    def update_model_maps(self):
-        # XXX the same model must not be owned by different organizations!
-        # This requires a bit more thought how to handle consistency if
-        # backends answer with conflicting/differing model data.
-        self.models.clear()
-        for backend in self.backends:
-            self.models.update(backend.models)
-
-        # Add new models
-        for model_id in self.models:
-            if model_id in self.queues:
-                continue
-            self.queues[model_id] = asyncio.Queue()
-            self.queue_tasks[model_id] = utils.create_task(
-                self.assign_backends(model_id)
-            )
-
-        # Remove outdated model queues and tasks
-        for model_id, task in self.queue_tasks.items():
-            if model_id in self.models:
-                continue
-            task.cancel()
-            del self.queue_tasks[model_id]
-
-        for model_id in self.queues:
-            if model_id in self.models:
-                continue
-            del self.queues[model_id]
-
-    async def assign_backends(self, model_id: str):
-        """Continuously assign requests to backends.
-
-        Perform batching and model distribution and warmup.
-
-        """
-        while True:
-            log.debug("waiting for request", model=model_id)
-            queue = self.queues[model_id]
-            request_batch = [await queue.get()]
-            log.debug("got request", model=model_id)
-
-            # Now, are there any backends with the model loaded and are they available?
-            while not (
-                model_backends := [
-                    b for b in self.backends if model_id in b.models
-                ]
-            ):
-                log.warning("no backends with model available", model=model_id)
-                await asyncio.sleep(1)
-
-            loaded_backends = [
-                b for b in model_backends if b.models[model_id].is_loaded
-            ]
-            idle_backends = [
-                b for b in loaded_backends if b.models[model_id].idle.is_set()
-            ]
-            not_loaded_backends = [
-                b for b in model_backends if not b.models[model_id].is_loaded
-            ]
-
-            if (
-                not idle_backends
-                and len(loaded_backends) < 2
-                and not_loaded_backends
-            ):  # At most 2 instances per model
-                # Load the model on a host with as little used memory as possible
-                # if we have spare hosts.
-                not_loaded_backends.sort(key=lambda b: b.memory_usage)
-                new_backend = not_loaded_backends[0]
-                log.debug(
-                    "warming up model on new backend",
-                    backend=new_backend.url,
-                    model=model_id,
-                )
-                await new_backend.load_model_with_options(model_id)
-                idle_backends.insert(0, new_backend)
-
-            if not idle_backends:
-                # Need to wait for an idle backend
-                log.debug("waiting for idle backends", model=model_id)
-                backends_to_wait_for = [
-                    utils.create_task(b.models[model_id].wait())
-                    for b in model_backends
-                ]
-                idle_backends, _ = await asyncio.wait(
-                    backends_to_wait_for,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                # the above is a set, we want a list
-                idle_backends = [b for b in idle_backends]
-            backend = idle_backends[0]
-            model = backend.models[model_id]
-            log.debug("got idle backend", backend=backend.url, model=model_id)
-
-            # This should not be necessary, but it should also be gratuitous.
-
-            await backend.load_model_with_options(model_id)
-            log.debug("gathering more batchable requests", model=model_id)
-            # Prime the model
-            # Wait up to 0.1s for up to N requests
-            more_request_tasks = await asyncio.gather(
-                *[
-                    asyncio.wait_for(queue.get(), 0.001)
-                    for _ in range(model.limit - 1)
-                ],
-                return_exceptions=True,
-            )
-            request_batch.extend(
-                [t for t in more_request_tasks if not isinstance(t, Exception)]
-            )
-            for request in request_batch:
-                log.debug(
-                    "assigning request to backend",
-                    model=model_id,
-                    backend=backend.url,
-                )
-                model.in_progress += 1
-                request.model = model
-                request.backend_available.set()
-            model.idle.clear()
-
-    def close(self):
-        for task in self.health_check_tasks:
-            task.cancel()
-        for task in self.queue_tasks.values():
-            task.cancel()
-
-    # def choose_backend(self, model_id: str):
-    #     """Return a list of all healthy connections sorted by least number of
-    #     current connections.
-    #     """
-    #     healthy = filter(lambda b: b.healthy, self.backends)
-    #     with_model = filter(lambda b: model_ in b.models, healthy)
-    #     available_models = sorted(with_model, key=lambda x: x.connections)
-    #     if not available_models:
-    #         raise HTTPException(
-    #             400,
-    #             f"The model: `{model_id}` does not exist",
-    #         )
-
-    #     ranked_models = sorted(
-    #         with_model,
-    #         key=lambda x: (
-    #             x.models[model_id].is_loaded,
-    #             x.models[model_id].open_slots,
-    #         ),
-    #     )
-
-    #     # backend = self.choose_backend(model_id)
-    #     # model = backend.models[model_id]
-    #     # model.last_used = time.time()
-    #     # try:
-    #     #     yield backend
-    #     # finally:
-    #     #     model.in_progress
-    #     #     model.connections -= 1
-
-    #     # - consider actual ram usage on backends before asking a server
-    #     #   to load a fresh model
-
-    #     # Better decision for later
-    #     # - perform batching on our side and then unblock a number of requests at the same time
-    #     # - do not select a backend until it has capacity for us
-
-    #     return ranked[_models0]
-
-    @contextlib.asynccontextmanager
-    async def use(self, model_id: str):
-        request = ProxyRequest()
-        assert model_id in self.queues
-        log.debug("queuing request", model=model_id)
-        queue = self.queues[model_id]
-        await queue.put(request)
-        log.debug("waiting for backend to become available", model=model_id)
-        await request.backend_available.wait()
-        log.debug(
-            "got backend", backend=request.model.backend.url, model=model_id
-        )
-        async with request.model.use():
-            yield request.model.backend
-
-
-class OpenAIProxy:
-    """Intermediate the proxy logic between FastAPI and the OpenAI API-compatible backends."""
-
-    def __init__(self, services: svcs.fastapi.DepContainer):
-        self.services = services
-        self.pool = self.services.get(Pool)
-
-    async def proxy(self, request, endpoint, allow_stream=True):
-        request_data = await request.json()
-        request_data["store"] = False
-        request.state.model = request_data["model"]
-        request.state.stream = allow_stream and request_data.get(
-            "stream", False
-        )
-
-        if request.state.model not in self.pool.queues:
-            raise HTTPException(
-                400,
-                f"The model `{request.state.model}` is currently not available.",
-            )
-
-        if request.state.stream:
-            # We need to place the context manager in a scope that is valid while the response is
-            # streaming, so wrap the original streaming method and iterate there
-            async def stream(stream_aws, context):
-                try:
-                    async for chunk in stream_aws:
-                        yield chunk
-                finally:
-                    await context.__aexit__(None, None, None)
-
-            context = self.pool.use(request.state.model)
-            backend = await context.__aenter__()
-            request.state.backend = backend
-            stream_aws = backend.post_stream(endpoint, request_data)
-            return StreamingResponse(
-                stream(stream_aws, context),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
-            )
-        else:
-            async with self.pool.use(request.state.model) as backend:
-                return await backend.post(endpoint, request_data)
 
 
 class ListResponse(BaseModel, Generic[T]):
@@ -481,20 +24,263 @@ class ListResponse(BaseModel, Generic[T]):
     data: list[T]
 
 
+router = APIRouter()
+
+log = structlog.stdlib.get_logger()
+
+
+class OpenAIProxy:
+    """Intermediate the proxy logic between FastAPI and the OpenAI API-compatible backends."""
+
+    def __init__(
+        self, services: svcs.fastapi.DepContainer, max_retries: int = 3
+    ):
+        self.services = services
+        self.pool = self.services.get(Pool)
+        self.max_retries = max_retries
+
+    async def _execute_with_retry(
+        self,
+        request: Request,
+        endpoint: str,
+        data: dict[str, Any],
+    ) -> Any:
+        excluded_backends: set[str] = set()
+        semaphore = self.pool.semaphores[request.state.model]
+
+        for attempt in range(self.max_retries):
+            async with semaphore.use(
+                excluded_backends=excluded_backends
+            ) as backend:
+                if not backend:
+                    break
+                excluded_backends.add(backend.url)
+                try:
+                    result = await backend.post(endpoint, data)
+                    metrics.gateway_backend_requests_total.labels(
+                        model=request.state.model,
+                        backend=backend.url,
+                        status="success",
+                        endpoint=endpoint,
+                        streaming=False,
+                    ).inc()
+                    return result
+                except HTTPException as e:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url,
+                        model=request.state.model,
+                        status="error",
+                        endpoint=endpoint,
+                        streaming=False,
+                    ).inc()
+                    if e.status_code == 540:  # Backend currently unavailable
+                        metrics.gateway_backend_retry_total.labels(
+                            model=request.state.model,
+                            backend=backend.url,
+                            endpoint=endpoint,
+                            streaming=False,
+                            reason="backend_unavailable",
+                        ).inc()
+                        log.warning(
+                            "Backend unavailable, retrying",
+                            model=request.state.model,
+                            attempt=attempt + 1,
+                            excluded_backends=excluded_backends,
+                        )
+
+        raise HTTPException(status_code=503, detail="Service unavailable")
+
+    async def _execute_stream_with_retry(
+        self,
+        request: Request,
+        endpoint: str,
+        data: dict[str, Any],
+    ) -> StreamingResponse:
+        excluded_backends: set[str] = set()
+        semaphore = self.pool.semaphores[request.state.model]
+
+        for attempt in range(self.max_retries):
+            context = semaphore.use(excluded_backends=excluded_backends)
+            backend = await context.__aenter__()
+            if backend is None:
+                break
+            excluded_backends.add(backend.url)
+            try:
+                stream_aws = backend.post_stream(endpoint, data)
+                first_chunk = await anext(stream_aws)
+                metrics.gateway_backend_requests_total.labels(
+                    backend=backend.url,
+                    endpoint=endpoint,
+                    model=request.state.model,
+                    status="success",
+                    streaming=True,
+                ).inc()
+            except StopAsyncIteration:
+                await context.__aexit__(None, None, None)
+                # Track backend request failure
+                if backend:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url,
+                        endpoint=endpoint,
+                        model=request.state.model,
+                        status="error",
+                        streaming=True,
+                    ).inc()
+                # Empty stream
+                return StreamingResponse(
+                    iter([]),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    },
+                )
+            except HTTPException as e:
+                await context.__aexit__(None, None, None)
+                # Track backend request failure
+                if backend:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url,
+                        endpoint=endpoint,
+                        model=request.state.model,
+                        status="error",
+                        streaming=True,
+                    ).inc()
+                if e.status_code == 540:
+                    metrics.gateway_backend_retry_total.labels(
+                        backend=backend.url,
+                        endpoint=endpoint,
+                        model=request.state.model,
+                        reason="backend_unavailable",
+                        streaming=True,
+                    ).inc()
+                    log.warning(
+                        "Backend unavailable, retrying",
+                        model=request.state.model,
+                        attempt=attempt + 1,
+                        excluded_backends=excluded_backends,
+                    )
+                continue
+
+            # Success
+            async def stream(
+                first: str,
+                stream_aws: AsyncGenerator[str],
+                context: AbstractAsyncContextManager[Backend | None],
+            ) -> AsyncGenerator[str]:
+                try:
+                    yield first
+                    async for chunk in stream_aws:
+                        yield chunk
+                finally:
+                    await context.__aexit__(None, None, None)
+
+            request.state.backend = backend
+            return StreamingResponse(
+                stream(first_chunk, stream_aws, context),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        raise HTTPException(status_code=503, detail="Service unavailable")
+
+    async def proxy(
+        self,
+        request: Request,
+        endpoint: str,
+        allow_stream: bool = True,
+    ) -> StreamingResponse | Any:
+        request_data: dict[str, Any] = await request.json()
+        request_data["store"] = False
+        request_data["model"] = request_data["model"].lower()
+        request.state.model = request_data["model"]
+        request.state.stream = allow_stream and request_data.get(
+            "stream", False
+        )
+
+        if request.state.model not in self.pool.model_configs:
+            raise HTTPException(
+                400,
+                f"The model `{request.state.model}` is not known.",
+            )
+
+        # Track active requests
+        metrics.gateway_active_requests.labels(
+            model=request.state.model,
+            endpoint=endpoint,
+            streaming=request.state.stream,
+        ).inc()
+        start_time = time.time()
+        status = "success"
+
+        try:
+            if request.state.stream:
+                result = await self._execute_stream_with_retry(
+                    request, endpoint, request_data
+                )
+            else:
+                result = await self._execute_with_retry(
+                    request,
+                    endpoint,
+                    request_data,
+                )
+
+            return result
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            # Track request completion
+            metrics.gateway_active_requests.labels(
+                model=request.state.model,
+                endpoint=endpoint,
+                streaming=request.state.stream,
+            ).dec()
+            duration = time.time() - start_time
+            metrics.gateway_request_duration_seconds.labels(
+                model=request.state.model,
+                endpoint=endpoint,
+                streaming=request.state.stream,
+            ).observe(duration)
+            metrics.gateway_requests_total.labels(
+                model=request.state.model,
+                endpoint=endpoint,
+                status=status,
+                streaming=request.state.stream,
+            ).inc()
+
+
 @router.get("/v1/models")
 async def list_models(
     services: svcs.fastapi.DepContainer,
 ) -> ListResponse[AIModel]:
     pool = services.get(Pool)
-    return ListResponse[AIModel](data=pool.models.values())
+    models: dict[str, AIModel] = {}
+    # The pool used to keep track of the pydantic models but I didn't like
+    # that we had objects there where we only needed the ids. Here we do
+    # need the objects, so we need to sample them.
+    for backend in pool.backends:
+        models.update(backend.models)
+    return ListResponse[AIModel](data=list(models.values()))
 
 
 @router.get("/v1/models/{model_id}")
 async def get_model(
     model_id: str, services: svcs.fastapi.DepContainer
 ) -> AIModel:
+    model_id = model_id.lower()
     pool = services.get(Pool)
-    return pool.models[model_id]
+    # See list_models
+    for backend in pool.backends:
+        if model_id in backend.models:
+            return backend.models[model_id]
+    raise HTTPException(
+        404,
+        f"Unknown model `{model_id}`.",
+    )
 
 
 @router.post("/v1/chat/completions")

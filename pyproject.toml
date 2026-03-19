@@ -4,7 +4,7 @@ version = "0.1.0dev0"
 license = "MIT"
 description = "Router for ML/AI model API access"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [
     { name = "Flying Circus Internet Operations GmbH", email = "mail@flyingcircus.io" },
 ]
@@ -22,17 +22,24 @@ dependencies = [
     "alembic>=1.16.5",
     "argon2-cffi>=25.1.0",
     "uvicorn-worker>=0.3.0",
-    "gunicorn>=23.0.0",
+    "anyio>=4.0.0",
+    "psutil>=7.2.2",
+    "prometheus-client>=0.21.0",
 ]
 
 [project.scripts]
-skvaider = "skvaider:main"
+check-skvaider-config = "skvaider.cli:check_skvaider_config"
+check-skvaider-inference-config = "skvaider.cli:check_inference_config"
+skvaider-inference = "skvaider.inference:main"
+skvaider-proxy = "skvaider:main"
+check-skvaider = "skvaider.check:main"
+generate-embedding-reference = "skvaider.generate_embedding_reference:main"
 
 [build-system]
 requires = ["uv_build>=0.8.2,<0.9.0"]
 build-backend = "uv_build"
 
-[tool.black]
+[tool.ruff]
 line-length = 80
 
 [tool.isort]
@@ -44,6 +51,21 @@ concurrency = ["thread", "greenlet"]
 
 [tool.uv.build-backend]
 module-name = ["aramaki", "skvaider"]
+
+[tool.basedpyright]
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".devenv/state/venv"
+exclude = ["doc/**"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "src/skvaider/inference/tests"
+reportPrivateUsage = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "src/skvaider/tests"
+reportPrivateUsage = "none"
+
 
 [dependency-groups]
 dev = [

@@ -1,13 +1,13 @@
 import ipaddress
 import logging
 import time
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 import structlog
 from fastapi import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from skvaider import Config
+from skvaider.config import LoggingConfig
 
 log = structlog.stdlib.get_logger()
 
@@ -45,7 +45,10 @@ class LoggingMiddleware:
                     anon_net = client_ip.supernet(new_prefix=24)
                 if client_ip.version == 6:
                     anon_net = client_ip.supernet(new_prefix=64)
-                anon_ip = str(anon_net.network_address)
+                if anon_net is not None:
+                    # This shouldn't happen and we could likely assert on non-None-ness,
+                    # but I'm not willing to (have Skvaider) die on that hill.
+                    anon_ip = str(anon_net.network_address)
             except ValueError:
                 pass
 
@@ -92,7 +95,7 @@ class LoggingMiddleware:
             )
 
 
-def logging_config(config: Config) -> dict:
+def logging_config(config: LoggingConfig) -> dict[str, Any]:
     return {
         "version": 1,
         "handlers": {
@@ -101,7 +104,7 @@ def logging_config(config: Config) -> dict:
             },
             "accesslog": {
                 "class": "logging.FileHandler",
-                "filename": config.logging.access_log_path,
+                "filename": config.access_log_path,
                 "formatter": "accesslog",
             },
         },
@@ -116,11 +119,11 @@ def logging_config(config: Config) -> dict:
         },
         "loggers": {
             "skvaider": {
-                "level": config.logging.log_level,
+                "level": config.log_level,
                 "handlers": ["console"],
             },
             "aramaki": {
-                "level": config.logging.log_level,
+                "level": config.log_level,
                 "handlers": ["console"],
             },
             "skvaider.accesslog": {

@@ -1,0 +1,43 @@
+# Sample config used by the development environment
+models_dir = "models"
+
+[server]
+host = "127.0.0.1"
+port = 8001
+
+[logging]
+log_level = "DEBUG"
+access_log_path = ".access_log-inference1"
+
+[[openai.models]]
+engine = "llama-server"
+id = "gemma"
+context_size = 4096
+port = 8100
+cmd_args = []
+max_requests = 21
+task = "chat"
+
+[[openai.models.files]]
+url = "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true"
+hash = "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80"
+
+[[openai.models]]
+engine = "llama-server"
+id = "embeddinggemma"
+task = "embedding"
+cmd_args = ["-ngl", "0"]
+port = 8101
+context_size = 4096
+
+[[openai.models.files]]
+url = "https://huggingface.co/unsloth/embeddinggemma-300m-GGUF/resolve/main/embeddinggemma-300M-F32.gguf"
+hash = "a3125072128fc76d1c1d8d19f7b095c7e3bfbf00594dcf8a8bd3bcb334935d57"
+
+# It would be useful to have a reasoning model, but the 12G are unwieldy
+# for local development and CI/CD caching.
+#
+# [openai.models."unsloth/gpt-oss-20b-GGUF/gpt-oss-20b-UD-Q4_K_XL.gguf"]
+# id = "gpt-oss"
+# url = "https://huggingface.co/unsloth/gpt-oss-20b-GGUF/resolve/d449b42d93e1c2c7bda5312f5c25c8fb91dfa9b4/gpt-oss-20b-UD-Q4_K_XL.gguf"
+# hash = "10fe673de12c20b74b8d670a9fdf0fd36b43b0a86ffc04daeb175c0a2b98c4f9"

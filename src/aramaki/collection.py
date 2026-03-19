@@ -1,6 +1,7 @@
 import asyncio
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 import sqlalchemy
 import structlog
@@ -10,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from aramaki import utils
 from aramaki.db import Base
+from aramaki.typing import JSONObject
 
 if TYPE_CHECKING:
     from aramaki import Manager
@@ -24,12 +26,12 @@ class Record(Base):
     partition: Mapped[str] = mapped_column(primary_key=True)
     record_id: Mapped[str] = mapped_column(primary_key=True)
     version: Mapped[int] = mapped_column()
-    data: Mapped[dict] = mapped_column(type_=JSON)
+    data: Mapped[JSONObject] = mapped_column(type_=JSON)
 
 
 async def _currently_known_partition_and_version(
     db_session: AsyncSession, collection: str
-):
+) -> tuple[str | None, int]:
     # Use the fact that (collection, partition) is unique for the client view here.
     maybe_result = (
         await db_session.execute(
@@ -43,12 +45,12 @@ async def _currently_known_partition_and_version(
     ).one_or_none()
     if maybe_result is None:
         return None, 0
-    return maybe_result
+    return tuple(maybe_result)
 
 
 async def _set_null_record(
-    session: AsyncSession, collection: str, partition: int, version: int
-):
+    session: AsyncSession, collection: str, partition: str, version: int
+) -> None:
     record = await session.get(
         Record,
         {
@@ -58,7 +60,7 @@ async def _set_null_record(
         },
     )
     if record is None:
-        record = await Record.create(
+        record = Record.create(
             session,
             collection=collection,
             partition=partition,
@@ -66,6 +68,20 @@ async def _set_null_record(
             data={},
         )
     record.version = version
+
+
+class AbstractCollection(Protocol):
+    """Protocol defining the read-only collection interface."""
+
+    collection: str
+
+    async def get(
+        self,
+        key: str,
+        default: JSONObject | None = None,
+    ) -> JSONObject | None: ...
+
+    async def keys(self) -> list[str]: ...
 
 
 class Collection:
@@ -88,19 +104,16 @@ class Collection:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get(self, key: str, default=None) -> dict | None:
+    async def get(
+        self,
+        key: str,
+        default: JSONObject | None = None,
+    ) -> JSONObject | None:
         assert key  # key must be non-empty - defensive against clients breaking protocol that "" is our internal null record
-        result = (
-            (
-                await self.session.execute(
-                    select(Record).filter_by(
-                        collection=self.collection, record_id=key
-                    )
-                )
-            )
-            .scalars()
-            .one_or_none()
+        cursor = await self.session.execute(
+            select(Record).filter_by(collection=self.collection, record_id=key)
         )
+        result = cursor.scalars().one_or_none()
         if not result:
             return default
         return result.data
@@ -134,7 +147,8 @@ class ReplicationManager:
 
     """
 
-    catchup_running = False
+    catchup_running: bool = False
+    tasks: set[asyncio.Task[Any]]
 
     def __init__(
         self,
@@ -189,21 +203,23 @@ class ReplicationManager:
             task = utils.create_task(t())
             self.tasks.add(task)
 
-    def stop(self):
+    def stop(self) -> None:
         for task in self.tasks:
             task.cancel()
         self.tasks.clear()
 
     @asynccontextmanager
-    async def get_collection_with_session(self):
+    async def get_collection_with_session(
+        self,
+    ) -> AsyncGenerator[Collection]:
         async with self.aramaki.db.session() as db_session:
             yield self.collection(db_session)
 
-    async def process_update_message(self, msg: dict):
+    async def process_update_message(self, msg: dict[str, Any]) -> None:
         log.debug("collection-process-update-message", id=msg.get("@id"))
         await self.update_buffer.put(msg["version"], msg)
 
-    async def process_update_buffer(self):
+    async def process_update_buffer(self) -> None:
         while True:
             update_version, msg = await self.update_buffer.get()
             assert msg["record_id"]  # defensive against peers breaking protocol
@@ -260,7 +276,7 @@ class ReplicationManager:
                 )
                 if msg["change"] == "update":
                     if record is None:
-                        record = await Record.create(
+                        record = Record.create(
                             db_session,
                             collection=self.collection.collection,
                             partition=msg["partition"],
@@ -279,7 +295,7 @@ class ReplicationManager:
                     )
             self.update_buffer.task_done()
 
-    async def request_catchup(self):
+    async def request_catchup(self) -> None:
         async with self.aramaki.db.session() as db_session:
             (
                 current_partition,
@@ -302,7 +318,7 @@ class ReplicationManager:
             },
         )
 
-    async def process_start_catchup_message(self, msg: dict):
+    async def process_start_catchup_message(self, msg: dict[str, Any]) -> None:
         """Start and manage the overall catchup process.
 
         This can happen in various combinations.
@@ -331,10 +347,9 @@ class ReplicationManager:
         )
 
         async with self.aramaki.db.session() as db_session:
-            r = await _currently_known_partition_and_version(
+            current_partition, _ = await _currently_known_partition_and_version(
                 db_session, self.collection.collection
             )
-            current_partition, current_version = r
 
         async with self.update_lock, self.catchup_lock:
             if start_version == 0:
@@ -400,10 +415,10 @@ class ReplicationManager:
                         )
                     )
 
-    async def process_catchup_step_message(self, msg: dict):
+    async def process_catchup_step_message(self, msg: dict[str, Any]) -> None:
         await self.catchup_buffer.put(msg["from_version"], msg)
 
-    async def process_catchup_step_buffer(self):
+    async def process_catchup_step_buffer(self) -> None:
         while True:
             from_version, msg = await self.catchup_buffer.get()
             log.debug(
@@ -415,7 +430,7 @@ class ReplicationManager:
             )
             async with self.aramaki.db.session() as db_session:
                 (
-                    current_partition,
+                    _,
                     current_version,
                 ) = await _currently_known_partition_and_version(
                     db_session, self.collection.collection
@@ -439,7 +454,7 @@ class ReplicationManager:
                 )
                 if msg["change"] == "update":
                     if record is None:
-                        record = await Record.create(
+                        record = Record.create(
                             db_session,
                             collection=self.collection.collection,
                             partition=msg["partition"],
@@ -475,19 +490,21 @@ class PriorityPushbackQueue:
 
     """
 
-    metric_put_back = 0
+    metric_put_back: int = 0
+    items: dict[int, list[Any]]
+    queue: asyncio.PriorityQueue[int]
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.items = {}
         self.queue = asyncio.PriorityQueue()
         self.new_item = asyncio.Event()
 
-    async def put(self, priority, item):
+    async def put(self, priority: int, item: Any) -> None:
         self.items.setdefault(priority, []).append(item)
         await self.queue.put(priority)
         self.new_item.set()
 
-    async def put_back(self, priority, item):
+    async def put_back(self, priority: int, item: Any) -> None:
         self.metric_put_back += 1
         self.items.setdefault(priority, []).append(item)
         self.new_item.clear()
@@ -495,13 +512,13 @@ class PriorityPushbackQueue:
         # The client should not mark this as "task done", we do that for it.
         self.queue.task_done()
 
-    async def get(self):
+    async def get(self) -> tuple[int, Any]:
         await self.new_item.wait()
         priority = await self.queue.get()
         return priority, self.items[priority].pop(0)
 
-    async def join(self):
-        return await self.queue.join()
+    async def join(self) -> None:
+        await self.queue.join()
 
-    def task_done(self):
+    def task_done(self) -> None:
         self.queue.task_done()

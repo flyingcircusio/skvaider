@@ -1,73 +1,299 @@
 import asyncio
 import base64
+import itertools
 import json
+from collections.abc import AsyncGenerator, Callable, Coroutine
+from contextlib import asynccontextmanager
+from typing import Any, Generator
+from unittest.mock import AsyncMock, MagicMock
 
+import httpx
+import prometheus_client
 import pytest
 import svcs
 from argon2 import PasswordHasher
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from openai import OpenAI
 
-import skvaider.routers.openai
-from skvaider import app_factory
+import aramaki
+import skvaider.auth
+from aramaki.typing import JSONObject
+from skvaider import app_factory, metrics
+from skvaider.config import ModelInstanceConfig, parse_size
+from skvaider.proxy.backends import DummyBackend, SkvaiderBackend
+from skvaider.proxy.models import AIModel
+from skvaider.proxy.pool import Pool
+from skvaider.routers.openai import OpenAIProxy
+from skvaider.utils import TaskManager
 
 hasher = PasswordHasher()
 
 
-class DummyTokens:
+class DummyTokens(aramaki.AbstractCollection):
+    collection = "test.tokens"
+
     def __init__(self):
-        self.data = {}
+        self.data: dict[str, JSONObject] = {}
 
-    async def get(self, key):
-        return self.data.get(key)
+    async def get(
+        self, key: str, default: JSONObject | None = None
+    ) -> JSONObject | None:
+        return self.data.get(key, default)
 
-    async def keys(self):
-        return self.data.keys()
+    async def keys(self) -> list[str]:
+        return list(self.data.keys())
+
+    @asynccontextmanager
+    async def get_collection_with_session(
+        self,
+    ) -> AsyncGenerator["DummyTokens"]:
+        yield self
 
 
 DUMMY_TOKENS = DummyTokens()
 
 
 @pytest.fixture
-def services():
-    reg = svcs.Registry()
-    reg.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
-    with svcs.Container(reg) as container:
+def svcs_registry():
+    yield svcs.Registry()
+
+
+@pytest.fixture
+def services(
+    svcs_registry: svcs.Registry,
+) -> Generator[svcs.Container, None, None]:
+    svcs_registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AuthTokens,
+        DUMMY_TOKENS.get_collection_with_session,
+        enter=False,
+    )
+    with svcs.Container(svcs_registry) as container:
         yield container
 
 
+def wait_for_condition(
+    interval: float = 0.1, timeout: float = 30
+) -> Callable[
+    [Callable[..., Coroutine[Any, Any, bool]]],
+    Callable[..., Coroutine[Any, Any, None]],
+]:
+    """Wait for a callable to return True.
+
+    If AssertionErrors happen, those will be propagated if the timeout occurs
+    but will be suppressed while retrying.
+
+    """
+
+    def decorator(
+        async_condition: Callable[..., Coroutine[Any, Any, bool]],
+    ) -> Callable[..., Coroutine[Any, Any, None]]:
+        async def wrapped(*args: Any, **kwargs: Any) -> None:
+            assertion: AssertionError | None = None
+
+            async def loop() -> None:
+                result: bool = False
+                nonlocal assertion
+                while True:
+                    assertion = None
+                    try:
+                        result = await async_condition(*args, **kwargs)
+                    except AssertionError as e:
+                        assertion = e
+                    except Exception:
+                        pass
+
+                    if result:
+                        return
+
+                    await asyncio.sleep(interval)
+
+            try:
+                await asyncio.wait_for(loop(), timeout=timeout)
+            except asyncio.TimeoutError as e:
+                if assertion:
+                    raise assertion
+                raise asyncio.TimeoutError(async_condition.__name__) from e
+
+        return wrapped
+
+    return decorator
+
+
+@wait_for_condition()
+async def backend_connection_is_up(url: str) -> bool:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"{url}/manager/health")
+        if resp.status_code == 200:
+            return True
+    return False
+
+
 @svcs.fastapi.lifespan
-async def test_lifespan(app: FastAPI, registry: svcs.Registry):
-    pool = skvaider.routers.openai.Pool()
-    model_config = skvaider.routers.openai.ModelConfig(
-        {"gemma3": {"num_ctx": 3072}}
-    )
-    pool.add_backend(
-        skvaider.routers.openai.Backend("http://localhost:11435", model_config)
-    )
-    registry.register_value(skvaider.routers.openai.Pool, pool)
-    registry.register_value(skvaider.auth.AuthTokens, DUMMY_TOKENS)
+async def test_lifespan(
+    app: FastAPI, registry: svcs.Registry
+) -> AsyncGenerator[None, None]:
+    # This is one of the backends from the devenv.
+    url = "http://127.0.0.1:8001"
+    await backend_connection_is_up(url)
 
-    tries = 10
-    while tries := tries - 1:
-        if "gemma3:1b" in pool.models:
-            break
-        await asyncio.sleep(1)
-    else:
-        raise ValueError("Missing sample model")
+    backend = SkvaiderBackend(url)
 
-    yield {}
+    pool = Pool(
+        [
+            ModelInstanceConfig(
+                id="gemma",
+                instances=1,
+                memory={"ram": parse_size("1.3G")},
+                task="chat",
+            ),
+            ModelInstanceConfig(
+                id="embeddinggemma",
+                instances=1,
+                memory={"ram": parse_size("250M")},
+                task="embedding",
+            ),
+        ],
+        [backend],
+    )
+
+    registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        Pool, pool
+    )
+    registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AuthTokens,
+        DUMMY_TOKENS.get_collection_with_session,
+        enter=False,
+    )
+
+    @wait_for_condition()
+    async def wait_for_healthy_backends() -> bool:
+        return all(b.healthy for b in pool.backends)
+
+    await wait_for_healthy_backends()
+
+    @wait_for_condition()
+    async def wait_for_models_active() -> bool:
+        # Wait for at least one instance of each model to be active
+        for model_id in pool.model_configs.keys():
+            if pool.count_loaded_instances(model_id):
+                return True
+        return False
+
+    await wait_for_models_active()
+
+    yield
     pool.close()
 
 
 @pytest.fixture
-def token_db():
-    DUMMY_TOKENS.data.clear()
-    yield DUMMY_TOKENS
+async def task_managers():
+    task_managers: list[TaskManager] = []
+    yield task_managers
+    for tm in task_managers:
+        tm.terminate()
 
 
 @pytest.fixture
-async def auth_token(token_db):
+def mock_request_factory():
+    def _create(model: str = "test-model", stream: bool = False) -> MagicMock:
+        req = MagicMock(spec=Request)
+        req.json = AsyncMock(return_value={"model": model, "stream": stream})
+        req.state = MagicMock()
+        req.state.model = model
+        req.state.stream = stream
+        return req
+
+    return _create
+
+
+@pytest.fixture
+def dummy_backend_factory() -> Callable[..., DummyBackend]:
+    backend_id = itertools.count(1)
+
+    def factory(
+        url: str = "", *, ram: int = 1000, fail_count: int = 0
+    ) -> DummyBackend:
+        b = DummyBackend(
+            url or f"http://backend-{next(backend_id)}", fail_count=fail_count
+        )
+        b.healthy = True
+        b.memory = {"ram": {"free": ram, "total": ram}}
+        return b
+
+    return factory
+
+
+def registered_model_factory(
+    id: str,
+    backend: DummyBackend,
+    *,
+    ram: int = 0,
+    limit: int = 0,
+    loaded: bool = False,
+) -> AIModel:
+    m = AIModel(id=id, owned_by="test", backend=backend)
+    if ram:
+        m.memory_usage = {"ram": ram}
+    if limit:
+        m.limit = limit
+    m.is_loaded = loaded
+    backend.models[id] = m
+    return m
+
+
+@pytest.fixture
+def dummy_backend(
+    dummy_backend_factory: Callable[..., DummyBackend],
+) -> DummyBackend:
+    return dummy_backend_factory("http://test-backend")
+
+
+@pytest.fixture
+async def pool(
+    svcs_registry: svcs.Registry,
+    dummy_backend: DummyBackend,
+    task_managers: list[TaskManager],
+) -> AsyncGenerator[Pool, None]:
+    config = ModelInstanceConfig(
+        id="test-model", instances=1, memory={"ram": 10}, task="chat"
+    )
+    p = Pool([config], [dummy_backend])
+    task_managers.append(p.tasks)
+
+    model = AIModel(id="test-model", owned_by="test", backend=dummy_backend)
+    model.memory_usage = {"ram": 10}
+    model.is_loaded = True
+    dummy_backend.models["test-model"] = model
+
+    await p.rebalance()
+    svcs_registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        Pool, p
+    )
+    yield p
+    p.close()
+
+
+@pytest.fixture
+def proxy(pool: Pool, services: svcs.Container) -> OpenAIProxy:
+    return OpenAIProxy(services)
+
+
+@pytest.fixture(params=["gemma"])
+def llm_model_name(request: pytest.FixtureRequest) -> str:
+    result: str = request.param
+    return result
+
+
+@pytest.fixture
+def token_db() -> Generator[DummyTokens, None, None]:
+    DUMMY_TOKENS.data.clear()
+    yield DUMMY_TOKENS
+    DUMMY_TOKENS.data.clear()
+
+
+@pytest.fixture
+async def auth_token(token_db: DummyTokens) -> AsyncGenerator[str, None]:
     """Return a valid auth token."""
     secret = "asdf"
     token_db.data["user"] = {"secret_hash": hasher.hash(secret)}
@@ -78,7 +304,9 @@ async def auth_token(token_db):
 
 
 @pytest.fixture
-async def auth_header(client, auth_token):
+async def auth_header(
+    client: TestClient, auth_token: str
+) -> AsyncGenerator[None, None]:
     """Inject a valid auth header into all client requests."""
     header = {"Authorization": f"Bearer {auth_token}"}
     client.headers.update(header)
@@ -86,6 +314,24 @@ async def auth_header(client, auth_token):
 
 
 @pytest.fixture
-def client():
+def client() -> Generator[TestClient, None, None]:
     with TestClient(app_factory(lifespan=test_lifespan)) as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def cleanup_prometheus_metrics():
+    for m in metrics.__dict__.values():
+        if isinstance(m, prometheus_client.metrics.MetricWrapperBase):
+            m.clear()
+
+
+@pytest.fixture
+def openai_client(
+    client: TestClient, auth_token: str
+) -> Generator[OpenAI, None, None]:
+    yield OpenAI(
+        base_url="http://testserver/openai/v1",
+        http_client=client,  # pyright: ignore[reportArgumentType]
+        api_key=auth_token,
+    )

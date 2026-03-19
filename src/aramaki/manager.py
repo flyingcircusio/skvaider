@@ -34,22 +34,22 @@ class MessageReplaySet:
     EXPIRE_INTERVAL = 60
     TIMEOUT = 60 * 60 + 5 * 60  # 1h 5m
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.ids = set()
         self.ages = deque()
         self.last_expire = time.time()
 
-    def check(self, id: str):
+    def check(self, id: str) -> None:
         if self.last_expire < time.time() - self.EXPIRE_INTERVAL:
             self.expire()
         if id in self.ids:
             raise KeyError(f"ID already seen: {id}")
 
-    def mark(self, id):
+    def mark(self, id: str) -> None:
         self.ids.add(id)
         self.ages.append((time.time(), id))
 
-    def expire(self):
+    def expire(self) -> None:
         cutoff = time.time() - self.TIMEOUT
         while self.ages:
             t, id = self.ages.popleft()
@@ -73,10 +73,18 @@ class InvalidSignatureError(MessageAuthenticationError):
 
 
 class Manager:
-    collections: dict[type, ReplicationManager]
+    collections: dict[type[Collection], ReplicationManager]
+    subscriptions: dict[str, dict[str, str]]
+    callbacks: dict[str, Callable[[dict[str, Any]], Awaitable[Any]]]
+    tasks: set[asyncio.Task[Any]]
 
     def __init__(
-        self, principal, application, url, secret, state_directory: Path
+        self,
+        principal: str,
+        application: str,
+        url: str,
+        secret: str,
+        state_directory: Path,
     ):
         self.websocket: ClientConnection | None = None
         self.known_messages = MessageReplaySet()
@@ -88,7 +96,7 @@ class Manager:
 
         self.subscriptions = {}
         self.callbacks = {}
-        self.tasks: set[asyncio.Task] = set()
+        self.tasks = set()
         self.websocket_ready = asyncio.Event()
 
         self.collections = {}
@@ -102,9 +110,9 @@ class Manager:
     def register_message_handler(
         self,
         type_: str,
-        callback: Callable[[dict], Awaitable[Any]],
+        callback: Callable[[dict[str, Any]], Awaitable[Any]],
         **scope: str,
-    ):
+    ) -> None:
         self.subscriptions[type_] = scope
         self.callbacks[type_] = callback
 
@@ -116,7 +124,7 @@ class Manager:
         self.collections[cls_] = manager = ReplicationManager(self, cls_)
         return manager
 
-    async def run(self):
+    async def run(self) -> None:
         log.info("start-manager")
 
         connection_errors = 0
@@ -145,6 +153,8 @@ class Manager:
 
                     log.info("Waiting for messages ...")
                     async for message in websocket:
+                        if isinstance(message, bytes):
+                            message = message.decode("utf-8")
                         utils.create_task(self.process(message))
             except CancelledError:
                 return
@@ -167,25 +177,25 @@ class Manager:
             )
             await asyncio.sleep(backoff)
 
-    def start(self):
+    def start(self) -> None:
         self.tasks.add(utils.create_task(self.run()))
 
-    def stop(self):
+    def stop(self) -> None:
         for collection in self.collections.values():
             collection.stop()
         for task in self.tasks:
             task.cancel()
 
-    async def process(self, message):
+    async def process(self, message: str) -> None:
         try:
-            message = json.loads(message)
-            self.authenticate(message)
-            if message.get("@type") in self.callbacks:
-                await self.callbacks[message["@type"]](message)
+            parsed_message: dict[str, Any] = json.loads(message)
+            self.authenticate(parsed_message)
+            if parsed_message.get("@type") in self.callbacks:
+                await self.callbacks[parsed_message["@type"]](parsed_message)
         except Exception:
             log.exception("message-processing-failed", message=message)
 
-    def authenticate(self, message):
+    def authenticate(self, message: dict[str, Any]) -> None:
         """Authenticate whether this message has originated from the advertised
         principal.
 
@@ -219,7 +229,7 @@ class Manager:
         # This prevents a DOS attack enumerating IDs
         self.known_messages.mark(message["@id"])
 
-    def sign_message(self, message):
+    def sign_message(self, message: dict[str, Any]) -> None:
         message["@signature"] = {"alg": "HS256"}
         signature = hmac.new(
             self.secret.encode("ascii"), rfc8785.dumps(message), hashlib.sha256
@@ -232,7 +242,7 @@ class Manager:
             signature=signature,
         )
 
-    def prepare_message(self, message) -> str:
+    def prepare_message(self, message: dict[str, Any]) -> str:
         now = datetime.datetime.now().astimezone(datetime.UTC)
         id_ = uuid.uuid4().hex
         log.debug("prepare-message", type=message.get("@type"), id=id_)
@@ -250,11 +260,12 @@ class Manager:
         self.sign_message(message)
         return json.dumps(message)
 
-    async def send_message(self, type: str, message: dict):
+    async def send_message(self, type: str, message: dict[str, Any]) -> None:
         # TODO: backoff, retry
         # TODO: consider adding (persistent?) buffering
         log.debug("sending-message", status="wait", type=type)
         await self.websocket_ready.wait()
         prepared_message = self.prepare_message(message | {"@type": type})
+        assert self.websocket is not None
         await self.websocket.send(prepared_message)
         log.debug("sending-message", status="sent", type=type)

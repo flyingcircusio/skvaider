@@ -1,4 +1,6 @@
 import asyncio
+from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 import pytest
 
@@ -11,15 +13,15 @@ class DummyCollection(aramaki.Collection):
     collection = "mydummycollection"
 
 
-async def test_collection_basics(tmpdir):
-    db = aramaki.db.DBSessionManager(tmpdir)
+async def test_collection_basics(tmp_path: Path):
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     async with db.session() as session:
         collection = DummyCollection(session)
 
         assert (
-            await aramaki.collection._currently_known_partition_and_version(
+            await aramaki.collection._currently_known_partition_and_version(  # pyright: ignore[reportPrivateUsage]
                 session, collection.collection
             )
         ) == (
@@ -43,7 +45,7 @@ async def test_collection_basics(tmpdir):
         assert await collection.keys() == ["test"]
 
         assert (
-            await aramaki.collection._currently_known_partition_and_version(
+            await aramaki.collection._currently_known_partition_and_version(  # pyright: ignore[reportPrivateUsage]
                 session, collection.collection
             )
         ) == (
@@ -52,11 +54,11 @@ async def test_collection_basics(tmpdir):
         )
 
         assert await collection.get("foobar") is None
-        assert await collection.get("foobar", 5) == 5
+        assert await collection.get("foobar", {"value": 5}) == {"value": 5}
 
 
-async def test_null_record(tmpdir):
-    db = aramaki.db.DBSessionManager(tmpdir)
+async def test_null_record(tmp_path: Path):
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     async with db.session() as session:
@@ -76,35 +78,35 @@ async def test_null_record(tmpdir):
             )
         ) is None
 
-        await aramaki.collection._set_null_record(
+        await aramaki.collection._set_null_record(  # pyright: ignore[reportPrivateUsage]
             session, "collection-1", "partition-1", 10
         )
 
-        assert (
-            await session.get(
-                aramaki.collection.Record,
-                {
-                    "collection": "collection-1",
-                    "partition": "partition-1",
-                    "record_id": "",
-                },
-            )
-        ).version == 10
+        record_10 = await session.get(
+            aramaki.collection.Record,
+            {
+                "collection": "collection-1",
+                "partition": "partition-1",
+                "record_id": "",
+            },
+        )
+        assert record_10 is not None
+        assert record_10.version == 10
 
-        await aramaki.collection._set_null_record(
+        await aramaki.collection._set_null_record(  # pyright: ignore[reportPrivateUsage]
             session, "collection-1", "partition-1", 20
         )
 
-        assert (
-            await session.get(
-                aramaki.collection.Record,
-                {
-                    "collection": "collection-1",
-                    "partition": "partition-1",
-                    "record_id": "",
-                },
-            )
-        ).version == 20
+        record_20 = await session.get(
+            aramaki.collection.Record,
+            {
+                "collection": "collection-1",
+                "partition": "partition-1",
+                "record_id": "",
+            },
+        )
+        assert record_20 is not None
+        assert record_20.version == 20
 
 
 async def test_pushback_queue():
@@ -118,7 +120,7 @@ async def test_pushback_queue():
 
     await queue.put(3, "3")
     await queue.put(2, "2")
-    await queue.get() == 2
+    assert await queue.get() == (2, "2")
     await queue.put_back(2, "2")
 
     task = asyncio.create_task(queue.get())
@@ -135,27 +137,35 @@ class AramakiDummy:
     principal = "host1"
     application = "test"
 
+    db: aramaki.db.DBSessionManager
+    message: tuple[tuple[Any, ...], dict[str, Any]] | None
+
     def __init__(self):
-        self.message = None
         self.message_received = asyncio.Event()
 
-    def register_message_handler(self, type_, target, **scope):
+    def register_message_handler(
+        self,
+        type_: str,
+        callback: Callable[[dict[str, Any]], Awaitable[Any]],
+        **scope: str,
+    ) -> None:
         pass
 
-    async def send_message(self, *args, **kw):
+    async def send_message(self, *args: Any, **kw: Any) -> None:
         self.message = args, kw
         self.message_received.set()
 
 
-async def test_replication(tmpdir):
-    db = aramaki.db.DBSessionManager(tmpdir)
+async def test_replication(tmp_path: Path):
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
 
     manager = aramaki.collection.ReplicationManager(
-        aramaki_manager, DummyCollection
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
     )
 
     async with manager.get_collection_with_session() as collection:
@@ -291,15 +301,16 @@ async def test_replication(tmpdir):
     manager.stop()
 
 
-async def test_replication_empty_sync(tmpdir):
-    db = aramaki.db.DBSessionManager(tmpdir)
+async def test_replication_empty_sync(tmp_path: Path):
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
 
     manager = aramaki.collection.ReplicationManager(
-        aramaki_manager, DummyCollection
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
     )
 
     await aramaki_manager.message_received.wait()
@@ -345,15 +356,15 @@ async def test_replication_empty_sync(tmpdir):
         assert await collection.keys() == []
 
 
-async def test_replication_catchup_sync(tmpdir):
-    db = aramaki.db.DBSessionManager(tmpdir)
+async def test_replication_catchup_sync(tmp_path: Path):
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
 
     async with db.session() as session:
-        await aramaki.collection.Record.create(
+        aramaki.collection.Record.create(
             session,
             collection="mydummycollection",
             partition="partition-1",
@@ -361,7 +372,7 @@ async def test_replication_catchup_sync(tmpdir):
             version=4,
             data={},
         )
-        await aramaki.collection.Record.create(
+        aramaki.collection.Record.create(
             session,
             collection="mydummycollection",
             partition="partition-1",
@@ -371,7 +382,8 @@ async def test_replication_catchup_sync(tmpdir):
         )
 
     manager = aramaki.collection.ReplicationManager(
-        aramaki_manager, DummyCollection
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
     )
 
     async with manager.get_collection_with_session() as collection:
@@ -422,15 +434,17 @@ async def test_replication_catchup_sync(tmpdir):
         assert await collection.get("2") == {"key": "value-10"}
 
 
-async def test_full_sync_deletes_superfluous_records_at_end(tmpdir):
-    db = aramaki.db.DBSessionManager(tmpdir)
+async def test_full_sync_deletes_superfluous_records_at_end(
+    tmp_path: Path,
+):
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
 
     async with db.session() as session:
-        await aramaki.collection.Record.create(
+        aramaki.collection.Record.create(
             session,
             collection="mydummycollection",
             partition="partition-1",
@@ -438,7 +452,7 @@ async def test_full_sync_deletes_superfluous_records_at_end(tmpdir):
             version=4,
             data={},
         )
-        await aramaki.collection.Record.create(
+        aramaki.collection.Record.create(
             session,
             collection="mydummycollection",
             partition="partition-1",
@@ -448,7 +462,8 @@ async def test_full_sync_deletes_superfluous_records_at_end(tmpdir):
         )
 
     manager = aramaki.collection.ReplicationManager(
-        aramaki_manager, DummyCollection
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
     )
 
     async with manager.get_collection_with_session() as collection:
@@ -488,16 +503,17 @@ async def test_full_sync_deletes_superfluous_records_at_end(tmpdir):
 
 
 async def test_update_with_missing_partition_triggers_catchup(
-    tmpdir,
+    tmp_path: Path,
 ):
-    db = aramaki.db.DBSessionManager(tmpdir)
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
 
     manager = aramaki.collection.ReplicationManager(
-        aramaki_manager, DummyCollection
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
     )
 
     async with manager.get_collection_with_session() as collection:
@@ -538,20 +554,21 @@ async def test_update_with_missing_partition_triggers_catchup(
 
 
 async def test_update_with_wrong_partition_triggers_catchup(
-    tmpdir,
+    tmp_path: Path,
 ):
-    db = aramaki.db.DBSessionManager(tmpdir)
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
 
     manager = aramaki.collection.ReplicationManager(
-        aramaki_manager, DummyCollection
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
     )
 
     async with db.session() as session:
-        await aramaki.collection.Record.create(
+        aramaki.collection.Record.create(
             session,
             collection="mydummycollection",
             partition="partition-1",
@@ -597,16 +614,16 @@ async def test_update_with_wrong_partition_triggers_catchup(
 
 
 async def test_partial_sync_wrong_partition_restart_catchup(
-    tmpdir,
+    tmp_path: Path,
 ):
-    db = aramaki.db.DBSessionManager(tmpdir)
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
 
     async with db.session() as session:
-        await aramaki.collection.Record.create(
+        aramaki.collection.Record.create(
             session,
             collection="mydummycollection",
             partition="partition-1",
@@ -616,7 +633,8 @@ async def test_partial_sync_wrong_partition_restart_catchup(
         )
 
     manager = aramaki.collection.ReplicationManager(
-        aramaki_manager, DummyCollection
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
     )
 
     async with manager.get_collection_with_session() as collection:
@@ -659,15 +677,15 @@ async def test_partial_sync_wrong_partition_restart_catchup(
         )
 
 
-async def test_replication_catchup_out_of_order(tmpdir):
-    db = aramaki.db.DBSessionManager(tmpdir)
+async def test_replication_catchup_out_of_order(tmp_path: Path):
+    db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
 
     async with db.session() as session:
-        await aramaki.collection.Record.create(
+        aramaki.collection.Record.create(
             session,
             collection="mydummycollection",
             partition="partition-1",
@@ -675,7 +693,7 @@ async def test_replication_catchup_out_of_order(tmpdir):
             version=4,
             data={},
         )
-        await aramaki.collection.Record.create(
+        aramaki.collection.Record.create(
             session,
             collection="mydummycollection",
             partition="partition-1",
@@ -685,7 +703,8 @@ async def test_replication_catchup_out_of_order(tmpdir):
         )
 
     manager = aramaki.collection.ReplicationManager(
-        aramaki_manager, DummyCollection
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
     )
 
     async with manager.get_collection_with_session() as collection:
