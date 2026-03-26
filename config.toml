@@ -8,7 +8,7 @@ port = 8000
 
 [aramaki]
 url = "wss://directory.0e9d93af.largo01.fcdev.fcio.net/aramaki"
-state_directory = ".aramaki-workdir"
+state_directory = "var/aramaki"
 secret_salt = ""
 principal = "kyle00"
 
@@ -34,4 +34,4 @@ memory = { ram = "1.4G" }
 
 [logging]
 log_level = "DEBUG"
-access_log_path = ".access_log"
+access_log_path = "var/log/access-proxy.log"
