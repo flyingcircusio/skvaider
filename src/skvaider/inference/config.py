@@ -37,8 +37,6 @@ class ModelConfig(BaseModel):
 
     id: str
     task: Literal["chat", "embedding"]
-    cmd_args: list[str] = []
-    context_size: int
     max_requests: int
     port: int
 
@@ -53,17 +51,27 @@ class LlamaServerModelConfig(ModelConfig):
     llama_server: Path = Path("llama-server")
     max_requests: int = 16
     files: list[LlamaModelFile]
+    cmd_args: list[str] = []
+    context_size: int
 
 
 class VllmModelConfig(ModelConfig):
     engine: Literal["vllm"] = "vllm"
     vllm: Path = Path("vllm")
-    max_requests: int = 256
+    max_requests: int = 16
     revision: str
     repo: str
+    cmd_args: list[str] = []
+    context_size: int
+
+
+class SystemdModelConfig(ModelConfig):
+    engine: Literal["systemd"] = "systemd"
+    unit: str
+    max_requests: int = 16
 
 
 AnyModelConfig = Annotated[
-    LlamaServerModelConfig | VllmModelConfig,
+    LlamaServerModelConfig | VllmModelConfig | SystemdModelConfig,
     Field(discriminator="engine"),
 ]

@@ -1,6 +1,6 @@
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -44,17 +44,31 @@ class ModelInstanceConfig(BaseModel):
         return sum(self.memory.values())
 
 
+class DebugConfig(BaseModel):
+    slow_threshold: int = 0
+
+
+default_debug_config = DebugConfig()
+
+
 class Config(BaseModel):
-    aramaki: "AramakiConfig"
+    aramaki: Optional["AramakiConfig"] = None
+    auth: "AuthConfig"
     server: "ServerConfig"
     backend: list["BackendConfig"]
     models: list["ModelInstanceConfig"]
     logging: "LoggingConfig"
+    debug: DebugConfig = default_debug_config
 
 
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
+    directory: Path = Path(".")
+
+
+class AuthConfig(BaseModel):
+    static_tokens: list[str] = []
 
 
 class AramakiConfig(BaseModel):

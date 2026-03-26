@@ -1,5 +1,7 @@
+from typing import Callable
+
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from prometheus_client import REGISTRY
 
 from skvaider.proxy.backends import DummyBackend
@@ -14,9 +16,9 @@ def prometheus_value(metric: str, **labels: str) -> float | None:
 
 async def test_requests_total_increments_on_success(
     proxy: OpenAIProxy,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ):
-    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
+    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")
 
     value = prometheus_value(
         "skvaider_gateway_requests_total",
@@ -31,12 +33,12 @@ async def test_requests_total_increments_on_success(
 async def test_requests_total_increments_on_error(
     proxy: OpenAIProxy,
     dummy_backend: DummyBackend,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ):
     dummy_backend.fail_count = 100
 
     with pytest.raises(HTTPException) as exc:
-        await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
+        await proxy.proxy(mock_request_factory(), "/v1/chat/completions")
     assert exc.value.status_code == 503
 
     value = prometheus_value(
@@ -51,9 +53,9 @@ async def test_requests_total_increments_on_error(
 
 async def test_backend_requests_total_success(
     proxy: OpenAIProxy,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ):
-    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
+    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")
 
     value = prometheus_value(
         "skvaider_gateway_backend_requests_total",
@@ -69,12 +71,12 @@ async def test_backend_requests_total_success(
 async def test_backend_requests_total_error_on_failure(
     proxy: OpenAIProxy,
     dummy_backend: DummyBackend,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ):
     dummy_backend.fail_count = 100
 
     with pytest.raises(HTTPException):
-        await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
+        await proxy.proxy(mock_request_factory(), "/v1/chat/completions")
 
     value = prometheus_value(
         "skvaider_gateway_backend_requests_total",
@@ -91,7 +93,7 @@ async def test_retry_total_increments_on_backend_unavailable(
     pool: Pool,
     proxy: OpenAIProxy,
     dummy_backend: DummyBackend,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ):
     dummy_backend.fail_count = 1
 
@@ -104,7 +106,7 @@ async def test_retry_total_increments_on_backend_unavailable(
     b2.models["test-model"] = model
     pool.backends.append(b2)
 
-    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
+    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")
 
     value = prometheus_value(
         "skvaider_gateway_backend_retry_total",
@@ -118,10 +120,9 @@ async def test_retry_total_increments_on_backend_unavailable(
 
 
 async def test_request_duration_is_observed(
-    proxy: OpenAIProxy,
-    mock_request_factory,  # type: ignore[misc]
+    proxy: OpenAIProxy, mock_request_factory: Callable[..., Request]
 ):
-    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
+    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")
 
     value = prometheus_value(
         "skvaider_gateway_request_duration_seconds_bucket",
@@ -135,9 +136,9 @@ async def test_request_duration_is_observed(
 
 async def test_active_requests_returns_to_zero_after_success(
     proxy: OpenAIProxy,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ):
-    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
+    await proxy.proxy(mock_request_factory(), "/v1/chat/completions")
 
     value = prometheus_value(
         "skvaider_gateway_active_requests",
@@ -151,12 +152,12 @@ async def test_active_requests_returns_to_zero_after_success(
 async def test_active_requests_returns_to_zero_after_error(
     proxy: OpenAIProxy,
     dummy_backend: DummyBackend,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ):
     dummy_backend.fail_count = 100
 
     with pytest.raises(HTTPException):
-        await proxy.proxy(mock_request_factory(), "/v1/chat/completions")  # type: ignore[misc]
+        await proxy.proxy(mock_request_factory(), "/v1/chat/completions")
 
     value = prometheus_value(
         "skvaider_gateway_active_requests",
@@ -169,12 +170,12 @@ async def test_active_requests_returns_to_zero_after_error(
 
 async def test_streaming_request_increments_metrics(
     proxy: OpenAIProxy,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ):
-    req = mock_request_factory(stream=True)  # type: ignore[misc]
+    req = mock_request_factory(stream=True)
     result = await proxy.proxy(
-        req,  # type: ignore[misc]
-        "/v1/chat/completions",  # type: ignore[misc]
+        req,
+        "/v1/chat/completions",
     )
 
     async for _ in result.body_iterator:

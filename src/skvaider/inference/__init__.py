@@ -24,8 +24,13 @@ from skvaider.inference.manager import Manager
 from skvaider.logging import LoggingMiddleware, logging_config
 from skvaider.utils import TaskManager
 
-from .config import LlamaServerModelConfig, ModelConfig
-from .model import LlamaModel, VllmModel
+from .config import (
+    LlamaServerModelConfig,
+    ModelConfig,
+    SystemdModelConfig,
+    VllmModelConfig,
+)
+from .model import LlamaModel, SystemdModel, VllmModel
 
 log = structlog.stdlib.get_logger()
 
@@ -89,8 +94,13 @@ async def lifespan(
             )
         if isinstance(model_config, LlamaServerModelConfig):
             model = LlamaModel(model_config)
-        else:
+        elif isinstance(model_config, VllmModelConfig):
             model = VllmModel(model_config)
+        elif isinstance(model_config, SystemdModelConfig):  # pyright: ignore[reportUnnecessaryIsInstance]
+            model = SystemdModel(model_config)
+        else:
+            raise ValueError(f"Unhandled model config: {model_config}")
+
         if model_config.id and model_config.id in verification_data:
             model.verification_data = verification_data[model_config.id]
         manager.add_model(model)
@@ -133,7 +143,10 @@ def app_factory(lifespan: Any = lifespan) -> FastAPI:
     app.include_router(skvaider.inference.routers.metrics.router)
 
     app.add_middleware(
-        LoggingMiddleware, logger=getLogger("skvaider.accesslog")
+        LoggingMiddleware,
+        logger=getLogger("skvaider.accesslog"),
+        trust_remote_request_id=True,
+        has_debugger=False,
     )
 
     @app.exception_handler(Exception)

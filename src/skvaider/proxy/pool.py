@@ -43,6 +43,7 @@ class ModelSemaphore:
             b.models[self.model_id]
             for b in self.pool.backends
             if self.model_id in b.models
+            and b.healthy
             and b.models[self.model_id].is_loaded
             and b.url not in excluded_backends
         ]
@@ -51,15 +52,12 @@ class ModelSemaphore:
         self, excluded_backends: Iterable[str] = ()
     ) -> AIModel | None:
         deadline = utils.now() + datetime.timedelta(seconds=120)
-        log.debug("waiting for semaphore lock")
         async with self.lock:
-            log.debug("got semaphore lock")
             # Ok, we got the lock - we're the next allowed to acquire a free slot.
             # This may take a while and we might not find one right now, but we're
             # still next, so that's why we keep the lock maybe longer.
             while candidates := self._candidates(excluded_backends):
                 available = [m for m in candidates if m.in_progress < m.limit]
-                log.debug(f"backends within limit: {len(available)}")
                 if not available:
                     timeout = (deadline - utils.now()).total_seconds()
                     if timeout < 0:
@@ -81,7 +79,6 @@ class ModelSemaphore:
 
                 best = min(available, key=lambda m: m.in_progress)
                 best.in_progress += 1
-                print(f"in progress: {best.backend.url} - {best.in_progress}")
                 best.idle.clear()
                 return best
 
@@ -102,6 +99,9 @@ class ModelSemaphore:
                 await self.release(model)
 
 
+type ModelMap = dict[str, set[str]]
+
+
 class Pool:
     backends: list["Backend"]
     tasks: TaskManager
@@ -114,6 +114,8 @@ class Pool:
     # loading/unloading models mixed throughout as this will cause confusion
     model_management_lock: asyncio.Lock
 
+    _last_map: ModelMap
+
     def __init__(
         self,
         model_configs: Iterable[ModelInstanceConfig] = (),
@@ -121,6 +123,7 @@ class Pool:
     ):
         self.tasks = TaskManager()
         self.semaphores = {}
+        self._last_map = {}
 
         # Model configurations from config file
         self.model_configs = {m.id: m for m in model_configs}
@@ -136,7 +139,7 @@ class Pool:
             backend.pool = self
             self.tasks.create(backend.monitor_health_and_update_models)
 
-    def placement_map(self) -> dict[str, set[str]]:
+    def placement_map(self) -> ModelMap:
         """Create a placement map of "which model should go where."
 
         The idea here is that we have a stable sorting that doesn't flap around too much
@@ -156,14 +159,11 @@ class Pool:
                 resources[resource] = params["total"]
             map[backend.url] = set()
 
-        log.info("resources", resources=available_resources)
-
         for model in sorted(
             self.model_configs.values(),
             key=lambda m: m.total_size(),
             reverse=True,
         ):
-            log.info("placing model", model=model.id, size=model.total_size())
             unplaced_instances = model.instances
             candidates = [
                 b for b in self.backends if b.healthy and model.id in b.models
@@ -176,26 +176,12 @@ class Pool:
                 reverse=True,
             )
             for backend in candidates:
-                log.info(
-                    "considering backend",
-                    backend=backend.url,
-                    score=backend.models[model.id].fit_score(
-                        available_resources[backend.url]
-                    ),
-                )
                 use_this_backend = True
                 # First pass: check whether this model fits here.
                 for resource in available_resources[backend.url]:
                     available = available_resources[backend.url][resource]
                     required = model.memory.get(resource, 0)
                     if required > available:
-                        log.info(
-                            "ignoring overloaded backend",
-                            required=required,
-                            available=available,
-                            resource=resource,
-                            backend=backend.url,
-                        )
                         use_this_backend = False
                         break
                 if not use_this_backend:
@@ -210,19 +196,25 @@ class Pool:
                 if not unplaced_instances:
                     break
             if unplaced_instances:
-                log.warning(
-                    "Could not place sufficient model instances in pool",
-                    model=model.id,
-                    desired=model.instances,
-                    unplaced=unplaced_instances,
-                )
+                pass
+                # XXX show in monitoring, not continuous logging
+                # log.warning(
+                #     "Could not place sufficient model instances in pool",
+                #     model=model.id,
+                #     desired=model.instances,
+                #     unplaced=unplaced_instances,
+                # )
         return map
 
     async def rebalance(self) -> None:
         """Rebalance model instances across backends to match desired state."""
+        if self.model_management_lock.locked():
+            return
         async with self.model_management_lock:
             map = self.placement_map()
-            log.info("New model distribution map", map=map)
+            if map != self._last_map:
+                log.info("New model distribution map", map=map)
+            self._last_map = map
 
             # We need to unload models before loading models to ensure sufficient
             # resources. However, we can optimize the impact by processing those
@@ -245,7 +237,6 @@ class Pool:
                     if not action:
                         continue
                     actions[backend.url][action].add(model.id)
-            log.info("Map actions", actions=actions)
 
             # Perform the actions, backend by backend. First trigger all unloads,
             # then all loads. Wait for the loads to finish, too, to avoid unnecessary
@@ -256,7 +247,7 @@ class Pool:
                 if not backend.healthy:
                     # Performing map actions on unhealthy backends can cause too much issues
                     # with models getting thrashed unnecessarily.
-                    log.warning("Ignoring map action for unhealthy backend")
+                    # log.warning("Ignoring map action for unhealthy backend")
                     continue
                 tasks: list[asyncio.Task[Any]] = []
                 for model_id in actions[backend.url]["unload"]:
@@ -270,7 +261,6 @@ class Pool:
                         self.tasks.create(backend.load_model, (model_id,))
                     )
                 await asyncio.gather(*tasks)
-        log.info("done rebalancing")
 
     def count_loaded_instances(self, model_id: str) -> int:
         count = 0

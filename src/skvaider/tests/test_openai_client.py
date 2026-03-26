@@ -65,11 +65,9 @@ def test_chat_completions_streaming(openai_client: OpenAI, llm_model_name: str):
     full_content = ""
     for chunk in stream:
         chunk_count += 1
-        content = (
-            chunk.choices[0].delta.content
-            if chunk.choices[0].delta.content
-            else ""
-        )
+        if not chunk.choices:
+            continue
+        content = chunk.choices[0].delta.content or ""
         full_content += content
         if chunk_count >= 100:  # Stop after reasonable number
             break

@@ -1,7 +1,8 @@
 from fastapi.testclient import TestClient
 
 from skvaider.conftest import wait_for_condition
-from skvaider.inference.manager import Manager, Model
+from skvaider.inference.manager import Manager
+from skvaider.inference.model import Model
 
 
 async def test_health(client: TestClient, gemma: Model):

@@ -15,7 +15,6 @@ async def test_monitor_health_updates_model_status_completion():
     model = Model(
         ModelConfig(
             id="test",
-            context_size=1024,
             max_requests=10,
             port=1000,
             task="chat",
@@ -78,7 +77,6 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
     model = Model(
         ModelConfig(
             id="test-embed",
-            context_size=1024,
             port=openai_server.port,
             max_requests=10,
             task="embedding",
@@ -109,7 +107,6 @@ async def test_health_check_completions(openai_server: OpenAIServerMock):
     model = Model(
         ModelConfig(
             id="test-embed",
-            context_size=1024,
             port=openai_server.port,
             max_requests=10,
             task="chat",

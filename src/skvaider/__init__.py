@@ -24,6 +24,7 @@ import skvaider.routers.openai
 from aramaki import Manager as AramakiManager
 from skvaider.auth import verify_token
 from skvaider.config import Config
+from skvaider.debug import DebuggingMiddleware
 from skvaider.logging import LoggingMiddleware, logging_config
 
 log = structlog.stdlib.get_logger()
@@ -111,34 +112,47 @@ async def lifespan(
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         skvaider.proxy.pool.Pool, pool
     )
+    aramaki = None
+    if config.aramaki:
+        aramaki = AramakiManager(
+            config.aramaki.principal,
+            "skvaider",
+            config.aramaki.url,
+            config.aramaki.secret_salt,
+            config.aramaki.state_directory,
+        )
+        aramaki.start()
+        auth_tokens = aramaki.register_collection(skvaider.auth.AuthTokens)
+        registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
+            skvaider.auth.AuthTokens,
+            auth_tokens.get_collection_with_session,
+            enter=False,
+        )
 
-    aramaki = AramakiManager(
-        config.aramaki.principal,
-        "skvaider",
-        config.aramaki.url,
-        config.aramaki.secret_salt,
-        config.aramaki.state_directory,
-    )
-    aramaki.start()
-    auth_tokens = aramaki.register_collection(skvaider.auth.AuthTokens)
-    registry.register_factory(  # pyright: ignore[reportUnknownMemberType]
-        skvaider.auth.AuthTokens,
-        auth_tokens.get_collection_with_session,
-        enter=False,
-    )
+    if config.auth.static_tokens:
+        registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+            skvaider.auth.StaticAuthTokens,
+            skvaider.auth.StaticAuthTokens(config.auth.static_tokens),
+        )
 
     dictConfig(
         logging_config(config.logging)
     )  # XXX makes us swallow lifespan errors?
 
     yield
-    aramaki.stop()
+    if aramaki:
+        aramaki.stop()
     pool.close()
 
 
 def app_factory(
     lifespan: Any = lifespan,
 ) -> FastAPI:
+    config_file = os.environ.get("SKVAIDER_CONFIG_FILE", "config.toml")
+    with open(config_file, "rb") as f:
+        config_data = tomllib.load(f)
+    config = Config.model_validate(config_data)
+
     app = FastAPI(lifespan=lifespan)
     app.include_router(
         skvaider.routers.openai.router,
@@ -147,7 +161,15 @@ def app_factory(
     )
     app.include_router(skvaider.routers.metrics.router)
     app.add_middleware(
-        LoggingMiddleware, logger=getLogger("skvaider.accesslog")
+        DebuggingMiddleware,
+        directory=config.server.directory / "debug",
+        slow_threshold=config.debug.slow_threshold,
+    )
+    app.add_middleware(
+        LoggingMiddleware,
+        logger=getLogger("skvaider.accesslog"),
+        trust_remote_request_id=False,
+        has_debugger=True,
     )
 
     @app.exception_handler(Exception)
@@ -160,8 +182,19 @@ def app_factory(
         if isinstance(exc, starlette.requests.ClientDisconnect):
             pass
         else:
+            backend = "n/a"
+            model = "n/a"
+            try:
+                backend = request.state.backend.url
+            except Exception:
+                pass
+            try:
+                model = request.state.model
+            except Exception:
+                pass
+
             log.error(
-                f"Unhandled exception for request: {request.method} {request.url}",
+                f"Unhandled exception for request: {request.method} {request.url} - backend={backend} model={model}",
                 exc_info=exc,
             )
 

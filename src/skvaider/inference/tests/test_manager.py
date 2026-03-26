@@ -12,7 +12,7 @@ from skvaider.inference.model import LlamaModel
 async def test_manager_start_crash_quick_return(
     gemma: LlamaModel, manager: Manager
 ):
-    gemma.config.cmd_args = ["--asdf"]
+    gemma._config.cmd_args = ["--asdf"]
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(manager.start_model("gemma"), timeout=10)
 

@@ -1,8 +1,9 @@
 import ipaddress
 import logging
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any
 
+import shortuuid
 import structlog
 from fastapi import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -13,22 +14,27 @@ log = structlog.stdlib.get_logger()
 
 
 class LoggingMiddleware:
-    def __init__(self, app: ASGIApp, *, logger: logging.Logger):
+    trust_remote_request_id = False
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        logger: logging.Logger,
+        trust_remote_request_id: bool,
+        has_debugger: bool,
+    ):
         self.app = app
         self._logger = logger
+        self.trust_remote_request_id
+        self.has_debugger = has_debugger
 
-    async def inner_send(
-        self, message: Message, send: Send, status_code: list[int]
+    async def _capture_status(
+        self, message: Message, send: Send, request: Request
     ):
         if message["type"] == "http.response.start":
-            status_code[0] = message["status"]
-
+            request.state.status_code = message["status"]
         await send(message)
-
-    def inner_send_factory(
-        self, send: Send, status_code: list[int]
-    ) -> Callable[[Message], Awaitable[None]]:
-        return lambda message: self.inner_send(message, send, status_code)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":
@@ -52,46 +58,58 @@ class LoggingMiddleware:
             except ValueError:
                 pass
 
-        status_code = [500]
+        request = Request(scope, receive)
+        request.state.status_code = 500
+
+        request.state.request_id = None
+        if self.trust_remote_request_id:
+            request.state.request_id = request.headers.get(
+                "x-skvaider-request-id"
+            )
+        if not request.state.request_id:
+            request.state.request_id = shortuuid.uuid()[:8]
+        request.state.model = "n/a"
+        request.state.backend = None
+        request.state.stream = False
+        request.state.tokens_prompt = 0
+        request.state.tokens_completion = 0
+        request.state.tokens_total = 0
+        request.state.time_queue = 0.0
+        request.state.time_server = 0.0
+        request.state.retries = 0
+        request.state.parallel_total = 0
+        request.state.parallel_model = 0
+        request.state.parallel_backend = 0
+        request.state.backend_endpoint = ""
+        request.state.response_headers = {}
+
         try:
             await self.app(
-                scope, receive, self.inner_send_factory(send, status_code)
+                scope,
+                receive,
+                lambda msg: self._capture_status(msg, send, request),
             )
         finally:
+            if request.url.path == "/metrics":
+                return
+
             process_time = round(time.perf_counter() - start_time, 3)
-            request = Request(scope, receive)
+            backend = (
+                request.state.backend.url if request.state.backend else "n/a"
+            )
+            stream = "S" if request.state.stream else "-"
 
-            model = "n/a"
-            try:
-                model = request.state.model
-            except Exception:
-                pass
+            if self.has_debugger:
+                debug_flag = request.state.debug_recorder.trigger_flag()
+            else:
+                debug_flag = "_"
 
-            backend = "n/a"
-            try:
-                backend = request.state.backend.url
-            except Exception:
-                pass
-
-            stream = "-"
-            try:
-                if request.state.stream:
-                    stream = "S"
-            except Exception:
-                pass
-
-            # Timings
-            # - warmup time
-            # - queuing time
-            # - time to first chunk
-            # - total time
-            # Status codes
-            # - streaming
-            # response size
-            # ... tokens?
-            # XXX queue sizes - number of parallel requests  / with same model / on same backend / ...
+            time_queue = round(request.state.time_queue, 3)
+            time_server = round(request.state.time_server, 3)
+            p = request.state
+            # XXX when streaming: add time to time first token
             self._logger.info(
-                f'{anon_ip} {model} {backend} -/-/{process_time} {status_code[0]} 0 {stream} "{request.method} {request.url.path}" '
+                f'{anon_ip} {p.model} {backend} {p.request_id} {time_queue}/{time_server}/{process_time} {p.status_code} {p.tokens_prompt}/{p.tokens_completion}/{p.tokens_total} {stream}{debug_flag} {p.retries} {p.parallel_total}/{p.parallel_model}/{p.parallel_backend} "{request.method} {request.url.path}" '
             )
 
 
@@ -99,9 +117,7 @@ def logging_config(config: LoggingConfig) -> dict[str, Any]:
     return {
         "version": 1,
         "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-            },
+            "console": {"class": "logging.StreamHandler", "formatter": "plain"},
             "accesslog": {
                 "class": "logging.FileHandler",
                 "filename": config.access_log_path,
@@ -115,7 +131,10 @@ def logging_config(config: LoggingConfig) -> dict[str, Any]:
             "accesslog": {
                 "format": "%(asctime)s: %(message)s",
                 "datefmt": "%Y-%m-%dT%H:%M:%S",
-            }
+            },
+            "plain": {
+                "format": "%(message)s",
+            },
         },
         "loggers": {
             "skvaider": {

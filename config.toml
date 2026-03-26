@@ -1,16 +1,14 @@
 # Sample config used by the development environment
 [auth]
-source = "aramaki"
+static_tokens = [ "developer" ]
+
+[debug]
+slow_threshold = 5
 
 [server]
 host = "127.0.0.1"
 port = 8000
-
-[aramaki]
-url = "wss://directory.0e9d93af.largo01.fcdev.fcio.net/aramaki"
-state_directory = "var/aramaki"
-secret_salt = ""
-principal = "kyle00"
+directory = "var/lib/skvaider"
 
 [[backend]]
 type = "skvaider"
@@ -22,9 +20,10 @@ url = "http://127.0.0.1:8002"
 
 [[models]]
 id = "gemma"
+task = "chat"
 instances = 2
 memory = { ram = "1.3G" }
-task = "chat"
+
 
 [[models]]
 id = "embeddinggemma"
