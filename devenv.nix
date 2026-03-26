@@ -8,6 +8,17 @@
     llama-cpp
   ];
 
+  tasks = {
+    "setup:var" = {
+      exec = ''
+        mkdir -p var/log
+        mkdir -p var/lib
+        mkdir -p var/aramaki
+      '';
+      before = [ "devenv:processes:skvaider" ];
+    };
+  };
+
   enterTest = ''
     run-tests
   '';

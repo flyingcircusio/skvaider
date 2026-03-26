@@ -1,5 +1,5 @@
 # Sample config used by the development environment
-models_dir = "models"
+models_dir = "var/lib/models-1"
 
 [server]
 host = "127.0.0.1"
@@ -7,7 +7,7 @@ port = 8001
 
 [logging]
 log_level = "DEBUG"
-access_log_path = ".access_log-inference1"
+access_log_path = "var/log/access-inference1.log"
 
 [[openai.models]]
 engine = "llama-server"

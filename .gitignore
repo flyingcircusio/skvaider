@@ -20,7 +20,7 @@ result
 # test generated files
 .coverage*
 htmlcov
-.models
+var/
 
 # Devenv
 .devenv*
@@ -29,11 +29,5 @@ devenv.local.nix
 # direnv
 .direnv
 
-.aramaki-workdir
-
+# macos
 .DS_store
-.access_log*
-
-.ollama*/models*
-models/
-models-2/
