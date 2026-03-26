@@ -1,9 +1,9 @@
 import asyncio
 import base64
 import json
-from collections.abc import AsyncGenerator, Callable, Coroutine
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, Generator
+from typing import Generator
 
 import pytest
 import svcs
@@ -11,6 +11,7 @@ from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import skvaider.auth
 import skvaider.routers.openai
 from skvaider import app_factory
 
