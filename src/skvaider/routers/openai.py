@@ -139,7 +139,9 @@ class Backend:
                 return result.get("done", False)
             await self.update_model_load_status()
         except Exception as e:
-            self.log("failed loading model", exception=e, model=model_id)
+            self.log.exception(
+                "failed loading model", exception=e, model=model_id
+            )
             raise
 
     async def update_model_load_status(self):
@@ -336,8 +338,12 @@ class Pool:
                 )
                 # the above is a set, we want a list
                 idle_backends = [b for b in idle_backends]
-            backend = idle_backends[0]
-            model = backend.models[model_id]
+                # XXX emergency bug fix, this has been properly fixed in the development branch already
+                model = idle_backends[0].result()
+                backend = model.backend
+            else:
+                backend = idle_backends[0]
+                model = backend.models[model_id]
             log.debug("got idle backend", backend=backend.url, model=model_id)
 
             # This should not be necessary, but it should also be gratuitous.
