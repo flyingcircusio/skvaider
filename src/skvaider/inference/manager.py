@@ -14,7 +14,6 @@ from .resources import (
     MemoryMonitor,
     NvidiaMemoryMonitor,
     RAMMonitor,
-    ROCmMemoryMonitor,
 )
 
 log = structlog.get_logger()
@@ -70,6 +69,10 @@ def locked(
     return wrapper
 
 
+class ModelAlreadyLoading(Exception):
+    """The model is already loading."""
+
+
 class Manager:
     models_dir: Path
     models: dict[str, Model]
@@ -83,8 +86,8 @@ class Manager:
         self._lock = asyncio.Lock()
 
         self.monitors = {"ram": RAMMonitor(self)}
-        if shutil.which("rocm-smi"):
-            self.monitors["rocm"] = ROCmMemoryMonitor(self)
+        # if shutil.which("rocm-smi"):
+        #     self.monitors["rocm"] = ROCmMemoryMonitor(self)
         if shutil.which("nvidia-smi"):
             self.monitors["nvidia"] = NvidiaMemoryMonitor(self)
 
@@ -106,9 +109,13 @@ class Manager:
     async def start_model(
         self,
         model_name: str,
-        timeout: int = 120,  # XXX the timeout might need to be model specific? and might need to be communicated to the gateway?
+        timeout: int = 600,  # XXX the timeout might need to be model specific? and might need to be communicated to the gateway?
     ) -> Model:
         model = self.models[model_name]
+        if model.lock.manager_locked():
+            # I'm relatively sure this is happening atomically:
+            # https://stackoverflow.com/questions/74923841/asyncio-try-to-acquire-a-lock-without-waiting-on-it
+            raise ModelAlreadyLoading()
         await model.lock.manager_acquire()
         try:
             if "active" not in model.status:

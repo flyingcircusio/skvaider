@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 from prometheus_client import CONTENT_TYPE_LATEST, Counter
 
 from skvaider.inference import metrics
-from skvaider.inference.manager import Manager, Model
+from skvaider.inference.manager import Manager
+from skvaider.inference.model import Model
 from skvaider.inference.routers.models import (
     _extract_token_usage as _extract_token_usage,  # pyright: ignore[reportPrivateUsage]
 )

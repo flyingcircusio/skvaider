@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from skvaider.inference import metrics
-from skvaider.inference.manager import Manager
+from skvaider.inference.manager import Manager, ModelAlreadyLoading
 from skvaider.inference.model import Model
 from skvaider.typing import JSONObject
 
@@ -112,8 +112,13 @@ async def load_model(
 
     try:
         running_model = await manager.start_model(model_name)
+
+    except ModelAlreadyLoading:
+        raise HTTPException(
+            status_code=409, detail="Model is already loading/unloading"
+        )
     except Exception as e:
-        log.error("Failed to start model", model=model_name, error=str(e))
+        log.exception("Failed to start model", model=model_name, error=str(e))
         raise HTTPException(
             status_code=500, detail=f"Failed to start model: {e}"
         )

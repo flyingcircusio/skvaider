@@ -65,6 +65,12 @@ def main() -> None:
         metavar="PATH",
         help="Output JSON file path (default: embeddings-reference.json)",
     )
+    parser.add_argument(
+        "--request-timeout",
+        default=120,
+        type=int,
+        help="Timeout for individual requests.",
+    )
     args = parser.parse_args()
 
     if not args.config:
@@ -103,7 +109,8 @@ def main() -> None:
 
     try:
         with httpx.Client(
-            headers={"Authorization": f"Bearer {key}"}, timeout=120.0
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=args.request_timeout,
         ) as client:
             for model_cfg in embedding_models:
                 mid = model_cfg.id

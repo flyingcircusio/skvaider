@@ -1,8 +1,10 @@
 import asyncio
+import urllib.parse
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 import httpx
+import httpx_sse
 import structlog
 from fastapi import HTTPException
 
@@ -52,11 +54,13 @@ class Backend(ABC):
         self.request_health_update = asyncio.Event()
 
     @abstractmethod
-    async def post(self, path: str, data: dict[str, Any]) -> Any: ...
+    async def post(
+        self, path: str, data: dict[str, Any], request_id: str = ""
+    ) -> Any: ...
 
     @abstractmethod
     def post_stream(
-        self, path: str, data: JSONObject
+        self, path: str, data: JSONObject, request_id: str = ""
     ) -> AsyncGenerator[str, None]: ...
 
     @abstractmethod
@@ -80,17 +84,22 @@ class DummyBackend(Backend):
         super().__init__(url)
         self.fail_count = fail_count
         self.call_count = 0
+        self.last_request_id: str = ""
 
-    async def post(self, path: str, data: dict[str, Any]) -> Any:
+    async def post(
+        self, path: str, data: dict[str, Any], request_id: str = ""
+    ) -> Any:
         self.call_count += 1
+        self.last_request_id = request_id
         if self.call_count <= self.fail_count:
             raise HTTPException(status_code=540, detail="Backend unavailable")
         return {"id": "cmpl-1", "choices": []}
 
     async def post_stream(
-        self, path: str, data: dict[str, Any]
+        self, path: str, data: dict[str, Any], request_id: str = ""
     ) -> AsyncGenerator[str, None]:
         self.call_count += 1
+        self.last_request_id = request_id
         if self.call_count <= self.fail_count:
             raise HTTPException(status_code=540, detail="Backend unavailable")
         yield f"data: chunk from {self.url}\n\n"
@@ -130,15 +139,29 @@ class SkvaiderBackend(Backend):
         super().__init__(url)
         self.loading_lock = asyncio.Lock()
 
-    async def post(self, path: str, data: dict[str, Any]):
+    async def post(
+        self, path: str, data: dict[str, Any], request_id: str = ""
+    ) -> Any:
         model_id = data.get("model")
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
 
         url = f"{self.url}/models/{model_id}/proxy{path}"
+        headers = {"X-Skvaider-Request-ID": request_id} if request_id else {}
 
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.post(url, json=data, timeout=120)
+            try:
+                r = await client.post(
+                    url, json=data, headers=headers, timeout=120
+                )
+            except httpx.TimeoutException as e:
+                raise HTTPException(
+                    status_code=504, detail="Backend timeout"
+                ) from e
+            except httpx.ConnectError as e:
+                raise HTTPException(
+                    status_code=540, detail="Backend unavailable"
+                ) from e
             if r.status_code == 540:
                 raise HTTPException(
                     status_code=540, detail="Backend unavailable"
@@ -146,25 +169,48 @@ class SkvaiderBackend(Backend):
             return r.json()
 
     async def post_stream(
-        self, path: str, data: JSONObject
+        self, path: str, data: JSONObject, request_id: str = ""
     ) -> AsyncGenerator[str, None]:
         model_id = data.get("model")
+
+        stream_options = data.get("stream_options", {})
+        assert isinstance(stream_options, dict)
+        stream_options["include_usage"] = True
+        data["stream_options"] = stream_options
+
         if not model_id:
             raise HTTPException(status_code=400, detail="Model not specified")
 
         url = f"{self.url}/models/{model_id}/proxy{path}"
+        headers = {"X-Skvaider-Request-ID": request_id} if request_id else {}
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            async with client.stream(
-                "POST", url, json=data, timeout=120
-            ) as response:
-                if response.status_code == 540:
-                    raise HTTPException(
-                        status_code=540, detail="Backend unavailable"
-                    )
-                async for chunk in response.aiter_text():
-                    if chunk.strip():
-                        yield chunk
+        try:
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                async with client.stream(
+                    "POST", url, json=data, headers=headers, timeout=120
+                ) as response:
+                    if response.status_code == 540:
+                        raise HTTPException(
+                            status_code=540, detail="Backend unavailable"
+                        )
+                    if response.status_code >= 400:
+                        body = await response.aread()
+                        raise HTTPException(
+                            status_code=response.status_code,
+                            detail=body.decode(errors="replace"),
+                        )
+                    async for event in httpx_sse.EventSource(
+                        response
+                    ).aiter_sse():
+                        yield f"data: {event.data}\n\n"
+        except httpx.TimeoutException as e:
+            raise HTTPException(
+                status_code=504, detail="Backend timeout"
+            ) from e
+        except httpx.ConnectError as e:
+            raise HTTPException(
+                status_code=540, detail="Backend unavailable"
+            ) from e
 
     async def load_model(self, model_id: str) -> bool:
         """Load a model on this backend.
@@ -196,18 +242,21 @@ class SkvaiderBackend(Backend):
             success = False
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 try:
+                    model_id_quoted = urllib.parse.quote(model_id, safe="")
                     r = await client.post(
-                        f"{self.url}/models/{model_id}/load",
-                        timeout=120,
+                        f"{self.url}/models/{model_id_quoted}/load",
+                        timeout=600,
                     )
                 except httpx.HTTPError as exc:
                     self.log.error(
-                        f"Loading model failed: HTTP Exception for {exc.request.url} - {exc}"
+                        f"Loading model failed: HTTP exception for {exc.request.url} - {exc}"
                     )
                 else:
+                    # 409 would indicate that the model is already loading.
                     success = r.status_code == 200
-            # XXX make this part of the load/unload protocol to avoid a roundtrip?
-            self.request_health_update.set()
+            if success:
+                # XXX make this part of the load/unload protocol to avoid a roundtrip?
+                self.request_health_update.set()
             return success
 
     async def unload_model(self, model_id: str):
@@ -252,11 +301,9 @@ class SkvaiderBackend(Backend):
                         await self._update_models()
                         self.healthy = True
             except httpx.ConnectError as e:
-                self.log.warning("monitor failed to connect", error=str(e))
                 self.healthy = False
                 self.unhealthy_reason = str(e)
             except Exception as e:
-                self.log.exception("monitor failed", error=repr(e))
                 self.healthy = False
                 self.unhealthy_reason = repr(e)
 
@@ -270,9 +317,6 @@ class SkvaiderBackend(Backend):
 
             self.request_health_update.clear()
 
-            self.log.info(
-                "waiting for next health check", timeout=self.health_interval
-            )
             try:
                 await asyncio.wait_for(
                     self.request_health_update.wait(),
@@ -290,7 +334,6 @@ class SkvaiderBackend(Backend):
             r_json = r.json()
             known_models = r_json["models"]
 
-        self.log.info("updating models")
         current_models = self.models
         updated_models = {}
         for model in known_models:
@@ -314,26 +357,13 @@ class SkvaiderBackend(Backend):
             model_obj.limit = model["max_requests"]
             model_obj.memory_usage = model.get("memory_usage") or {}
 
-            if model_obj.is_loaded:
-                for resource, (
-                    actual,
-                    configured,
-                ) in model_obj.check_memory_usage().items():
-                    self.log.warning(
-                        "model uses more memory than configured",
-                        model=model_id,
-                        resource=resource,
-                        actual=actual,
-                        configured=configured,
-                    )
-
-            self.log.info(
-                "model status",
-                model=model_obj.id,
-                actual_memory=model_obj.memory_usage,
-                configured_memory=model_obj.configured_memory,
-                loaded=model_obj.is_loaded,
-            )
+            # if model_obj.is_loaded:
+            #     for resource, (
+            #         actual,
+            #         configured,
+            #     ) in model_obj.check_memory_usage().items():
+            #         # XXX make this available to the check, logging doesn't help here
+            #         pass
 
         self.models = updated_models
         self.pool.tasks.create(self.pool.rebalance)
@@ -345,6 +375,3 @@ class SkvaiderBackend(Backend):
             usage = r.json()
 
         self.memory = usage["memory"]
-
-        for backend, m in self.memory.items():
-            self.log.info("host memory usage", backend=backend, **m)

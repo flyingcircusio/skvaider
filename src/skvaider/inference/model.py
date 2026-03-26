@@ -23,6 +23,7 @@ from skvaider.inference import metrics
 from skvaider.inference.config import (
     LlamaServerModelConfig,
     ModelConfig,
+    SystemdModelConfig,
     VllmModelConfig,
 )
 from skvaider.utils import TaskManager, slugify
@@ -59,6 +60,9 @@ class UserManagerLock:
             if self._users == 0:
                 # The manager now may start again.
                 self._manager_lock.release()
+
+    def manager_locked(self):
+        return self._manager_lock.locked()
 
     async def manager_acquire(self):
         await self._manager_lock.acquire()
@@ -105,9 +109,6 @@ class Model(ABC):
 
     _engine: str
 
-    # This sub-classes must implement:
-    def is_embedding(self) -> bool: ...
-
     @property
     def slug(self) -> str: ...
 
@@ -127,6 +128,9 @@ class Model(ABC):
             self._check_health = self._check_embedding_health
         else:
             self._check_health = self._check_completion_health
+
+    def is_embedding(self) -> bool:
+        return self.config.task == "embedding"
 
     def _notify_status_changed(self) -> None:
         """Notify watchers that status changed. Set and immediately clear."""
@@ -201,6 +205,10 @@ class Model(ABC):
         async with httpx.AsyncClient() as client:
             while True:
                 try:
+                    log.info(
+                        "checking endpoint",
+                        endpoint=f"{expected_endpoint}/health",
+                    )
                     resp = await client.get(f"{expected_endpoint}/health")
                     if resp.status_code == 200:
                         self.endpoint = expected_endpoint
@@ -485,7 +493,7 @@ class LlamaModel(Model):
                 # Model
                 "--model", str(self.model_files[0]),
                 "--jinja", # XXX allow/require control per model?
-                "--ctx-size", str(self.config.context_size),
+                "--ctx-size", str(self._config.context_size),
 
                 # Network
                 "--host", self._host,
@@ -498,9 +506,9 @@ class LlamaModel(Model):
                 "--metrics",
                 "--slots",
             ]
-        if self.config.task == "embedding" and "--embeddings" not in self.config.cmd_args:
+        if self.config.task == "embedding" and "--embeddings" not in self._config.cmd_args:
             cmd += ["--embeddings"]
-        cmd += self.config.cmd_args
+        cmd += self._config.cmd_args
         # fmt: on
         log.debug("cli", argv=" ".join(cmd))
         self.process = await asyncio.create_subprocess_exec(
@@ -584,7 +592,7 @@ class VllmModel(Model):
                 str(self._config.repo),
                 "--revision", str(self._config.revision),
                 "--no-trust-remote-code",
-                "--max-model-len", str(self.config.context_size),
+                "--max-model-len", str(self._config.context_size),
 
                 # LoadConfig
                 "--download-dir", str(self.datadir),
@@ -601,10 +609,7 @@ class VllmModel(Model):
                 # Monitoring / Metrics
                 # XXX
             ]
-        if self.config.task == "embedding" and "--task" not in self.config.cmd_args:
-            # XXX: untested -- vllm embedding task flag, verify on real vllm deployment
-            cmd += ["--task", "embed"]
-        cmd += self.config.cmd_args
+        cmd += self._config.cmd_args
         # fmt: on
         log.debug("cli", argv=" ".join(cmd))
         self.process = await asyncio.create_subprocess_exec(
@@ -657,3 +662,73 @@ class VllmModel(Model):
         # )
         # self.integrity_marker_file.touch()
         # log.info(f"{self.slug}: success")
+
+
+class SystemdModel(Model):
+    _engine = "systemd"
+
+    def __init__(self, config: SystemdModelConfig):
+        super().__init__(config)
+        self._config = config
+
+    @property
+    def slug(self) -> str:
+        assert self.config.id is not None
+        return slugify(self.config.id, 64)
+
+    async def start(self) -> None:
+        """Start the model process."""
+        log.info("Starting model", model=self.config.id)
+        assert self.config.id is not None
+        assert self.process_status == "stopped"
+
+        start_time = time.time()
+
+        self.process_status = "starting"
+
+        log.info("Starting model via systemd unit", unit=self._config.unit)
+
+        proc = await asyncio.create_subprocess_exec(
+            "/run/wrappers/bin/sudo",  # nixos-ism
+            "systemctl",
+            "start",
+            self._config.unit,
+        )
+        await proc.wait()
+        if proc.returncode:
+            log.info("Got error exit code", code=proc.returncode)
+            await self.terminate()
+            return
+
+        log.info("Unit started, waiting for server to respond ...")
+        try:
+            startup_task = self._tasks.create(self._wait_for_startup)
+            await startup_task
+            self._tasks.create(self._monitor_health)
+        except (Exception, asyncio.CancelledError):
+            await self.terminate()
+            raise
+
+        log.info("Model started", model=self.config.id, endpoint=self.endpoint)
+        self.process_status = "running"
+        self._notify_status_changed()
+
+        # Update metrics
+        duration = time.time() - start_time
+        metrics.inference_model_load_duration_seconds.labels(
+            model=self.config.id
+        ).observe(duration)
+        metrics.inference_model_status.labels(model=self.config.id).set(1)
+
+    async def terminate(self) -> None:
+        proc = await asyncio.create_subprocess_exec(
+            "/run/wrappers/bin/sudo",
+            "systemctl",
+            "stop",
+            self._config.unit,
+        )
+        await proc.wait()
+        self.process_status = "stopped"
+
+    async def download(self) -> None:
+        pass

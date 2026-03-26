@@ -185,6 +185,12 @@ def main() -> None:
         metavar="PATH",
         help="Path to embedding reference JSON for numerical-stability checks",
     )
+    parser.add_argument(
+        "--request-timeout",
+        default=120,
+        type=int,
+        help="Timeout for individual requests.",
+    )
     args = parser.parse_args()
 
     if not args.config:
@@ -216,7 +222,8 @@ def main() -> None:
             oks.add(name)
 
     with httpx.Client(
-        headers={"Authorization": f"Bearer {key}"}, timeout=120.0
+        headers={"Authorization": f"Bearer {key}"},
+        timeout=args.request_timeout,
     ) as client:
         # These two checks are not model-specific.
         models: dict[str, Any] = {}

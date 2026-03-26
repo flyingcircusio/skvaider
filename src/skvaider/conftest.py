@@ -199,13 +199,14 @@ async def task_managers():
 
 
 @pytest.fixture
-def mock_request_factory():
+def mock_request_factory() -> Callable[..., Request]:
     def _create(model: str = "test-model", stream: bool = False) -> MagicMock:
         req = MagicMock(spec=Request)
         req.json = AsyncMock(return_value={"model": model, "stream": stream})
         req.state = MagicMock()
         req.state.model = model
         req.state.stream = stream
+        req.headers.get.return_value = None
         return req
 
     return _create

@@ -1,5 +1,6 @@
 """Open-AI compatible API."""
 
+import json
 import time
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager
@@ -8,7 +9,7 @@ from typing import Any, Generic, TypeVar
 import structlog
 import svcs
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from skvaider import metrics
@@ -27,6 +28,25 @@ class ListResponse(BaseModel, Generic[T]):
 router = APIRouter()
 
 log = structlog.stdlib.get_logger()
+
+
+def _extract_usage(request: Any, usage: dict[str, Any] | None) -> None:
+    if not usage:
+        return
+    request.state.tokens_prompt = usage.get("prompt_tokens", 0)
+    request.state.tokens_completion = usage.get("completion_tokens", 0)
+    request.state.tokens_total = usage.get("total_tokens", 0)
+
+
+def _parse_sse_usage(chunk: str) -> dict[str, Any] | None:
+    # Chunks from the backend are properly-assembled SSE events in "data: <json>\n\n" form.
+    if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
+        return None
+    try:
+        event = json.loads(chunk[6:].strip())
+    except Exception:
+        return None
+    return event.get("usage") or None
 
 
 class OpenAIProxy:
@@ -49,14 +69,23 @@ class OpenAIProxy:
         semaphore = self.pool.semaphores[request.state.model]
 
         for attempt in range(self.max_retries):
+            if attempt > 0:
+                request.state.retries += 1
+            t_queue = time.perf_counter()
             async with semaphore.use(
                 excluded_backends=excluded_backends
             ) as backend:
+                request.state.time_queue += time.perf_counter() - t_queue
                 if not backend:
                     break
+                request.state.backend = backend
                 excluded_backends.add(backend.url)
                 try:
-                    result = await backend.post(endpoint, data)
+                    t_server = time.perf_counter()
+                    result = await backend.post(
+                        endpoint, data, request.state.request_id
+                    )
+                    request.state.time_server += time.perf_counter() - t_server
                     metrics.gateway_backend_requests_total.labels(
                         model=request.state.model,
                         backend=backend.url,
@@ -64,6 +93,21 @@ class OpenAIProxy:
                         endpoint=endpoint,
                         streaming=False,
                     ).inc()
+                    _extract_usage(request, result.get("usage"))
+                    model_id = request.state.model
+                    request.state.parallel_total = sum(
+                        m.in_progress
+                        for b in self.pool.backends
+                        for m in b.models.values()
+                    )
+                    request.state.parallel_model = sum(
+                        b.models[model_id].in_progress
+                        for b in self.pool.backends
+                        if model_id in b.models
+                    )
+                    request.state.parallel_backend = sum(
+                        m.in_progress for m in backend.models.values()
+                    )
                     return result
                 except HTTPException as e:
                     metrics.gateway_backend_requests_total.labels(
@@ -100,14 +144,23 @@ class OpenAIProxy:
         semaphore = self.pool.semaphores[request.state.model]
 
         for attempt in range(self.max_retries):
+            if attempt > 0:
+                request.state.retries += 1
+            t_queue = time.perf_counter()
             context = semaphore.use(excluded_backends=excluded_backends)
             backend = await context.__aenter__()
+            request.state.time_queue += time.perf_counter() - t_queue
             if backend is None:
                 break
+            request.state.backend = backend
             excluded_backends.add(backend.url)
             try:
-                stream_aws = backend.post_stream(endpoint, data)
+                stream_aws = backend.post_stream(
+                    endpoint, data, request.state.request_id
+                )
+                t_server = time.perf_counter()
                 first_chunk = await anext(stream_aws)
+                request.state.time_server += time.perf_counter() - t_server
                 metrics.gateway_backend_requests_total.labels(
                     backend=backend.url,
                     endpoint=endpoint,
@@ -146,38 +199,68 @@ class OpenAIProxy:
                         status="error",
                         streaming=True,
                     ).inc()
-                if e.status_code == 540:
-                    metrics.gateway_backend_retry_total.labels(
-                        backend=backend.url,
-                        endpoint=endpoint,
-                        model=request.state.model,
-                        reason="backend_unavailable",
-                        streaming=True,
-                    ).inc()
-                    log.warning(
-                        "Backend unavailable, retrying",
-                        model=request.state.model,
-                        attempt=attempt + 1,
-                        excluded_backends=excluded_backends,
-                    )
+                if e.status_code != 540:
+                    raise
+                metrics.gateway_backend_retry_total.labels(
+                    backend=backend.url,
+                    endpoint=endpoint,
+                    model=request.state.model,
+                    reason="backend_unavailable",
+                    streaming=True,
+                ).inc()
+                log.warning(
+                    "Backend unavailable, retrying",
+                    model=request.state.model,
+                    attempt=attempt + 1,
+                    excluded_backends=excluded_backends,
+                )
                 continue
 
             # Success
+            model_id = request.state.model
+            pool = self.pool
+
             async def stream(
                 first: str,
                 stream_aws: AsyncGenerator[str],
                 context: AbstractAsyncContextManager[Backend | None],
+                _backend: Backend,
+                _pool: Any,
+                _model_id: str,
             ) -> AsyncGenerator[str]:
                 try:
                     yield first
                     async for chunk in stream_aws:
+                        usage = _parse_sse_usage(chunk)
+                        if usage:
+                            _extract_usage(request, usage)
                         yield chunk
                 finally:
+                    request.state.parallel_total = sum(
+                        m.in_progress
+                        for b in _pool.backends
+                        for m in b.models.values()
+                    )
+                    request.state.parallel_model = sum(
+                        b.models[_model_id].in_progress
+                        for b in _pool.backends
+                        if _model_id in b.models
+                    )
+                    request.state.parallel_backend = sum(
+                        m.in_progress for m in _backend.models.values()
+                    )
                     await context.__aexit__(None, None, None)
 
             request.state.backend = backend
             return StreamingResponse(
-                stream(first_chunk, stream_aws, context),
+                stream(
+                    first_chunk,
+                    stream_aws,
+                    context,
+                    backend,
+                    pool,
+                    model_id,
+                ),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -194,6 +277,7 @@ class OpenAIProxy:
         allow_stream: bool = True,
     ) -> StreamingResponse | Any:
         request_data: dict[str, Any] = await request.json()
+        request.state.backend_endpoint = endpoint
         request_data["store"] = False
         request_data["model"] = request_data["model"].lower()
         request.state.model = request_data["model"]
@@ -207,9 +291,11 @@ class OpenAIProxy:
                 f"The model `{request.state.model}` is not known.",
             )
 
+        model_id = request.state.model
+
         # Track active requests
         metrics.gateway_active_requests.labels(
-            model=request.state.model,
+            model=model_id,
             endpoint=endpoint,
             streaming=request.state.stream,
         ).inc()
@@ -228,7 +314,22 @@ class OpenAIProxy:
                     request_data,
                 )
 
+            request_id = request.state.request_id
+            if isinstance(result, StreamingResponse):
+                result.headers["X-Skvaider-Request-ID"] = request_id
+            else:
+                result = JSONResponse(
+                    content=result,
+                    headers={"X-Skvaider-Request-ID": request_id},
+                )
             return result
+        except HTTPException as e:
+            status = "error"
+            raise HTTPException(
+                status_code=e.status_code,
+                detail=e.detail,
+                headers={"X-Skvaider-Request-ID": request.state.request_id},
+            ) from e
         except Exception:
             status = "error"
             raise

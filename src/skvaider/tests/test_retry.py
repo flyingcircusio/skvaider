@@ -2,7 +2,7 @@ from typing import Callable
 
 import pytest
 import svcs
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from skvaider.config import ModelInstanceConfig
 from skvaider.conftest import registered_model_factory
@@ -15,13 +15,13 @@ from skvaider.utils import TaskManager
 async def test_proxy_retry_all_fail(
     proxy: OpenAIProxy,
     dummy_backend: DummyBackend,
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
 ) -> None:
     dummy_backend.fail_count = 100
-    req = mock_request_factory(stream=False)  # type: ignore[misc]
+    req = mock_request_factory(stream=False)
 
     with pytest.raises(HTTPException) as exc:
-        await proxy.proxy(req, "/test")  # type: ignore[misc]
+        await proxy.proxy(req, "/test")
 
     assert exc.value.status_code == 503
 
@@ -30,7 +30,7 @@ async def test_proxy_retry_verifies_backend_switching(
     svcs_registry: svcs.Registry,
     services: svcs.Container,
     task_managers: list[TaskManager],
-    mock_request_factory,  # type: ignore[misc]
+    mock_request_factory: Callable[..., Request],
     dummy_backend_factory: Callable[..., DummyBackend],
 ) -> None:
     """First backend returns 540, proxy retries on the second and succeeds.
@@ -59,8 +59,8 @@ async def test_proxy_retry_verifies_backend_switching(
     )
 
     proxy = OpenAIProxy(services)
-    req = mock_request_factory(stream=False)  # type: ignore[misc]
-    await proxy.proxy(req, "/test")  # type: ignore[misc]
+    req = mock_request_factory(stream=False)
+    await proxy.proxy(req, "/test")
 
     # b1 was tried first (list order), failed with 540, then b2 succeeded.
     assert b1.call_count == 1, (
