@@ -25,6 +25,10 @@ class OpenAIConfig(BaseModel):
 
 class LoggingConfig(BaseLoggingConfig):
     access_log_path: Path = Path("/var/log/skvaider/inference-access.log")
+    # Directory for per-model subprocess log files (inference-<id>.log).
+    # When set, each model process writes its stdout/stderr here instead of
+    # being forwarded through the Python logger.
+    log_dir: Path | None = None
 
 
 class LlamaModelFile(BaseModel):

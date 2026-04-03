@@ -87,6 +87,8 @@ def locked(
 class Model(ABC):
     config: ModelConfig
     datadir: Path
+    # Set by Manager.add_model when a log directory is configured.
+    log_dir: Path | None = None
     verification_data: dict[str, list[float]] | None = None
     _host = "127.0.0.1"
 
@@ -371,6 +373,51 @@ class Model(ABC):
         self.health_status = ""
         self._notify_status_changed()
 
+    async def _launch_process(self, cmd: list[str]) -> None:
+        """Start the subprocess, wire up output, and wait for /health.
+
+        If self.log_dir is set, stdout/stderr of the child go directly to
+        inference-<id>.log in that directory so each model has its own file.
+        Otherwise the streams are piped back through _monitor_output so they
+        appear in the parent process log (legacy / backward-compatible).
+        """
+        log.debug("cli", argv=" ".join(cmd))
+        if self.log_dir is not None:
+            log_path = self.log_dir / f"inference-{self.config.id}.log"
+            log.info(
+                "Logging model output to file",
+                model=self.config.id,
+                log_path=str(log_path),
+            )
+            log_file = open(log_path, "a")
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=log_file,
+                stderr=log_file,
+            )
+            log_file.close()  # child inherited the FD; we no longer need our copy
+        else:
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        try:
+            self._tasks.create(self._monitor_process)
+            if self.log_dir is None:
+                self._tasks.create(
+                    self._monitor_output, args=[self.process.stderr, True]
+                )
+                self._tasks.create(
+                    self._monitor_output, args=[self.process.stdout, False]
+                )
+            startup_task = self._tasks.create(self._wait_for_startup)
+            await startup_task
+            self._tasks.create(self._monitor_health)
+        except (Exception, asyncio.CancelledError):
+            await self.terminate()
+            raise
+
 
 class LlamaModel(Model):
     _engine = "llama-server"
@@ -510,26 +557,7 @@ class LlamaModel(Model):
             cmd += ["--embeddings"]
         cmd += self._config.cmd_args
         # fmt: on
-        log.debug("cli", argv=" ".join(cmd))
-        self.process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            self._tasks.create(self._monitor_process)
-            self._tasks.create(
-                self._monitor_output, args=[self.process.stderr, True]
-            )
-            self._tasks.create(
-                self._monitor_output, args=[self.process.stdout, False]
-            )
-            startup_task = self._tasks.create(self._wait_for_startup)
-            await startup_task
-            self._tasks.create(self._monitor_health)
-        except (Exception, asyncio.CancelledError):
-            await self.terminate()
-            raise
+        await self._launch_process(cmd)
         log.info("Model started", model=self.config.id, endpoint=self.endpoint)
         self.process_status = "running"
         self._notify_status_changed()
@@ -611,26 +639,7 @@ class VllmModel(Model):
             ]
         cmd += self._config.cmd_args
         # fmt: on
-        log.debug("cli", argv=" ".join(cmd))
-        self.process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            self._tasks.create(self._monitor_process)
-            self._tasks.create(
-                self._monitor_output, args=[self.process.stderr, True]
-            )
-            self._tasks.create(
-                self._monitor_output, args=[self.process.stdout, False]
-            )
-            startup_task = self._tasks.create(self._wait_for_startup)
-            await startup_task
-            self._tasks.create(self._monitor_health)
-        except (Exception, asyncio.CancelledError):
-            await self.terminate()
-            raise
+        await self._launch_process(cmd)
         log.info("Model started", model=self.config.id, endpoint=self.endpoint)
         self.process_status = "running"
         self._notify_status_changed()

@@ -80,7 +80,9 @@ async def lifespan(
     # The rust-based libraries can only be configured using an OS variable ... :
     os.environ["HF_HOME"] = str(config.models_dir / ".hf")
 
-    manager = Manager(models_dir=config.models_dir)
+    manager = Manager(
+        models_dir=config.models_dir, log_dir=config.logging.log_dir
+    )
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         Manager, manager
     )

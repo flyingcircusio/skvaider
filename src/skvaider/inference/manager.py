@@ -79,9 +79,10 @@ class Manager:
     monitors: dict[str, MemoryMonitor]
     _tasks: list[asyncio.Task[None]]
 
-    def __init__(self, models_dir: Path):
+    def __init__(self, models_dir: Path, log_dir: Path | None = None):
         self.tasks = TaskManager()
         self.models_dir = models_dir
+        self.log_dir = log_dir
         self.models = {}
         self._lock = asyncio.Lock()
 
@@ -101,6 +102,7 @@ class Manager:
         self.models[model.config.id] = model
         model.datadir = self.models_dir / model.slug
         model.datadir.mkdir(exist_ok=True)
+        model.log_dir = self.log_dir
 
     def list_models(self) -> list[Model]:
         return list(self.models.values())
