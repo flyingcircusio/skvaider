@@ -48,8 +48,7 @@ def models_cache() -> Path:
     # This is on purpose not in a tmp_path as we want to cache this
     # over multiple runs.
     cache_dir = Path("var/tests/models").absolute()
-    if not cache_dir.exists():
-        cache_dir.mkdir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
 
