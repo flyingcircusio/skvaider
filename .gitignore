@@ -31,10 +31,3 @@ devenv.local.nix
 
 # macos
 .DS_store
-# Runtime artifacts from running the inference/gateway server locally
-.access_log*
-.aramaki-workdir/
-.models/
-.ollama*/
-models/
-models-*/
