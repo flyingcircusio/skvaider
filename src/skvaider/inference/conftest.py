@@ -54,8 +54,10 @@ def models_cache() -> Path:
 
 
 @pytest.fixture
-async def manager(model_path: Path) -> AsyncGenerator[Manager, None]:
-    m = Manager(model_path)
+async def manager(
+    model_path: Path, tmp_path: Path
+) -> AsyncGenerator[Manager, None]:
+    m = Manager(model_path, log_dir=tmp_path)
     yield m
     await m.shutdown()
 

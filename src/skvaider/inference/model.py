@@ -233,29 +233,6 @@ class Model(ABC):
         # Clean up
         await self.terminate()
 
-    async def _monitor_output(
-        self,
-        stream: asyncio.StreamReader | None,
-        is_stderr: bool,
-    ) -> None:
-        stream_name = "stderr" if is_stderr else "stdout"
-        if stream is None:
-            log.warning(f"No stream for {stream_name}.")
-            return
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            line_str = line.decode("utf-8", errors="replace").strip()
-            if not line_str:
-                continue
-            log.debug(
-                self._engine,
-                model=self.config.id,
-                stream=stream_name,
-                line=line_str,
-            )
-
     async def _check_embedding_health(self) -> bool:
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
@@ -374,43 +351,30 @@ class Model(ABC):
         self._notify_status_changed()
 
     async def _launch_process(self, cmd: list[str]) -> None:
-        """Start the subprocess, wire up output, and wait for /health.
+        """Start the subprocess and wait for /health.
 
-        If self.log_dir is set, stdout/stderr of the child go directly to
-        inference-<id>.log in that directory so each model has its own file.
-        Otherwise the streams are piped back through _monitor_output so they
-        appear in the parent process log (legacy / backward-compatible).
+        stdout/stderr of the child go directly to inference-<id>.log in
+        self.log_dir so each model has its own file.
         """
+        assert self.log_dir is not None, (
+            "log_dir must be set before starting a model"
+        )
         log.debug("cli", argv=" ".join(cmd))
-        if self.log_dir is not None:
-            log_path = self.log_dir / f"inference-{self.config.id}.log"
-            log.info(
-                "Logging model output to file",
-                model=self.config.id,
-                log_path=str(log_path),
-            )
-            log_file = open(log_path, "a")
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=log_file,
-                stderr=log_file,
-            )
-            log_file.close()  # child inherited the FD; we no longer need our copy
-        else:
-            self.process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+        log_path = self.log_dir / f"inference-{self.config.id}.log"
+        log.info(
+            "Logging model output to file",
+            model=self.config.id,
+            log_path=str(log_path),
+        )
+        log_file = open(log_path, "a")
+        self.process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=log_file,
+            stderr=log_file,
+        )
+        log_file.close()  # child inherited the FD; we no longer need our copy
         try:
             self._tasks.create(self._monitor_process)
-            if self.log_dir is None:
-                self._tasks.create(
-                    self._monitor_output, args=[self.process.stderr, True]
-                )
-                self._tasks.create(
-                    self._monitor_output, args=[self.process.stdout, False]
-                )
             startup_task = self._tasks.create(self._wait_for_startup)
             await startup_task
             self._tasks.create(self._monitor_health)
