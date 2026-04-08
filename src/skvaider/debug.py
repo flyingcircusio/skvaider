@@ -81,9 +81,9 @@ class DebuggingMiddleware:
     """
 
     directory: Path
-    slow_threshold: int
+    slow_threshold: float
 
-    def __init__(self, app: ASGIApp, *, directory: Path, slow_threshold: int):
+    def __init__(self, app: ASGIApp, *, directory: Path, slow_threshold: float):
         self.app = app
         self.directory = directory
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -120,7 +120,7 @@ class DebugRecorder:
     _capture_body: bool = False
 
     def __init__(
-        self, request: Request, directory: Path, slow_threshold: int = 0
+        self, request: Request, directory: Path, slow_threshold: float = 0
     ):
         self.triggers = []
         self.directory = directory

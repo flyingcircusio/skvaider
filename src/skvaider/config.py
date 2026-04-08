@@ -45,7 +45,7 @@ class ModelInstanceConfig(BaseModel):
 
 
 class DebugConfig(BaseModel):
-    slow_threshold: int = 0
+    slow_threshold: float = 0
 
 
 default_debug_config = DebugConfig()
