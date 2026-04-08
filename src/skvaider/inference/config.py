@@ -66,6 +66,7 @@ class VllmModelConfig(ModelConfig):
     revision: str
     repo: str
     cmd_args: list[str] = []
+    env: dict[str, str] = {}
     context_size: int
 
 

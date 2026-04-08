@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import hashlib
+import os
 import shutil
 import time
 from abc import ABC
@@ -350,7 +351,9 @@ class Model(ABC):
         self.health_status = ""
         self._notify_status_changed()
 
-    async def _launch_process(self, cmd: list[str]) -> None:
+    async def _launch_process(
+        self, cmd: list[str], extra_env: dict[str, str] | None = None
+    ) -> None:
         """Start the subprocess and wait for /health.
 
         stdout/stderr of the child go directly to inference-<id>.log in
@@ -367,10 +370,12 @@ class Model(ABC):
             log_path=str(log_path),
         )
         log_file = open(log_path, "a")
+        process_env = {**os.environ, **(extra_env or {})}
         self.process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=log_file,
             stderr=log_file,
+            env=process_env,
         )
         log_file.close()  # child inherited the FD; we no longer need our copy
         try:
@@ -603,7 +608,7 @@ class VllmModel(Model):
             ]
         cmd += self._config.cmd_args
         # fmt: on
-        await self._launch_process(cmd)
+        await self._launch_process(cmd, extra_env=self._config.env or None)
         log.info("Model started", model=self.config.id, endpoint=self.endpoint)
         self.process_status = "running"
         self._notify_status_changed()
