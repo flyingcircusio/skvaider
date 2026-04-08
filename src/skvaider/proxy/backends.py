@@ -1,5 +1,4 @@
 import asyncio
-import urllib.parse
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, AsyncGenerator
 
@@ -242,9 +241,8 @@ class SkvaiderBackend(Backend):
             success = False
             async with httpx.AsyncClient(follow_redirects=True) as client:
                 try:
-                    model_id_quoted = urllib.parse.quote(model_id, safe="")
                     r = await client.post(
-                        f"{self.url}/models/{model_id_quoted}/load",
+                        f"{self.url}/models/{model_id}/load",
                         timeout=600,
                     )
                 except httpx.HTTPError as exc:
