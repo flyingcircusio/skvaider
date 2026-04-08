@@ -88,8 +88,8 @@ def locked(
 class Model(ABC):
     config: ModelConfig
     datadir: Path
-    # Set by Manager.add_model when a log directory is configured.
-    log_dir: Path | None = None
+    # Set by Manager.add_model from the config's logging.log_dir.
+    log_dir: Path
     verification_data: dict[str, list[float]] | None = None
     _host = "127.0.0.1"
 
@@ -359,9 +359,6 @@ class Model(ABC):
         stdout/stderr of the child go directly to inference-<id>.log in
         self.log_dir so each model has its own file.
         """
-        assert self.log_dir is not None, (
-            "log_dir must be set before starting a model"
-        )
         log.debug("cli", argv=" ".join(cmd))
         log_path = self.log_dir / f"inference-{self.config.id}.log"
         log.info(

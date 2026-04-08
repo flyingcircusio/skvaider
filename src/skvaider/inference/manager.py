@@ -79,7 +79,7 @@ class Manager:
     monitors: dict[str, MemoryMonitor]
     _tasks: list[asyncio.Task[None]]
 
-    def __init__(self, models_dir: Path, log_dir: Path | None = None):
+    def __init__(self, models_dir: Path, log_dir: Path):
         self.tasks = TaskManager()
         self.models_dir = models_dir
         self.log_dir = log_dir
