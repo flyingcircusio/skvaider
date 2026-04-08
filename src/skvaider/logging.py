@@ -114,7 +114,7 @@ class LoggingMiddleware:
 
 
 def logging_config(config: LoggingConfig) -> dict[str, Any]:
-    return {
+    dictConfig: dict[str, Any] = {
         "version": 1,
         "handlers": {
             "console": {"class": "logging.StreamHandler", "formatter": "plain"},
@@ -123,9 +123,6 @@ def logging_config(config: LoggingConfig) -> dict[str, Any]:
                 "filename": config.access_log_path,
                 "formatter": "accesslog",
             },
-        },
-        "root": {
-            "handlers": ["console"],
         },
         "formatters": {
             "accesslog": {
@@ -137,18 +134,30 @@ def logging_config(config: LoggingConfig) -> dict[str, Any]:
             },
         },
         "loggers": {
-            "skvaider": {
-                "level": config.log_level,
-                "handlers": ["console"],
-            },
-            "aramaki": {
-                "level": config.log_level,
-                "handlers": ["console"],
-            },
             "skvaider.accesslog": {
                 "level": "INFO",
                 "handlers": ["accesslog"],
                 "propagate": False,
             },
         },
+        "root": {"handlers": ["console"]},
     }
+
+    common_config = {
+        "level": config.log_level,
+        "handlers": ["console"],
+        "propagate": False,
+    }
+
+    for logger in [
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "uvicorn.lifespan",
+        "fastapi",
+        "skvaider",
+        "aramaki",
+    ]:
+        dictConfig["loggers"][logger] = common_config
+
+    return dictConfig

@@ -66,9 +66,6 @@ async def lifespan(
             else:
                 verification_data = tomllib.load(f)
 
-    cr = structlog.dev.ConsoleRenderer.get_active()
-    cr.exception_formatter = structlog.dev.plain_traceback
-
     log.info("Inference manager starting...")
 
     try:
@@ -126,10 +123,6 @@ async def lifespan(
 
     loop = asyncio.get_running_loop()
     loop.set_exception_handler(global_exception_handler)
-    dictConfig(
-        logging_config(config.logging)
-    )  # Activate logging late, otherwise we swallow lifecycle errors.
-
     yield
 
     log.info("Shutting down...")
@@ -173,6 +166,12 @@ def app_factory(lifespan: Any = lifespan) -> FastAPI:
 
 def main():
     config = load_config()
+
+    cr = structlog.dev.ConsoleRenderer.get_active()
+    cr.exception_formatter = structlog.dev.plain_traceback
+    dictConfig(
+        logging_config(config.logging),
+    )
 
     uvicorn.run(
         "skvaider.inference:app_factory",

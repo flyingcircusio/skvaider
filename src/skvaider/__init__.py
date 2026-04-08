@@ -87,9 +87,6 @@ async def lifespan(
         config_data = tomllib.load(f)
     config = Config.model_validate(config_data)
 
-    cr = structlog.dev.ConsoleRenderer.get_active()
-    cr.exception_formatter = structlog.dev.plain_traceback
-
     loop = asyncio.get_running_loop()
 
     loop.set_debug(True)
@@ -134,10 +131,6 @@ async def lifespan(
             skvaider.auth.StaticAuthTokens,
             skvaider.auth.StaticAuthTokens(config.auth.static_tokens),
         )
-
-    dictConfig(
-        logging_config(config.logging)
-    )  # XXX makes us swallow lifespan errors?
 
     yield
     if aramaki:
@@ -208,6 +201,12 @@ def app_factory(
 
 def main():
     config = load_config()
+
+    cr = structlog.dev.ConsoleRenderer.get_active()
+    cr.exception_formatter = structlog.dev.plain_traceback
+    dictConfig(
+        logging_config(config.logging),
+    )
 
     uvicorn.run(
         "skvaider:app_factory",
