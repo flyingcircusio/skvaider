@@ -7,6 +7,7 @@ port = 8002
 
 [logging]
 log_level = "DEBUG"
+log_dir = "var/log/inference-2"
 access_log_path = "var/log/access-inference2.log"
 
 [[openai.models]]
