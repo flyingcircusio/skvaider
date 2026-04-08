@@ -33,4 +33,4 @@ memory = { ram = "1.4G" }
 
 [logging]
 log_level = "DEBUG"
-access_log_path = "var/log/access-proxy.log"
+log_dir = "var/log/skvaider"

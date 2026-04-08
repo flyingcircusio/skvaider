@@ -114,13 +114,15 @@ class LoggingMiddleware:
 
 
 def logging_config(config: LoggingConfig) -> dict[str, Any]:
+    if not config.log_dir.exists():
+        config.log_dir.mkdir(parents=True, exist_ok=True)
     dictConfig: dict[str, Any] = {
         "version": 1,
         "handlers": {
             "console": {"class": "logging.StreamHandler", "formatter": "plain"},
             "accesslog": {
                 "class": "logging.FileHandler",
-                "filename": config.access_log_path,
+                "filename": config.log_dir / "access.log",
                 "formatter": "accesslog",
             },
         },
