@@ -2,10 +2,8 @@ import asyncio
 import base64
 import itertools
 import json
-import os
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any, Generator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,8 +26,6 @@ from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
 from skvaider.routers.openai import OpenAIProxy
 from skvaider.utils import TaskManager
-import skvaider.routers.openai
-from skvaider import app_factory
 
 hasher = PasswordHasher()
 
