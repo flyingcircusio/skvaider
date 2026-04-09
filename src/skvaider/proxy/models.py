@@ -60,12 +60,7 @@ class AIModel(BaseModel):
         Returns a dict of resource -> (actual, configured) for resources
         where actual exceeds configured.
         """
-        exceeding: dict[str, tuple[int, int]] = {}
-        for resource, actual in self.memory_usage.items():
-            configured = self.configured_memory.get(resource, 0)
-            if actual > configured:
-                exceeding[resource] = (actual, configured)
-        return exceeding
+        return self.config.check_memory_usage(self.memory_usage)
 
     def fit_score(self, resources: dict[str, int] | None = None) -> float:
         """A score (higher) is better how well this model fits or would fit on it's backend

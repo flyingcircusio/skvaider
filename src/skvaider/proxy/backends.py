@@ -355,14 +355,6 @@ class SkvaiderBackend(Backend):
             model_obj.limit = model["max_requests"]
             model_obj.memory_usage = model.get("memory_usage") or {}
 
-            # if model_obj.is_loaded:
-            #     for resource, (
-            #         actual,
-            #         configured,
-            #     ) in model_obj.check_memory_usage().items():
-            #         # XXX make this available to the check, logging doesn't help here
-            #         pass
-
         self.models = updated_models
         self.pool.tasks.create(self.pool.rebalance)
 
