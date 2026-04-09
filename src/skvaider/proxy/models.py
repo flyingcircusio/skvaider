@@ -89,6 +89,10 @@ class AIModel(BaseModel):
         the backend's free resources.
 
         """
+        # If no memory constraints are configured the model always fits.
+        # Returning 0 here would cause load_model to abort the load.
+        if not self.configured_memory:
+            return 1.0
         score = 0.0
         for resource, usage in self.configured_memory.items():
             if usage == 0:
