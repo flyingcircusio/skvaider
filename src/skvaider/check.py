@@ -169,10 +169,6 @@ def main() -> None:
         help="Skvaider proxy base URL (e.g. https://ai.whq.risclog.com)",
     )
     parser.add_argument(
-        "keyfile",
-        help="Path to file containing the API bearer token",
-    )
-    parser.add_argument(
         "--config",
         default=os.environ.get("SKVAIDER_CONFIG_FILE"),
         metavar="PATH",
@@ -202,7 +198,11 @@ def main() -> None:
     with open(args.config, "rb") as f:
         config = Config.model_validate(tomllib.load(f))
 
-    key = open(args.keyfile).read().strip()
+    if config.auth.static_tokens:
+        key = config.auth.static_tokens[0]
+    else:
+        print("CHECKS CRITICAL - no bearer token: set static_tokens in config")
+        sys.exit(2)
     url = args.url.rstrip("/")
 
     reference: dict[str, dict[str, list[float]]] = {}

@@ -38,10 +38,6 @@ def main() -> None:
         description="Fetch embeddings from skvaider proxy and write a reference JSON file."
     )
     parser.add_argument(
-        "keyfile",
-        help="Path to file containing the bearer token",
-    )
-    parser.add_argument(
         "--config",
         default=os.environ.get("SKVAIDER_CONFIG_FILE"),
         metavar="PATH",
@@ -96,7 +92,14 @@ def main() -> None:
             host = "127.0.0.1"
         base = f"http://{host}:{config.server.port}"
 
-    key = open(args.keyfile).read().strip()
+    if config.auth.static_tokens:
+        key = config.auth.static_tokens[0]
+    else:
+        print(
+            "error: no bearer token — set static_tokens in config",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     with open(args.dataset) as f:
         texts = [line.strip() for line in f if line.strip()]

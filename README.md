@@ -41,6 +41,26 @@ $ run-tests
 ```
 
 
+## Authentication
+
+skvaider authenticates API clients via bearer tokens. Add one or more tokens to
+your `config.toml`:
+
+```toml
+[auth]
+static_tokens = ["<token>"]
+```
+
+Generate a secure token:
+
+```bash
+openssl rand -hex 32
+```
+
+The same token is used by `check-skvaider` (read from `config.auth.static_tokens[0]`)
+and by API clients in the `Authorization: Bearer <token>` header.
+
+
 ## Embedding reference files
 
 Pre-recorded embedding vectors used for numerical stability checks. Format:
@@ -50,7 +70,7 @@ Pre-recorded embedding vectors used for numerical stability checks. Format:
 Generate from a live instance:
 
 ```bash
-generate-embedding-reference /path/to/keyfile \
+generate-embedding-reference \
     --config config.toml \
     --url https://ai.example.com \
     --dataset dataset.txt \
