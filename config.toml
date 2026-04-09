@@ -1,27 +1,36 @@
 # Sample config used by the development environment
 [auth]
-source = "aramaki"
+static_tokens = [ "developer" ]
 
-[aramaki]
-url = "wss://directory.0e9d93af.largo01.fcdev.fcio.net/aramaki"
-state_directory = ".aramaki-workdir"
-secret_salt = ""
-principal = "kyle00"
+[debug]
+slow_threshold = 5
 
-[[backend]]
-type = "openai"
-url = "http://127.0.0.1:11435"
+[server]
+host = "127.0.0.1"
+port = 8000
+directory = "var/lib/skvaider"
 
 [[backend]]
-type = "openai"
-url = "http://127.0.0.1:11436"
+type = "skvaider"
+url = "http://127.0.0.1:8001"
 
-[openai.models."gpt-oss:20b"]
-num_ctx = 65536
+[[backend]]
+type = "skvaider"
+url = "http://127.0.0.1:8002"
 
-[openai.models."gpt-oss:120b"]
-num_ctx = 65536
+[[models]]
+id = "gemma"
+task = "chat"
+instances = 2
+memory = { ram = "1.3G" }
+
+
+[[models]]
+id = "embeddinggemma"
+task = "embedding"
+instances = 1
+memory = { ram = "1.4G" }
 
 [logging]
 log_level = "DEBUG"
-access_log_path = ".access_log"
+log_dir = "var/log/skvaider"

@@ -3,7 +3,7 @@ import binascii
 import json
 import time
 from json import JSONDecodeError
-from typing import Annotated
+from typing import Annotated, cast
 
 import svcs
 from argon2 import PasswordHasher
@@ -19,6 +19,13 @@ hasher = PasswordHasher()
 
 class AuthTokens(aramaki.Collection):
     collection = "fc.directory.ai.token"
+
+
+class StaticAuthTokens:
+    """Tokens that can be provided through the config that aren't managed by Aramaki."""
+
+    def __init__(self, tokens: list[str]):
+        self.tokens = set(tokens)
 
 
 class Cache:
@@ -54,27 +61,38 @@ async def verify_token(
     if credentials.credentials in cache:
         return
 
+    try:
+        static_tokens = services.get(StaticAuthTokens)
+    except svcs.exceptions.ServiceNotFoundError:
+        pass
+    else:
+        if credentials.credentials in static_tokens.tokens:
+            return
+
     # XXX There's a lot of type issues going on here, because the mechanics of passing through
     # the correct types from services.aget() with a factory for a context manager that isn't entered
     # are just too hard for the type system for now afaict.
     try:
-        client_token = json.loads(
+        client_token: dict[str, str] = json.loads(
             base64.b64decode(
                 credentials.credentials.encode("utf-8"), validate=True
             ).decode("utf-8")
         )
     except (binascii.Error, ValueError, JSONDecodeError):
         raise HTTPException(401, detail="Bad authentication")
-    async with await services.aget(AuthTokens) as authtokens:  # type: ignore
+    async with await services.aget(AuthTokens) as authtokens:  # pyright: ignore[reportGeneralTypeIssues, reportUnknownVariableType]
         # Keep the DB access session scope confined to this part of the request,
         # otherwise DB sessions stay open while waiting for responses.
         # See PL-135110.
-        db_token = await authtokens.get(client_token["id"])  # type: ignore
+        db_token = cast(
+            dict[str, str],
+            await authtokens.get(client_token["id"]),  # pyright: ignore[reportUnknownMemberType]
+        )
         if not db_token:
             raise HTTPException(401, detail="Bad authentication")
         try:
             assert isinstance(db_token["secret_hash"], str)
-            hasher.verify(db_token["secret_hash"], client_token["secret"])  # type: ignore
+            hasher.verify(db_token["secret_hash"], client_token["secret"])
             cache.add(credentials.credentials)
         # We could specify explicit exceptions here but go the safe route and just catch all in case the lib addes one
         except Exception:

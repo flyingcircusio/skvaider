@@ -9,6 +9,22 @@ jobs:
   pre-commit:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+    - uses: nixbuild/nix-quick-install-action@v34
+    - name: Restore and save Nix store
+      uses: nix-community/cache-nix-action@v6
+      with:
+        primary-key: nix-${{ runner.os }}-${{ hashFiles('**/devenv.nix', '**/devenv.lock') }}
+        restore-prefixes-first-match: nix-${{ runner.os }}-
+        gc-max-store-size: 5G
+        purge: true
+        purge-prefixes: nix-${{ runner.os }}-
+        purge-created: 0
+        purge-last-accessed: 0
+        purge-primary-key: never
+    - name: Install devenv.sh
+      run: nix profile install nixpkgs#devenv
+    - name: Set up Python venv
+      run: devenv shell uv sync && git restore devenv.lock
     - uses: actions/setup-python@v4
     - uses: pre-commit/action@v3.0.0

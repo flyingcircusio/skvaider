@@ -1,11 +1,18 @@
 import asyncio
+import datetime
+import re
+import unicodedata
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar
 
 import structlog.stdlib
+
+T = TypeVar("T")
 
 log = structlog.stdlib.get_logger()
 
 
-def log_task_exception(task: asyncio.Task) -> None:
+def log_task_exception(task: asyncio.Task[Any]) -> None:
     try:
         task.result()
     except asyncio.CancelledError:
@@ -14,7 +21,147 @@ def log_task_exception(task: asyncio.Task) -> None:
         log.exception("Exception raised by task = %r", task)
 
 
-def create_task(aw):
-    t = asyncio.create_task(aw)
-    t.add_done_callback(log_task_exception)
-    return t
+def slugify(text: str, max_length: int = 255) -> str:
+    """
+    Convert text to a slug safe for Linux, Windows, and URL path components.
+
+    - Normalizes unicode and converts to ASCII
+    - Lowercases everything
+    - Replaces spaces/separators with hyphens
+    - Removes unsafe characters
+    - Avoids Windows reserved names
+
+    """
+    # Normalize unicode to ASCII equivalents (é -> e, etc.)
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+
+    # Lowercase
+    text = text.lower()
+
+    # Replace common separators with hyphens
+    text = re.sub(r"[\s:_./\\]+", "-", text)
+
+    # Remove anything that isn't alphanumeric or hyphen
+    text = re.sub(r"[^a-z0-9-]", "", text)
+
+    # Collapse multiple hyphens
+    text = re.sub(r"-+", "-", text)
+
+    text = text.strip("-")
+
+    input_len = len(text)
+    if (overflow := input_len - max_length) > 0:
+        # This is tricky: the rounding works out exactly so
+        # that on uneven numbers we'll remove (one more) character on the middle
+        # or left and on even numbers one more to the right
+        # fmt: off
+        text = (text[:int(input_len/2-overflow/2)] +
+                text[int(input_len/2+overflow/2):])
+        # fmt: on
+
+    # Collapse multiple hyphens again
+    text = re.sub(r"-+", "-", text)
+
+    # Handle empty result
+    if not text:
+        text = "unnamed"
+
+    return text
+
+
+class TaskManager:
+    """Keep track of tasks.
+
+    Automatically clean up tasks that are done.
+
+    Allow unique tasks where a new task is ignored if a task with the same id already exists.
+
+    Install generic logging callback if exceptions occur.
+
+    Support polling tasks continuously.
+
+    Cancel tasks when cleaning up.
+
+    """
+
+    _tasks: list[asyncio.Task[Any]]
+    unique_task_map: dict[str, asyncio.Task[Any]]
+
+    def __init__(self):
+        self._tasks = []
+        self.unique_task_map = dict()
+
+    @property
+    def count(self):
+        """Return the number of managed tasks"""
+        return len(self._tasks)
+
+    def poll(
+        self,
+        func: Callable[..., Coroutine[Any, Any, None]],
+        *args: Any,
+        interval: float,
+    ) -> None:
+        """Add a function to be polled. Uses @poll decorator metadata."""
+
+        async def loop() -> None:
+            while True:
+                try:
+                    await func(*args)
+                except Exception:
+                    log.exception(f"An error occured polling {func!r}")
+                await asyncio.sleep(interval)
+
+        self.create(loop)
+
+    def create(
+        self,
+        func: Callable[..., Coroutine[Any, Any, Any]],
+        args: Any = (),
+        id: str = "",
+    ) -> asyncio.Task[Any]:
+        if id:
+            if id in self.unique_task_map:
+                return self.unique_task_map[id]
+
+        task = asyncio.create_task(func(*args))
+        task.add_done_callback(log_task_exception)
+        self._tasks.append(task)
+
+        if id:
+            self.unique_task_map[id] = task
+
+            def cleanup_map(t: asyncio.Task[Any]):
+                self.unique_task_map.pop(id, None)
+
+            task.add_done_callback(cleanup_map)
+
+        def cleanup_list(t: asyncio.Task[Any]):
+            try:
+                self._tasks.remove(t)
+            except ValueError:
+                # Task was already removed (e.g., by terminate())
+                pass
+
+        task.add_done_callback(cleanup_list)
+        return task
+
+    def cancel(self, id: str):
+        if id in self.unique_task_map:
+            self.unique_task_map[id].cancel()
+
+    def terminate(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+        self._tasks.clear()
+        self.unique_task_map.clear()
+
+
+# mockable version
+def now():
+    return datetime.datetime.now(datetime.UTC)
+
+
+# tz-aware datetime
+datetime_min = datetime.datetime.min.replace(tzinfo=datetime.UTC)

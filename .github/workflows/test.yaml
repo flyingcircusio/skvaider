@@ -10,7 +10,7 @@ jobs:
     runs-on: "${{ matrix.os }}"
     steps:
       - uses: actions/checkout@v5
-      - uses: nixbuild/nix-quick-install-action@v33
+      - uses: nixbuild/nix-quick-install-action@v34
       - name: Restore and save Nix store
         uses: nix-community/cache-nix-action@v6
         with:
@@ -25,13 +25,12 @@ jobs:
           purge-primary-key: never
       - name: Install devenv.sh
         run: nix profile install nixpkgs#devenv
-      - name: Ollama Model Directorys
-        id: ollama-models
+      - name: Model Directories
+        id: models
         uses: actions/cache@v4
         with:
           path: |
-            .ollama1
-            .ollama2
-          key: ${{ runner.os }}-ollama-models
+            .models
+          key: ${{ runner.os }}-models
       - name: Run tests
         run: devenv test
