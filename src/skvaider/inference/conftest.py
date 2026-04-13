@@ -1,5 +1,6 @@
 import http.server
 import json
+import os
 import shutil
 import threading
 from collections.abc import AsyncGenerator
@@ -181,15 +182,37 @@ async def prepare_model(
 
 
 @pytest.fixture
-async def gemma(models_cache: Path, manager: Manager) -> LlamaModel:
+def gemma_model_file() -> LlamaModelFile:
+    """LlamaModelFile used by the gemma test fixture.
+
+    Override SKVAIDER_TEST_GEMMA_URL and SKVAIDER_TEST_GEMMA_HASH to supply
+    a locally served GGUF so the fixture works without internet access (e.g.
+    in a NixOS test VM).  When neither variable is set the fixture defaults
+    to the upstream gemma-3-270m-it-GGUF from HuggingFace.
+    """
+    return LlamaModelFile(
+        url=os.environ.get(
+            "SKVAIDER_TEST_GEMMA_URL",
+            "https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/"
+            "c90975dbd40c0c7b275fefaae758c3415c906238/"
+            "gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
+        ),
+        hash=os.environ.get(
+            "SKVAIDER_TEST_GEMMA_HASH",
+            "e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
+        ),
+    )
+
+
+@pytest.fixture
+async def gemma(
+    gemma_model_file: LlamaModelFile, models_cache: Path, manager: Manager
+) -> LlamaModel:
     return await prepare_model(
         "gemma",
         4096,
         [],
-        LlamaModelFile(
-            url="https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/c90975dbd40c0c7b275fefaae758c3415c906238/gemma-3-270m-it-UD-Q4_K_XL.gguf?download=true",
-            hash="e5420636e0cbfee24051ff22e9719380a3a93207a472edb18dd0c89a95f6ef80",
-        ),
+        gemma_model_file,
         models_cache,
         manager,
         task="chat",
