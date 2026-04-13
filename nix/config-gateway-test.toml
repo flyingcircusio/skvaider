@@ -1,0 +1,26 @@
+# Gateway config for NixOS VM tests.
+# Single backend (one inference server at :8001), absolute /tmp paths,
+# memory = { ram = 1 } so fit_score() is non-zero without real RAM constraints.
+[auth]
+
+[server]
+directory = "/tmp"
+
+[logging]
+log_dir = "/tmp"
+
+[[backend]]
+type = "skvaider"
+url = "http://127.0.0.1:8001"
+
+[[models]]
+id = "gemma"
+instances = 1
+memory = { ram = 1 }
+task = "chat"
+
+[[models]]
+id = "embeddinggemma"
+instances = 1
+memory = { ram = 1 }
+task = "embedding"
