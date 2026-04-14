@@ -229,6 +229,7 @@ class Model(ABC):
             "Process exited unexpectedly",
             model=self.config.id,
             returncode=self.process.returncode,
+            status=self.process_status,
         )
         # Clean up
         await self.terminate()

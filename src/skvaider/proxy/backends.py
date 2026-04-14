@@ -380,6 +380,14 @@ class SkvaiderBackend(Backend):
                     )
             model_obj.checks = checks
         self.models = updated_models
+        for model in self.models.values():
+            self.log.debug(
+                "model status",
+                backend=self.url,
+                model=model.id,
+                is_loaded=model.is_loaded,
+                in_progress=model.in_progress,
+            )
         self.pool.tasks.create(self.pool.rebalance)
 
     async def _update_usage(self) -> None:
