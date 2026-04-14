@@ -120,7 +120,8 @@ class Manager:
             raise ModelAlreadyLoading()
         await model.lock.manager_acquire()
         try:
-            if "active" not in model.status:
+            log.debug("model status", status=model.status, model=model_name)
+            if "running" not in model.status:
                 try:
                     await asyncio.wait_for(model.start(), timeout=timeout)
                 except asyncio.TimeoutError:
