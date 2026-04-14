@@ -21,11 +21,17 @@ async def test_inference_endpoints_normalize_model_name(
     assert response.status_code == 200
     assert response.json()["id"] == model_id
 
-    response = client.post("/models/GEMMA/load")
-    assert response.status_code == 200
+    response = client.patch(
+        "/manager/manifest", json={"models": ["GemmA"], "serial": ["1", 1]}
+    )
+    assert response.status_code == 202
+    assert response.json() == {"status": "ok"}
 
-    response = client.post("/models/GemMA/unload")
-    assert response.status_code == 200
+    response = client.patch(
+        "/manager/manifest", json={"models": [], "serial": ["1", 2]}
+    )
+    assert response.status_code == 202
+    assert response.json() == {"status": "ok"}
 
 
 def test_model_config_normalizes_id_to_lowercase():

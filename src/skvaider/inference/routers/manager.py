@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from skvaider.inference.manager import Manager
+from skvaider.manifest import ManifestRequest
 from skvaider.typing import JSONObject
 
 router = APIRouter()
@@ -33,6 +34,17 @@ async def health(  # pyright: ignore[reportUnusedFunction]
         },
     }
     return JSONResponse(status_code=200, content=content)
+
+
+@router.patch("/manager/manifest")
+async def update_manifest(
+    body: ManifestRequest,
+    services: svcs.fastapi.DepContainer,
+) -> JSONResponse:
+    """Update the manifest of models to load; the manager converges asynchronously."""
+    manager = services.get(Manager)
+    manager.update_manifest(body.models, body.serial)
+    return JSONResponse(status_code=202, content={"status": "ok"})
 
 
 @router.get("/manager/usage")

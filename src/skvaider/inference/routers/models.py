@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from skvaider.inference import metrics
-from skvaider.inference.manager import Manager, ModelAlreadyLoading
+from skvaider.inference.manager import Manager
 from skvaider.inference.model import Model
 from skvaider.typing import JSONObject
 
@@ -99,58 +99,15 @@ async def get_model_info(
     return model_info(model, manager)
 
 
-@router.post("/models/{model_name}/load")
-async def load_model(
-    model_name: str,
-    request: Request,
-    services: svcs.fastapi.DepContainer,
-) -> JSONObject:
-    manager = services.get(Manager)
-    model_name = model_name.lower()
-
-    if not model_name:
-        raise HTTPException(status_code=400, detail="Model not specified")
-
-    try:
-        running_model = await manager.start_model(model_name)
-
-    except ModelAlreadyLoading:
-        raise HTTPException(
-            status_code=409, detail="Model is already loading/unloading"
-        )
-    except Exception as e:
-        log.exception("Failed to start model", model=model_name, error=str(e))
-        raise HTTPException(
-            status_code=500, detail=f"Failed to start model: {e}"
-        )
-
-    if not running_model:
-        raise HTTPException(status_code=404, detail="Model not found")
-
-    return {"endpoint": running_model.endpoint}
-
-
-@router.post("/models/{model_name}/unload")
-async def unload_model(
-    model_name: str,
-    services: svcs.fastapi.DepContainer,
-) -> JSONObject:
-    manager = services.get(Manager)
-    model_name = model_name.lower()
-
-    if not model_name:
-        raise HTTPException(status_code=400, detail="Model not specified")
-
-    await manager.unload_model(model_name)
-    return {"status": "ok"}
-
-
 @router.get("/models")
 async def list_models(
     services: svcs.fastapi.DepContainer,
 ) -> JSONObject:
     manager = services.get(Manager)
-    return {"models": [model_info(m, manager) for m in manager.list_models()]}
+    return {
+        "models": [model_info(m, manager) for m in manager.list_models()],
+        "manifest_serial": list(manager.manifest_serial.as_tuple()),
+    }
 
 
 @router.api_route(
