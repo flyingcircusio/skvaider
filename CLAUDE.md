@@ -141,6 +141,8 @@ Pydantic models in `config.py` files. Key patterns:
     )
   ```
 
+- do not make overly aggressive use of _ (underscore) methods or attributes. this is python, not java.
+
 - if you log an exception, use the log.exception() function to ensure we see a proper traceback
 
 - basedpyright strict mode
