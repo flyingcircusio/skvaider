@@ -7,6 +7,7 @@ from fastapi import APIRouter, Security
 from pydantic import BaseModel
 
 from skvaider.auth import verify_admin_token
+from skvaider.config import Config
 from skvaider.proxy.pool import Pool
 
 router = APIRouter()
@@ -28,64 +29,99 @@ async def health(
     _: None = Security(verify_admin_token),
 ) -> HealthResponse:
     pool = services.get(Pool)
+    config = services.get(Config)
     checks: dict[str, CheckResult] = {}
 
-    # Every configured model must have at least one loaded instance somewhere.
-    for model_id, model_config in pool.model_configs.items():
-        loaded = pool.count_loaded_instances(model_id)
-        desired = model_config.instances
-        name = f"model_loaded[{model_id}]"
-        if loaded == 0:
-            checks[name] = CheckResult(
-                status="critical",
-                message=f"no instances loaded (desired {desired})",
-            )
-        elif loaded < desired:
-            checks[name] = CheckResult(
-                status="warning",
-                message=f"{loaded}/{desired} instances loaded",
-            )
-        else:
-            checks[name] = CheckResult(status="ok", message=f"{loaded} loaded")
-
-    # At least one backend must be healthy.
-    healthy_backends = [b for b in pool.backends if b.healthy]
-    all_backends = pool.backends
-    if not all_backends:
-        checks["backends"] = CheckResult(
-            status="critical", message="no backends configured"
-        )
-    elif not healthy_backends:
-        checks["backends"] = CheckResult(
-            status="critical",
-            message=f"all {len(all_backends)} backend(s) unhealthy",
-        )
-    elif len(healthy_backends) < len(all_backends):
-        checks["backends"] = CheckResult(
-            status="warning",
-            message=(
-                f"{len(healthy_backends)}/{len(all_backends)} backends healthy"
-            ),
-        )
-    else:
-        checks["backends"] = CheckResult(
-            status="ok", message=f"{len(all_backends)} backend(s) healthy"
-        )
-
-    # No active model should exceed its configured memory.
+    # Memory: warn if any active model on any backend exceeds its configured limit.
+    # This is read directly from backend-reported state — no HTTP needed.
     for backend in pool.backends:
         for model in backend.models.values():
             if not model.is_loaded:
                 continue
-            overages = model.check_memory_usage()
-            for resource, (actual, configured) in overages.items():
+            for resource, (
+                actual,
+                configured,
+            ) in model.check_memory_usage().items():
                 name = f"memory[{model.id}@{backend.url},{resource}]"
                 checks[name] = CheckResult(
                     status="warning",
-                    message=(
-                        f"actual {actual} > configured {configured} bytes"
-                    ),
+                    message=f"{actual} > configured {configured} bytes",
                 )
+
+    # Functional probes: call each backend that has a loaded model directly,
+    # bypassing the gateway's own routing to avoid loopback reentrancy.
+    model_configs = {m.id: m for m in config.models}
+    for backend in pool.backends:
+        for model in backend.models.values():
+            if not model.is_loaded:
+                continue
+            mid = model.id
+            task = model_configs[mid].task if mid in model_configs else "chat"
+
+            if task == "embedding":
+                try:
+                    result = await backend.post(
+                        "/openai/v1/embeddings",
+                        {
+                            "model": mid,
+                            "input": "The food was delicious and the waiter...",
+                            "encoding_format": "float",
+                        },
+                    )
+                    assert result["object"] == "list"
+                    assert len(result["data"]) >= 1
+                    assert result["data"][0]["object"] == "embedding"
+                    assert len(result["data"][0]["embedding"]) > 64
+                    assert isinstance(result["data"][0]["embedding"][0], float)
+                    checks[f"check_embeddings[{mid}]"] = CheckResult(
+                        status="ok", message="ok"
+                    )
+                except Exception as e:
+                    checks[f"check_embeddings[{mid}]"] = CheckResult(
+                        status="critical", message=str(e)
+                    )
+            else:
+                try:
+                    result = await backend.post(
+                        "/openai/v1/chat/completions",
+                        {
+                            "model": mid,
+                            "messages": [{"role": "user", "content": "Hello"}],
+                            "stream": False,
+                            "max_tokens": 1000,
+                        },
+                    )
+                    assert result["object"] == "chat.completion"
+                    msg = result["choices"][0]["message"]
+                    assert "content" in msg
+                    assert "role" in msg
+                    checks[f"check_chat_completions[{mid}]"] = CheckResult(
+                        status="ok", message="ok"
+                    )
+                except Exception as e:
+                    checks[f"check_chat_completions[{mid}]"] = CheckResult(
+                        status="critical", message=str(e)
+                    )
+
+                try:
+                    result = await backend.post(
+                        "/openai/v1/completions",
+                        {
+                            "model": mid,
+                            "prompt": "say hello",
+                            "stream": False,
+                            "max_tokens": 1000,
+                        },
+                    )
+                    assert result["object"] == "text_completion"
+                    assert "text" in result["choices"][0]
+                    checks[f"check_completions[{mid}]"] = CheckResult(
+                        status="ok", message="ok"
+                    )
+                except Exception as e:
+                    checks[f"check_completions[{mid}]"] = CheckResult(
+                        status="critical", message=str(e)
+                    )
 
     if any(c.status == "critical" for c in checks.values()):
         overall = "critical"

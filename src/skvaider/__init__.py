@@ -87,6 +87,7 @@ async def lifespan(
     with open(config_file, "rb") as f:
         config_data = tomllib.load(f)
     config = Config.model_validate(config_data)
+    registry.register_value(Config, config)  # pyright: ignore[reportUnknownMemberType]
 
     loop = asyncio.get_running_loop()
 
