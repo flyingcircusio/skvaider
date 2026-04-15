@@ -62,11 +62,11 @@ async def verify_token(
         return
 
     try:
-        static_tokens = services.get(StaticAuthTokens)
+        admin_tokens = services.get(StaticAuthTokens)
     except svcs.exceptions.ServiceNotFoundError:
         pass
     else:
-        if credentials.credentials in static_tokens.tokens:
+        if credentials.credentials in admin_tokens.tokens:
             return
 
     # XXX There's a lot of type issues going on here, because the mechanics of passing through
@@ -97,3 +97,16 @@ async def verify_token(
         # We could specify explicit exceptions here but go the safe route and just catch all in case the lib addes one
         except Exception:
             raise HTTPException(401, detail="Bad authentication")
+
+
+async def verify_admin_token(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_auth)],
+    services: svcs.fastapi.DepContainer,
+) -> None:
+    """Accept only admin (static) tokens — not aramaki tokens."""
+    try:
+        admin_tokens = services.get(StaticAuthTokens)
+    except svcs.exceptions.ServiceNotFoundError:
+        raise HTTPException(401, detail="No admin tokens configured")
+    if credentials.credentials not in admin_tokens.tokens:
+        raise HTTPException(401, detail="Bad authentication")

@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 import skvaider.auth
 import skvaider.proxy.backends
 import skvaider.proxy.pool
+import skvaider.routers.admin
 import skvaider.routers.metrics
 import skvaider.routers.openai
 from aramaki import Manager as AramakiManager
@@ -126,10 +127,10 @@ async def lifespan(
             enter=False,
         )
 
-    if config.auth.static_tokens:
+    if config.auth.admin_tokens:
         registry.register_value(  # pyright: ignore[reportUnknownMemberType]
             skvaider.auth.StaticAuthTokens,
-            skvaider.auth.StaticAuthTokens(config.auth.static_tokens),
+            skvaider.auth.StaticAuthTokens(config.auth.admin_tokens),
         )
 
     yield
@@ -153,6 +154,7 @@ def app_factory(
         dependencies=[Security(verify_token)],
     )
     app.include_router(skvaider.routers.metrics.router)
+    app.include_router(skvaider.routers.admin.router)
     app.add_middleware(
         DebuggingMiddleware,
         directory=config.server.directory / "debug",

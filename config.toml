@@ -1,6 +1,6 @@
 # Sample config used by the development environment
 [auth]
-static_tokens = [ "developer" ]
+admin_tokens = [ "developer" ]
 
 [debug]
 slow_threshold = 5
