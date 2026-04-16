@@ -94,6 +94,11 @@ Pydantic models in `config.py` files. Key patterns:
 - Model files: URL + SHA256 hash for verification
 - Logging: structlog with IP anonymization
 
+## Tests
+
+- prefer to create pytest fixtures for reusable code
+- fix warnings if possible - if not, make a list of warnings that are still there
+
 ## Code Style
 
 - "-> None"  is not needed on `__init__` methods
