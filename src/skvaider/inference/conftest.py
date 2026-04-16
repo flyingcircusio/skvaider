@@ -1,3 +1,4 @@
+import asyncio
 import http.server
 import json
 import shutil
@@ -6,6 +7,7 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, Generator, Literal
 
+import httpx
 import pytest
 import svcs
 import svcs.fastapi
@@ -16,6 +18,35 @@ from skvaider.inference import app_factory
 from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
 from skvaider.inference.manager import Manager
 from skvaider.inference.model import LlamaModel
+from skvaider.utils import ModelAPI
+
+
+class _AsyncTestClient:
+    """Adapts a sync TestClient to the async request() interface ModelAPI expects."""
+
+    def __init__(self, client: TestClient):
+        self._client = client
+
+    async def request(self, *args: Any, **kwargs: Any) -> httpx.Response:
+        kwargs.pop(
+            "timeout", None
+        )  # https://github.com/Kludex/starlette/issues/1108
+        return await asyncio.to_thread(self._client.request, *args, **kwargs)
+
+
+class TestAPI(ModelAPI):
+    """ModelAPI subclass that exchanges the httpx.AsyncClient for a TestClient."""
+
+    __test__ = False
+
+    def __init__(self, client: TestClient):
+        self.base_url = ""
+        self.client = _AsyncTestClient(client)  # type: ignore[assignment]
+
+
+@pytest.fixture
+def test_api(client: TestClient) -> TestAPI:
+    return TestAPI(client)
 
 
 @pytest.fixture

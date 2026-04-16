@@ -1,12 +1,14 @@
 import asyncio
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, AsyncGenerator
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal
 
 import httpx
 import httpx_sse
 import structlog
 from fastapi import HTTPException
 from pydantic import BaseModel
+
+from skvaider.utils import ModelAPI, RequestMethod, RequestModel, ResponseModel
 
 from ..typing import ConfigDict, ConfigValue, JSONObject
 
@@ -16,18 +18,6 @@ if TYPE_CHECKING:
     from .pool import Pool
 
 from skvaider.manifest import ManifestRequest, Serial
-
-
-class BackendModelInfo(BaseModel):
-    id: str
-    status: list[str]
-    max_requests: int
-    memory_usage: dict[str, int] | None = None
-
-
-class BackendModelsResponse(BaseModel):
-    models: list[BackendModelInfo]
-    manifest_serial: Serial
 
 
 class ModelConfig:
@@ -53,7 +43,9 @@ class Backend(ABC):
     url: str
     pool: "Pool"
 
-    health_interval: int = 15
+    current_serial = Serial.floor()
+
+    health_interval: int = 1
     healthy: bool = False
     unhealthy_reason: str = ""
     models: dict[str, "AIModel"]
@@ -78,9 +70,7 @@ class Backend(ABC):
     ) -> AsyncGenerator[str, None]: ...
 
     @abstractmethod
-    async def update_manifest(
-        self, model_ids: set[str], serial: Serial
-    ) -> None: ...
+    async def update_manifest(self) -> None: ...
 
     @abstractmethod
     async def monitor_health_and_update_models(self): ...
@@ -117,9 +107,11 @@ class DummyBackend(Backend):
             raise HTTPException(status_code=540, detail="Backend unavailable")
         yield f"data: chunk from {self.url}\n\n"
 
-    async def update_manifest(
-        self, model_ids: set[str], serial: Serial
-    ) -> None:
+    async def update_manifest(self) -> None:
+        if not self.healthy:
+            return
+        self.current_serial = self.pool.map_serial
+        model_ids = self.pool.last_map[self.url]
         for model_id, model in self.models.items():
             if model.is_loaded and model_id not in model_ids:
                 for kind, usage in model.configured_memory.items():
@@ -149,6 +141,7 @@ class DummyBackend(Backend):
 class SkvaiderBackend(Backend):
     def __init__(self, url: str):
         super().__init__(url)
+        self.backend_api = ModelAPI(url)
 
     async def post(
         self, path: str, data: dict[str, Any], request_id: str = ""
@@ -223,31 +216,27 @@ class SkvaiderBackend(Backend):
                 status_code=540, detail="Backend unavailable"
             ) from e
 
-    async def update_manifest(
-        self, model_ids: set[str], serial: Serial
-    ) -> None:
+    async def update_manifest(self) -> None:
+        # This first part needs to be run atomically, so no async context
+        # switches to ensure we have a consistent map and serial.
+        if self.current_serial == self.pool.map_serial:
+            # The backend is up to date.
+            return
+        if not self.healthy:
+            return
+        if self.url not in self.pool.last_map:
+            # There is no data for this backend, yet. Leave it be
+            # to avoid superfluously unloading models that we might
+            # need in a second.
+            return
+        model_ids = self.pool.last_map[self.url]
+        serial = self.pool.map_serial
         self.log.info(
-            "sending manifest",
-            serial=str(serial),
-            models=sorted(model_ids),
+            "backend has stale manifest, reconciling",
+            backend_serial=str(self.current_serial),
+            pool_serial=str(self.pool.map_serial),
         )
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            try:
-                r = await client.patch(
-                    f"{self.url}/manager/manifest",
-                    json=ManifestRequest(
-                        models=model_ids,
-                        serial=serial,
-                    ).model_dump(mode="json"),
-                    timeout=10,
-                )
-                r.raise_for_status()
-            except httpx.HTTPError as exc:
-                self.log.error(
-                    "Failed to send manifest",
-                    error=str(exc),
-                )
-                return
+        await self.backend_api(ManifestRequest(models=model_ids, serial=serial))
 
     async def monitor_health_and_update_models(self) -> None:
         self.log.debug("starting monitor")
@@ -262,8 +251,7 @@ class SkvaiderBackend(Backend):
                     # unloading of healthy models.
                     pass
                 else:
-                    await self._update_usage()
-                    await self._update_models()
+                    await self._update_health()
                     self.healthy = True
             except httpx.ConnectError as e:
                 self.healthy = False
@@ -271,17 +259,33 @@ class SkvaiderBackend(Backend):
             except Exception as e:
                 self.healthy = False
                 self.unhealthy_reason = repr(e)
+            else:
+                self.unhealthy_reason = ""
 
-            if was_healthy != self.healthy:
+            # Handle state changes
+            if was_healthy == self.healthy:
+                # nothing happened
+                pass
+            elif self.healthy:
+                # we just became healthy
+                self.log.info("backend became HEALTHY", backend=self.url)
+                await self.pool.tasks.create(self.pool.rebalance)
+            elif not self.healthy:
                 self.log.info(
-                    "health state changed",
-                    was_healthy=was_healthy,
-                    is_healthy=self.healthy,
+                    "backend became UNHEALTHY",
+                    backend=self.url,
+                    reason=self.unhealthy_reason,
                 )
-                self.pool.tasks.create(self.pool.rebalance)
+                self.current_models = Serial.floor()
+                await self.pool.tasks.create(self.pool.rebalance)
+
+            # Handle steady states
+            if self.healthy:
+                await self.ensure_healthy()
+            else:
+                await self.ensure_unhealthy()
 
             self.request_health_update.clear()
-
             try:
                 await asyncio.wait_for(
                     self.request_health_update.wait(),
@@ -290,24 +294,36 @@ class SkvaiderBackend(Backend):
             except asyncio.TimeoutError:
                 pass
 
-    async def _update_models(self) -> None:
-        self.log.debug("update_models", backend=self.url)
+    async def ensure_healthy(self):
+        """Perform actions to keep a healthy backend updated and consistent.
+
+        This can be called gratuitously and with relatively high frequency
+        in an idempotent/convergent fashion while the backend is in healthy state.
+
+        """
+        pass
+
+    async def ensure_unhealthy(self):
+        """Perform actions for ensuring consistency in unhealthy state.
+
+        This can be called gratuitously and with relatively high frequency
+        in an idempotent/convergent fashion.
+
+        """
+        pass
+
+    async def _update_health(self) -> None:
+        health = await self.backend_api(BackendHealthRequest())
+
+        assert health.status == "ok"
+        self.memory = health.usage
+        self.current_serial = health.current_serial
 
         from .models import AIModel
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.get(f"{self.url}/models")
-            r.raise_for_status()
-            response = BackendModelsResponse.model_validate(r.json())
-
-        backend_serial = response.manifest_serial
-        self.log.debug(
-            "health check",
-            manifest_serial=str(backend_serial),
-        )
         current_models = self.models
         updated_models = {}
-        for model in response.models:
+        for model in health.models:
             model_id = model.id
             if model_id not in self.pool.model_configs:
                 # Ignore models that haven't been configured on the proxy.
@@ -346,28 +362,38 @@ class SkvaiderBackend(Backend):
                 checks["memory"] = CheckResult(status="ok", message="ok")
 
             if model_obj.is_loaded:
-                for name, message in model.get("health_checks", {}).items():
+                for name, message in model.health_checks.items():
                     checks[name] = CheckResult(
                         status="ok" if not message else "critical",
                         message=message or "ok",
                     )
             model_obj.checks = checks
         self.models = updated_models
-        for model in self.models.values():
-            self.log.debug(
-                "model status",
-                backend=self.url,
-                model=model.id,
-                is_loaded=model.is_loaded,
-                in_progress=model.in_progress,
-            )
+        # TODO Questionable on high frequency -- maybe only run when memory usage
+        # changes beyond a threshold?
         self.pool.tasks.create(self.pool.rebalance)
 
-    async def _update_usage(self) -> None:
-        self.log.debug("update_usage", backend=self.url)
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            r = await client.get(f"{self.url}/manager/usage")
-            r.raise_for_status()
-            usage = r.json()
 
-        self.memory = usage["memory"]
+class BackendModelInfo(BaseModel):
+    id: str
+    status: set[str]
+    max_requests: int
+    memory_usage: dict[str, int]
+    health_checks: dict[str, str]  # name -> message, "" is OK
+
+
+class BackendHealthResponse(ResponseModel):
+    status: Literal["ok"]
+
+    current_serial: Serial
+    usage: dict[str, dict[str, int]]
+
+    models: list[BackendModelInfo]
+
+
+class BackendHealthRequest(RequestModel[BackendHealthResponse]):
+    """Wire format for the manifest PATCH request sent from proxy to inference server."""
+
+    request_method: RequestMethod = "get"
+    request_path: str = "/manager/health"
+    response_model: type[BackendHealthResponse] = BackendHealthResponse

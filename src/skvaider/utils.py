@@ -3,11 +3,11 @@ import datetime
 import re
 import unicodedata
 from collections.abc import Callable, Coroutine
-from typing import Any, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
+import httpx
 import structlog.stdlib
-
-T = TypeVar("T")
+from pydantic import BaseModel, Field
 
 log = structlog.stdlib.get_logger()
 
@@ -165,3 +165,54 @@ def now():
 
 # tz-aware datetime
 datetime_min = datetime.datetime.min.replace(tzinfo=datetime.UTC)
+
+
+type RequestMethod = (
+    Literal["get"]
+    | Literal["post"]
+    | Literal["patch"]
+    | Literal["head"]
+    | Literal["delete"]
+    | Literal["put"]
+)
+
+
+class ResponseModel(BaseModel):
+    pass
+
+
+T = TypeVar("T")
+ResponseModelT = TypeVar("ResponseModelT", bound=ResponseModel)
+
+
+class RequestModel(BaseModel, Generic[ResponseModelT]):
+    request_method: RequestMethod = Field(default="get", exclude=True)
+    request_path: str = Field(exclude=True)
+    response_model: type[ResponseModelT] = Field(exclude=True)
+
+
+class ModelAPI:
+    base_url: str
+    client: httpx.AsyncClient
+
+    def __init__(self, url: str):
+        self.base_url = url
+        self.client = httpx.AsyncClient(follow_redirects=True)
+
+    async def __call__(
+        self,
+        request: RequestModel[ResponseModelT],
+        method: RequestMethod | None = None,
+        timeout: int = 10,
+    ) -> ResponseModelT:
+        r = await self.client.request(
+            method or request.request_method,
+            self.base_url + request.request_path,
+            json=request.model_dump(
+                mode="json",
+                exclude={"request_method", "request_path", "response_model"},
+            ),
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        return request.response_model.model_validate(r.json())

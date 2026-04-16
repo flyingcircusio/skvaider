@@ -1,15 +1,17 @@
 from pathlib import Path
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
+from skvaider.inference.conftest import TestAPI
 from skvaider.inference.model import Model
+from skvaider.manifest import ManifestRequest, Serial
+from skvaider.proxy.backends import BackendHealthRequest
 
 
-@pytest.mark.asyncio
 async def test_inference_endpoints_normalize_model_name(
-    client: TestClient, gemma: Model
+    test_api: TestAPI, gemma: Model
 ):
     """
     Test that inference endpoints normalize model name to lowercase.
@@ -17,21 +19,26 @@ async def test_inference_endpoints_normalize_model_name(
     model_id = gemma.config.id
     assert model_id == "gemma"
 
-    response = client.get("/models/GEMMA")
-    assert response.status_code == 200
-    assert response.json()["id"] == model_id
+    health = await test_api(BackendHealthRequest())
+    assert model_id in {m.id for m in health.models}
 
-    response = client.patch(
-        "/manager/manifest", json={"models": ["GemmA"], "serial": ["1", 1]}
+    await test_api(
+        ManifestRequest(
+            models={"GemmA"}, serial=Serial(generation="1", serial=1)
+        )
     )
-    assert response.status_code == 202
-    assert response.json() == {"status": "ok"}
 
-    response = client.patch(
-        "/manager/manifest", json={"models": [], "serial": ["1", 2]}
+    # unknown model name is rejected
+    with pytest.raises(httpx.HTTPStatusError):
+        await test_api(
+            ManifestRequest(
+                models={"Gem-ma"}, serial=Serial(generation="1", serial=1)
+            )
+        )
+
+    await test_api(
+        ManifestRequest(models=set(), serial=Serial(generation="1", serial=2))
     )
-    assert response.status_code == 202
-    assert response.json() == {"status": "ok"}
 
 
 def test_model_config_normalizes_id_to_lowercase():

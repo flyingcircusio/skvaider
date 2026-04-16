@@ -115,7 +115,7 @@ class Pool:
     # loading/unloading models mixed throughout as this will cause confusion
     model_management_lock: asyncio.Lock
 
-    _last_map: ModelMap
+    last_map: ModelMap
     map_serial: Serial
 
     def __init__(
@@ -125,7 +125,7 @@ class Pool:
     ):
         self.tasks = TaskManager()
         self.semaphores = {}
-        self._last_map = {}
+        self.last_map = {}
         self.map_serial = Serial()
 
         # Model configurations from config file
@@ -215,10 +215,10 @@ class Pool:
             return
         async with self.model_management_lock:
             map = self.placement_map()
-            map_changed = map != self._last_map
+            map_changed = map != self.last_map
             if not map_changed:
                 return
-            self._last_map = map
+            self.last_map = map
             self.map_serial.update()
             lines = [f"  serial: {self.map_serial}"] + [
                 f"  {url}: {sorted(models)}"
@@ -227,10 +227,7 @@ class Pool:
             log.info("New model distribution map\n" + "\n".join(lines))
 
             for backend in self.backends:
-                if not backend.healthy:
-                    continue
-                # XXX could also set this as background tasks, but fine for now.
-                await backend.update_manifest(map[backend.url], self.map_serial)
+                await backend.update_manifest()
 
     def count_loaded_instances(self, model_id: str) -> int:
         count = 0

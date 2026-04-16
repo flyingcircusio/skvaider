@@ -11,27 +11,12 @@ from fastapi.responses import StreamingResponse
 
 from skvaider.inference import metrics
 from skvaider.inference.manager import Manager
-from skvaider.inference.model import Model
-from skvaider.typing import JSONObject
 
 router = APIRouter()
 log = structlog.get_logger()
 
 # Endpoints where we can extract token usage from the response body.
 TOKEN_ENDPOINTS = {"v1/completions", "v1/chat/completions"}
-
-
-def model_info(model: Model, manager: Manager) -> JSONObject:
-    return {
-        "id": model.config.id,
-        "status": list(model.status),
-        "max_requests": model.config.max_requests,
-        "memory_usage": {
-            monitor.id: monitor.model_usage(model)
-            for monitor in manager.monitors.values()
-        },
-        "health_checks": dict(model.health_checks),
-    }
 
 
 def _extract_token_usage(body: bytes, model_name: str) -> None:
@@ -78,36 +63,6 @@ def _record_usage(data: dict[str, object], model_name: str) -> None:
         metrics.inference_tokens_generated.labels(model=model_name).inc(
             completion
         )
-
-
-# -- Routes ------------------------------------------------------------------
-
-
-@router.get("/models/{model_name}")
-async def get_model_info(
-    model_name: str,
-    services: svcs.fastapi.DepContainer,
-) -> JSONObject:
-    manager = services.get(Manager)
-    model_name = model_name.lower()
-
-    model = manager.models.get(model_name)
-    if not model:
-        raise HTTPException(status_code=404, detail="Model not found")
-
-    # keep in sync with list_models
-    return model_info(model, manager)
-
-
-@router.get("/models")
-async def list_models(
-    services: svcs.fastapi.DepContainer,
-) -> JSONObject:
-    manager = services.get(Manager)
-    return {
-        "models": [model_info(m, manager) for m in manager.list_models()],
-        "manifest_serial": list(manager.manifest_serial.as_tuple()),
-    }
 
 
 @router.api_route(

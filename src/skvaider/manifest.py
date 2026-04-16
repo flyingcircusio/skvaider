@@ -1,8 +1,10 @@
 import time
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, GetCoreSchemaHandler
+from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
+
+from skvaider.utils import RequestMethod, RequestModel, ResponseModel
 
 
 class Serial:
@@ -24,12 +26,17 @@ class Serial:
     generation: str
     serial: int
 
-    def __init__(self) -> None:
-        now = time.time_ns()
-        now_40 = now >> now.bit_length() - 40
-        now_hex = f"{now_40:010x}"
-        self.generation = now_hex[:5] + "-" + now_hex[5:]
-        self.serial = 0
+    def __init__(
+        self, *, generation: str | None = None, serial: int = 0
+    ) -> None:
+        if generation is not None:
+            self.generation = generation
+        else:
+            now = time.time_ns()
+            now_40 = now >> now.bit_length() - 40
+            now_hex = f"{now_40:010x}"
+            self.generation = now_hex[:5] + "-" + now_hex[5:]
+        self.serial = serial
 
     @classmethod
     def floor(cls) -> "Serial":
@@ -101,8 +108,16 @@ class Serial:
         return f"Serial({self})"
 
 
-class ManifestRequest(BaseModel):
+class ManifestResponse(ResponseModel):
+    status: Literal["ok"]
+
+
+class ManifestRequest(RequestModel[ManifestResponse]):
     """Wire format for the manifest PATCH request sent from proxy to inference server."""
+
+    request_method: RequestMethod = "patch"
+    request_path: str = "/manager/manifest"
+    response_model: type[ManifestResponse] = ManifestResponse
 
     models: set[str]
     serial: Serial
