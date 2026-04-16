@@ -239,11 +239,16 @@ class Model(ABC):
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
-            input_texts = ["health check"]
-            expected_embeddings: list[list[float]] | None = None
-            if self.verification_data:
-                input_texts = list(self.verification_data.keys())
-                expected_embeddings = list(self.verification_data.values())
+            input_texts = (
+                list(self.verification_data.keys())
+                if self.verification_data
+                else ["health check"]
+            )
+            expected_embeddings = (
+                list(self.verification_data.values())
+                if self.verification_data
+                else None
+            )
 
             resp = await client.post(
                 f"{self.endpoint}/v1/embeddings",
@@ -255,26 +260,29 @@ class Model(ABC):
 
             checks["embedding"] = ""
 
-            if expected_embeddings is not None:
-                data = resp.json()
-                for i, item in enumerate(data.get("data", [])):
-                    embedding = item.get("embedding", [])
-                    if not embedding:
-                        checks["numerical"] = "missing embedding"
-                        return checks
-                    expected = expected_embeddings[i]
-                    if len(embedding) != len(expected):
+            if expected_embeddings is None:
+                checks["numerical"] = "no reference data"
+                return checks
+
+            data = resp.json()
+            for i, item in enumerate(data.get("data", [])):
+                embedding = item.get("embedding", [])
+                if not embedding:
+                    checks["numerical"] = "missing embedding"
+                    return checks
+                expected = expected_embeddings[i]
+                if len(embedding) != len(expected):
+                    checks["numerical"] = (
+                        f"size mismatch: got {len(embedding)}, expected {len(expected)}"
+                    )
+                    return checks
+                for j, (a, b) in enumerate(zip(embedding, expected)):
+                    if abs(a - b) > 1e-2:
                         checks["numerical"] = (
-                            f"size mismatch: got {len(embedding)}, expected {len(expected)}"
+                            f"value mismatch at dim {j} for {input_texts[i]!r}: got {a:.6f}, expected {b:.6f}"
                         )
                         return checks
-                    for j, (a, b) in enumerate(zip(embedding, expected)):
-                        if abs(a - b) > 1e-2:
-                            checks["numerical"] = (
-                                f"value mismatch at dim {j} for {input_texts[i]!r}: got {a:.6f}, expected {b:.6f}"
-                            )
-                            return checks
-                checks["numerical"] = ""
+            checks["numerical"] = ""
         return checks
 
     async def _check_completion_health(self) -> dict[str, str]:
