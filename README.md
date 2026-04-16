@@ -70,7 +70,7 @@ Consumed by the inference health check (`embedding_verification_file` in inferen
 Generate from a live instance:
 
 ```bash
-generate-embedding-reference \
+skvaider-generate-embedding-reference \
     --config config.toml \
     --url https://ai.example.com \
     --dataset dataset.txt \

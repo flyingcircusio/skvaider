@@ -18,13 +18,13 @@ from skvaider.config import Config
 
 def _fetch_embeddings_batch(
     client: httpx.Client,
-    base: str,
+    url: str,
     model_id: str,
     texts: list[str],
 ) -> dict[str, list[float]]:
     """POST a batch of texts to the embeddings endpoint and return {text: vector}."""
     response = client.post(
-        base + "/openai/v1/embeddings",
+        url,
         json={"model": model_id, "input": texts, "encoding_format": "float"},
     )
     response.raise_for_status()
@@ -90,7 +90,7 @@ def main() -> None:
         host = config.server.host
         if host == "0.0.0.0":
             host = "127.0.0.1"
-        base = f"http://{host}:{config.server.port}"
+        base = f"http://{host}:{config.server.port}/openai/v1/embeddings"
 
     if config.auth.admin_tokens:
         key = config.auth.admin_tokens[0]

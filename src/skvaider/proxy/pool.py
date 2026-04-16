@@ -198,15 +198,6 @@ class Pool:
                 unplaced_instances -= 1
                 if not unplaced_instances:
                     break
-            if unplaced_instances:
-                pass
-                # XXX show in monitoring, not continuous logging
-                # log.warning(
-                #     "Could not place sufficient model instances in pool",
-                #     model=model.id,
-                #     desired=model.instances,
-                #     unplaced=unplaced_instances,
-                # )
         return map
 
     async def rebalance(self) -> None:

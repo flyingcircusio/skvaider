@@ -182,11 +182,15 @@ class Manager:
                     )
 
     async def converge(self) -> None:
+        # Running this in a continuous loop helps us avoid starting multiple convergence
+        # tasks in parallel if messages come in faster. The apply_manifest() is written
+        # in a convergent manner as well and will keep updating towards newer state as
+        # needed.
         while True:
             try:
                 await self._manifest_changed.wait()
-                await self.apply_manifest()
                 self._manifest_changed.clear()
+                await self.apply_manifest()
             except Exception:
                 log.exception(
                     "Unexpected exception in manifest convergence loop"
