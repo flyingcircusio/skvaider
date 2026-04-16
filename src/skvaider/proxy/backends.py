@@ -372,11 +372,12 @@ class SkvaiderBackend(Backend):
             else:
                 checks["memory"] = CheckResult(status="ok", message="ok")
 
-            for name, message in model.get("health_checks", {}).items():
-                checks[name] = CheckResult(
-                    status="ok" if not message else "critical",
-                    message=message or "ok",
-                )
+            if model_obj.is_loaded:
+                for name, message in model.get("health_checks", {}).items():
+                    checks[name] = CheckResult(
+                        status="ok" if not message else "critical",
+                        message=message or "ok",
+                    )
             model_obj.checks = checks
         self.models = updated_models
         self.pool.tasks.create(self.pool.rebalance)
