@@ -23,11 +23,13 @@ class LoggingMiddleware:
         logger: logging.Logger,
         trust_remote_request_id: bool,
         has_debugger: bool,
+        skip_paths: frozenset[str] = frozenset({"/metrics"}),
     ):
         self.app = app
         self._logger = logger
         self.trust_remote_request_id
         self.has_debugger = has_debugger
+        self.skip_paths = skip_paths
 
     async def _capture_status(
         self, message: Message, send: Send, request: Request
@@ -90,7 +92,7 @@ class LoggingMiddleware:
                 lambda msg: self._capture_status(msg, send, request),
             )
         finally:
-            if request.url.path == "/metrics":
+            if request.url.path in self.skip_paths:
                 return
 
             process_time = round(time.perf_counter() - start_time, 3)
