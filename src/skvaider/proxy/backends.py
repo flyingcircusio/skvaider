@@ -276,7 +276,7 @@ class SkvaiderBackend(Backend):
                     backend=self.url,
                     reason=self.unhealthy_reason,
                 )
-                self.current_models = Serial.floor()
+                self.current_serial = Serial.floor()
                 await self.pool.tasks.create(self.pool.rebalance)
 
             # Handle steady states
