@@ -1,8 +1,8 @@
 """Fetch embeddings from the live proxy and write a reference JSON file.
 
-Output format: {model_id: {input_text: [float, ...]}}
-This matches the embedding_verification_file format consumed by inference
-health checks and by skvaider-check --reference-file.
+Output format: {model_id: {input_text: [float, ...]}}.
+This matches the embedding_verification_file format consumed by the
+inference health check.
 """
 
 import argparse

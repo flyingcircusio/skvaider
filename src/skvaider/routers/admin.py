@@ -22,32 +22,6 @@ class HealthResponse(BaseModel):
     checks: dict[str, CheckResult]
 
 
-async def check_embedding(backend: Backend, model_id: str) -> CheckResult:
-    try:
-        result = await backend.post(
-            "/openai/v1/embeddings",
-            {
-                "model": model_id,
-                "input": "The food was delicious and the waiter...",
-                "encoding_format": "float",
-            },
-        )
-        assert result["object"] == "list", "response object is not 'list'"
-        assert len(result["data"]) >= 1, "response data is empty"
-        assert result["data"][0]["object"] == "embedding", (
-            "first data item is not an embedding"
-        )
-        assert len(result["data"][0]["embedding"]) > 64, (
-            "embedding has fewer than 64 dimensions"
-        )
-        assert isinstance(result["data"][0]["embedding"][0], float), (
-            "embedding element is not a float"
-        )
-        return CheckResult(status="ok", message="ok")
-    except Exception as e:
-        return CheckResult(status="critical", message=str(e))
-
-
 async def check_chat_completions(
     backend: Backend, model_id: str
 ) -> CheckResult:
@@ -124,11 +98,7 @@ async def health(
             mid = model.id
             task = model.config.task
 
-            if task == "embedding":
-                checks[f"check_embeddings[{mid}]"] = await check_embedding(
-                    backend, mid
-                )
-            else:
+            if task != "embedding":
                 checks[
                     f"check_chat_completions[{mid}]"
                 ] = await check_chat_completions(backend, mid)
