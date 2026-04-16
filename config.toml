@@ -24,11 +24,10 @@ task = "chat"
 instances = 2
 memory = { ram = "1.3G" }
 
-
 [[models]]
 id = "embeddinggemma"
 task = "embedding"
-instances = 1
+instances = 2
 memory = { ram = "1.4G" }
 
 [logging]

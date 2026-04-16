@@ -1,9 +1,11 @@
 # Sample config used by the development environment
 models_dir = "var/lib/models-1"
+embedding_verification_file = "embeddings-reference.json"
 
 [server]
 host = "127.0.0.1"
 port = 8001
+
 
 [logging]
 log_level = "DEBUG"
