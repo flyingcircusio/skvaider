@@ -32,11 +32,17 @@ async def check_embedding(backend: Backend, model_id: str) -> CheckResult:
                 "encoding_format": "float",
             },
         )
-        assert result["object"] == "list"
-        assert len(result["data"]) >= 1
-        assert result["data"][0]["object"] == "embedding"
-        assert len(result["data"][0]["embedding"]) > 64
-        assert isinstance(result["data"][0]["embedding"][0], float)
+        assert result["object"] == "list", "response object is not 'list'"
+        assert len(result["data"]) >= 1, "response data is empty"
+        assert result["data"][0]["object"] == "embedding", (
+            "first data item is not an embedding"
+        )
+        assert len(result["data"][0]["embedding"]) > 64, (
+            "embedding has fewer than 64 dimensions"
+        )
+        assert isinstance(result["data"][0]["embedding"][0], float), (
+            "embedding element is not a float"
+        )
         return CheckResult(status="ok", message="ok")
     except Exception as e:
         return CheckResult(status="critical", message=str(e))
@@ -97,9 +103,14 @@ async def health(
                 checks[name] = CheckResult(
                     status="critical", message="not loaded"
                 )
-            elif model.check_memory_usage():
+            elif exceeding := model.check_memory_usage():
+                over = ", ".join(
+                    f"{r}: {actual} > {configured}"
+                    for r, (actual, configured) in exceeding.items()
+                )
                 checks[name] = CheckResult(
-                    status="warning", message="exceeds configured memory"
+                    status="warning",
+                    message=f"exceeds configured memory: {over}",
                 )
             else:
                 checks[name] = CheckResult(status="ok", message="ok")
