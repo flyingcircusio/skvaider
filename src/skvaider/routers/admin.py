@@ -26,27 +26,8 @@ async def health(
 
     for backend in pool.backends:
         for model in backend.models.values():
-            name = f"model[{model.id}@{backend.url}]"
-            if not model.is_loaded:
-                checks[name] = CheckResult(
-                    status="critical", message="not loaded"
-                )
-            elif exceeding := model.check_memory_usage():
-                over = ", ".join(
-                    f"{r}: {actual} > {configured}"
-                    for r, (actual, configured) in exceeding.items()
-                )
-                checks[name] = CheckResult(
-                    status="warning",
-                    message=f"exceeds configured memory: {over}",
-                )
-            else:
-                checks[name] = CheckResult(status="ok", message="ok")
-
-            if model.is_loaded and model.functional_check is not None:
-                checks[f"functional[{model.id}@{backend.url}]"] = (
-                    model.functional_check
-                )
+            for check_name, result in model.checks.items():
+                checks[f"{check_name}[{model.id}@{backend.url}]"] = result
 
     if any(c.status == "critical" for c in checks.values()):
         overall = "critical"

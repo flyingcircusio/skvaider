@@ -31,7 +31,7 @@ class AIModel(BaseModel):
     backend: Backend = Field(exclude=True)
     is_loaded: bool = Field(default=False, exclude=True)
     memory_usage: dict[str, int] = Field(default_factory=dict, exclude=True)
-    functional_check: CheckResult | None = Field(default=None, exclude=True)
+    checks: dict[str, CheckResult] = Field(default_factory=dict, exclude=True)
 
     limit: int = Field(default=1, exclude=True)
     in_progress: int = Field(default=0, exclude=True)

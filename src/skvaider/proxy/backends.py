@@ -355,13 +355,71 @@ class SkvaiderBackend(Backend):
             model_obj.limit = model["max_requests"]
             model_obj.memory_usage = model.get("memory_usage") or {}
 
-            if model_obj.is_loaded and model_obj.config.task != "embedding":
-                model_obj.functional_check = await self._probe_chat(model_id)
+            from .models import CheckResult
+
+            if not model_obj.is_loaded:
+                model_obj.checks = {
+                    "load": CheckResult(status="critical", message="not loaded")
+                }
+            else:
+                exceeding = model_obj.check_memory_usage()
+                if exceeding:
+                    over = ", ".join(
+                        f"{r}: {actual} > {configured}"
+                        for r, (actual, configured) in exceeding.items()
+                    )
+                    model_obj.checks["memory"] = CheckResult(
+                        status="warning",
+                        message=f"exceeds configured memory: {over}",
+                    )
+                else:
+                    model_obj.checks["memory"] = CheckResult(
+                        status="ok", message="ok"
+                    )
+
+                if model_obj.config.task == "embedding":
+                    model_obj.checks["embedding"] = await self._probe_embedding(
+                        model_id
+                    )
+                else:
+                    model_obj.checks[
+                        "chat_completions"
+                    ] = await self._probe_chat_completions(model_id)
+                    model_obj.checks[
+                        "completions"
+                    ] = await self._probe_completions(model_id)
 
         self.models = updated_models
         self.pool.tasks.create(self.pool.rebalance)
 
-    async def _probe_chat(self, model_id: str) -> "CheckResult":
+    async def _probe_embedding(self, model_id: str) -> "CheckResult":
+        from .models import CheckResult
+
+        try:
+            result = await self.post(
+                "/openai/v1/embeddings",
+                {
+                    "model": model_id,
+                    "input": "The food was delicious and the waiter...",
+                    "encoding_format": "float",
+                },
+            )
+            assert result["object"] == "list", "response object is not 'list'"
+            assert len(result["data"]) >= 1, "response data is empty"
+            assert result["data"][0]["object"] == "embedding", (
+                "first data item is not an embedding"
+            )
+            assert len(result["data"][0]["embedding"]) > 64, (
+                "embedding has fewer than 64 dimensions"
+            )
+            assert isinstance(result["data"][0]["embedding"][0], float), (
+                "embedding element is not a float"
+            )
+            return CheckResult(status="ok", message="ok")
+        except Exception as e:
+            return CheckResult(status="critical", message=str(e))
+
+    async def _probe_chat_completions(self, model_id: str) -> "CheckResult":
         from .models import CheckResult
 
         try:
@@ -378,7 +436,14 @@ class SkvaiderBackend(Backend):
             msg = result["choices"][0]["message"]
             assert "content" in msg
             assert "role" in msg
+            return CheckResult(status="ok", message="ok")
+        except Exception as e:
+            return CheckResult(status="critical", message=str(e))
 
+    async def _probe_completions(self, model_id: str) -> "CheckResult":
+        from .models import CheckResult
+
+        try:
             result = await self.post(
                 "/openai/v1/completions",
                 {
@@ -390,7 +455,6 @@ class SkvaiderBackend(Backend):
             )
             assert result["object"] == "text_completion"
             assert "text" in result["choices"][0]
-
             return CheckResult(status="ok", message="ok")
         except Exception as e:
             return CheckResult(status="critical", message=str(e))
