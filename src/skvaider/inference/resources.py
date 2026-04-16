@@ -96,20 +96,17 @@ class RAMMonitor(MemoryMonitor):
 
     async def update_model_usage(self) -> None:
         for model in self._manager.list_models():
-            if not model.process:
+            pids = await model.pids()
+            if not pids:
                 continue
-            try:
-                proc = psutil.Process(model.process.pid)
-                usage = proc.memory_info().rss
-                for child in proc.children(recursive=True):
-                    try:
-                        usage += child.memory_info().rss
-                    except psutil.NoSuchProcess:
-                        pass
-                current = self._model_usage.get(model.config.id, 0)
-                self._model_usage[model.config.id] = max(current, usage)
-            except psutil.NoSuchProcess:
-                pass
+            usage = 0
+            for pid in pids:
+                try:
+                    usage += psutil.Process(pid).memory_info().rss
+                except psutil.NoSuchProcess:
+                    pass
+            current = self._model_usage.get(model.config.id, 0)
+            self._model_usage[model.config.id] = max(current, usage)
 
             # Update Prometheus metrics
             metrics.inference_memory_bytes.labels(
@@ -183,15 +180,8 @@ class ROCmMemoryMonitor(MemoryMonitor):
         """Update VRAM usage for all models with a single rocm-smi call."""
         pid_to_model: dict[int, str] = {}
         for model in self._manager.list_models():
-            if not model.process:
-                continue
-            pid_to_model[model.process.pid] = model.config.id
-            try:
-                proc = psutil.Process(model.process.pid)
-                for child in proc.children(recursive=True):
-                    pid_to_model[child.pid] = model.config.id
-            except psutil.NoSuchProcess:
-                pass
+            for pid in await model.pids():
+                pid_to_model[pid] = model.config.id
 
         if not pid_to_model:
             return
@@ -314,15 +304,8 @@ class NvidiaMemoryMonitor(MemoryMonitor):
         """Update VRAM usage for all models with nvidia-smi."""
         pid_to_model: dict[int, str] = {}
         for model in self._manager.list_models():
-            if not model.process:
-                continue
-            pid_to_model[model.process.pid] = model.config.id
-            try:
-                proc = psutil.Process(model.process.pid)
-                for child in proc.children(recursive=True):
-                    pid_to_model[child.pid] = model.config.id
-            except psutil.NoSuchProcess:
-                pass
+            for pid in await model.pids():
+                pid_to_model[pid] = model.config.id
 
         if not pid_to_model:
             return

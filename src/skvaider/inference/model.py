@@ -18,6 +18,7 @@ from typing import (
 
 import anyio
 import httpx
+import psutil
 import structlog
 
 from skvaider.inference import metrics
@@ -119,6 +120,21 @@ class Model(ABC):
     async def download(self) -> None: ...
 
     async def start(self) -> None: ...
+
+    async def pids(self) -> list[int]:
+        """Return all PIDs belonging to this model's process tree.
+
+        Override in subclasses that don't own a subprocess directly (e.g. SystemdModel).
+        """
+        if not self.process:
+            return []
+        pids = [self.process.pid]
+        try:
+            proc = psutil.Process(self.process.pid)
+            pids += [c.pid for c in proc.children(recursive=True)]
+        except psutil.NoSuchProcess:
+            pass
+        return pids
 
     # Shared implementation:
 
@@ -637,6 +653,36 @@ class SystemdModel(Model):
     def __init__(self, config: SystemdModelConfig):
         super().__init__(config)
         self._config = config
+
+    async def pids(self) -> list[int]:
+        """Get PIDs from the systemd unit via systemctl show."""
+        proc = await asyncio.create_subprocess_exec(
+            "systemctl",
+            "show",
+            "--property=MainPID",
+            self._config.unit,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return []
+        # Output is "MainPID=1234\n"
+        value = stdout.decode().strip().removeprefix("MainPID=")
+        try:
+            main_pid = int(value)
+        except ValueError:
+            return []
+        if main_pid == 0:
+            # systemd reports 0 when the unit is not running
+            return []
+        pids = [main_pid]
+        try:
+            parent = psutil.Process(main_pid)
+            pids += [c.pid for c in parent.children(recursive=True)]
+        except psutil.NoSuchProcess:
+            pass
+        return pids
 
     @property
     def slug(self) -> str:
