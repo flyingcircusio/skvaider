@@ -89,21 +89,20 @@ async def health(
     pool = services.get(Pool)
     checks: dict[str, CheckResult] = {}
 
-    # Memory: warn if any active model on any backend exceeds its configured limit.
-    # This is read directly from backend-reported state — no HTTP needed.
+    # Memory and load state: one check per model per backend.
     for backend in pool.backends:
         for model in backend.models.values():
+            name = f"model[{model.id}@{backend.url}]"
             if not model.is_loaded:
-                continue
-            for resource, (
-                actual,
-                configured,
-            ) in model.check_memory_usage().items():
-                name = f"memory[{model.id}@{backend.url},{resource}]"
                 checks[name] = CheckResult(
-                    status="warning",
-                    message=f"{actual} > configured {configured} bytes",
+                    status="critical", message="not loaded"
                 )
+            elif model.check_memory_usage():
+                checks[name] = CheckResult(
+                    status="warning", message="exceeds configured memory"
+                )
+            else:
+                checks[name] = CheckResult(status="ok", message="ok")
 
     # Functional probes: call each backend that has a loaded model directly,
     # bypassing the gateway's own routing to avoid loopback reentrancy.
