@@ -21,7 +21,7 @@ class AuthTokens(aramaki.Collection):
     collection = "fc.directory.ai.token"
 
 
-class StaticAuthTokens:
+class AdminTokens:
     """Tokens that can be provided through the config that aren't managed by Aramaki."""
 
     def __init__(self, tokens: list[str]):
@@ -62,7 +62,7 @@ async def verify_token(
         return
 
     try:
-        admin_tokens = services.get(StaticAuthTokens)
+        admin_tokens = services.get(AdminTokens)
     except svcs.exceptions.ServiceNotFoundError:
         pass
     else:
@@ -105,7 +105,7 @@ async def verify_admin_token(
 ) -> None:
     """Accept only admin (static) tokens — not aramaki tokens."""
     try:
-        admin_tokens = services.get(StaticAuthTokens)
+        admin_tokens = services.get(AdminTokens)
     except svcs.exceptions.ServiceNotFoundError:
         raise HTTPException(401, detail="No admin tokens configured")
     if credentials.credentials not in admin_tokens.tokens:

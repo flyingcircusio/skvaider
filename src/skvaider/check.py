@@ -37,12 +37,6 @@ def main() -> None:
         type=int,
         help="Timeout in seconds for the /health request.",
     )
-    parser.add_argument(
-        "--reference-file",
-        default=None,
-        metavar="PATH",
-        help="Path to embedding reference JSON for numerical-stability checks (passed to server if supported; currently informational only)",
-    )
     args = parser.parse_args()
 
     if not args.config:

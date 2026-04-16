@@ -3,10 +3,9 @@
 from typing import Literal
 
 import svcs
-from fastapi import APIRouter, Security
+from fastapi import APIRouter
 from pydantic import BaseModel
 
-from skvaider.auth import verify_admin_token
 from skvaider.config import Config
 from skvaider.proxy.pool import Pool
 
@@ -26,7 +25,6 @@ class HealthResponse(BaseModel):
 @router.get("/health")
 async def health(
     services: svcs.fastapi.DepContainer,
-    _: None = Security(verify_admin_token),
 ) -> HealthResponse:
     pool = services.get(Pool)
     config = services.get(Config)
