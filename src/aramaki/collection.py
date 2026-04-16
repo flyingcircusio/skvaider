@@ -25,7 +25,7 @@ class Record(Base):
     collection: Mapped[str] = mapped_column(primary_key=True)
     partition: Mapped[str] = mapped_column(primary_key=True)
     record_id: Mapped[str] = mapped_column(primary_key=True)
-    version: Mapped[int] = mapped_column()
+    version: Mapped[int | None] = mapped_column(nullable=True)
     data: Mapped[JSONObject] = mapped_column(type_=JSON)
 
 
@@ -45,7 +45,8 @@ async def _currently_known_partition_and_version(
     ).one_or_none()
     if maybe_result is None:
         return None, 0
-    return tuple(maybe_result)
+    partition, version = maybe_result
+    return partition, version or 0
 
 
 async def _set_null_record(
