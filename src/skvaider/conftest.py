@@ -175,10 +175,10 @@ async def test_lifespan(
     @wait_for_condition()
     async def wait_for_models_active() -> bool:
         # Wait for at least one instance of each model to be active
-        for model_id in pool.model_configs.keys():
-            if pool.count_loaded_instances(model_id):
-                return True
-        return False
+        return all(
+            pool.count_loaded_instances(model_id)
+            for model_id in pool.model_configs.keys()
+        )
 
     await wait_for_models_active()
 
