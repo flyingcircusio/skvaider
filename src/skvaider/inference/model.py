@@ -196,7 +196,7 @@ class Model(ABC):
                 new_checks = await self._check_health()
             except Exception as e:
                 log.exception("Health check error", model=self.config.id)
-                new_checks = {"health": str(e)}
+                new_checks = {"health": str(e) or type(e).__name__}
 
             self.health_checks = new_checks
             new_status = "unhealthy" if any(new_checks.values()) else "healthy"
