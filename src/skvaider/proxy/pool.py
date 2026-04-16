@@ -7,6 +7,7 @@ import structlog
 
 from skvaider import utils
 from skvaider.config import ModelInstanceConfig
+from skvaider.manifest import Serial
 from skvaider.utils import TaskManager
 
 from .models import AIModel
@@ -114,7 +115,8 @@ class Pool:
     # loading/unloading models mixed throughout as this will cause confusion
     model_management_lock: asyncio.Lock
 
-    _last_map: ModelMap
+    last_map: ModelMap
+    map_serial: Serial
 
     def __init__(
         self,
@@ -123,7 +125,8 @@ class Pool:
     ):
         self.tasks = TaskManager()
         self.semaphores = {}
-        self._last_map = {}
+        self.last_map = {}
+        self.map_serial = Serial()
 
         # Model configurations from config file
         self.model_configs = {m.id: m for m in model_configs}
@@ -212,55 +215,19 @@ class Pool:
             return
         async with self.model_management_lock:
             map = self.placement_map()
-            if map != self._last_map:
-                log.info("New model distribution map", map=map)
-            self._last_map = map
-
-            # We need to unload models before loading models to ensure sufficient
-            # resources. However, we can optimize the impact by processing those
-            # hosts with the fewest required unloads first, to reduce the risk of
-            # taking the last instance of a model down completely.
-
-            actions: dict[
-                str, dict[str, set[str]]
-            ] = {}  # backend -> load/unload -> set of model names
+            map_changed = map != self.last_map
+            if not map_changed:
+                return
+            self.last_map = map
+            self.map_serial.update()
+            lines = [f"  serial: {self.map_serial}"] + [
+                f"  {url}: {sorted(models)}"
+                for url, models in sorted(map.items())
+            ]
+            log.info("New model distribution map\n" + "\n".join(lines))
 
             for backend in self.backends:
-                wanted_models = map[backend.url]
-                actions[backend.url] = dict(load=set(), unload=set())
-                for model in backend.models.values():
-                    action = None
-                    if model.is_loaded and model.id not in wanted_models:
-                        action = "unload"
-                    if not model.is_loaded and model.id in wanted_models:
-                        action = "load"
-                    if not action:
-                        continue
-                    actions[backend.url][action].add(model.id)
-
-            # Perform the actions, backend by backend. First trigger all unloads,
-            # then all loads. Wait for the loads to finish, too, to avoid unnecessary
-            # downtimes.
-            for backend in sorted(
-                self.backends, key=lambda b: len(actions[b.url]["unload"])
-            ):
-                if not backend.healthy:
-                    # Performing map actions on unhealthy backends can cause too much issues
-                    # with models getting thrashed unnecessarily.
-                    # log.warning("Ignoring map action for unhealthy backend")
-                    continue
-                tasks: list[asyncio.Task[Any]] = []
-                for model_id in actions[backend.url]["unload"]:
-                    tasks.append(
-                        self.tasks.create(backend.unload_model, (model_id,))
-                    )
-                await asyncio.gather(*tasks)
-                tasks.clear()
-                for model_id in actions[backend.url]["load"]:
-                    tasks.append(
-                        self.tasks.create(backend.load_model, (model_id,))
-                    )
-                await asyncio.gather(*tasks)
+                await backend.update_manifest()
 
     def count_loaded_instances(self, model_id: str) -> int:
         count = 0

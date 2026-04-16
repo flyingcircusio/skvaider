@@ -229,6 +229,7 @@ class Model(ABC):
             "Process exited unexpectedly",
             model=self.config.id,
             returncode=self.process.returncode,
+            status=self.process_status,
         )
         # Clean up
         await self.terminate()
@@ -353,6 +354,9 @@ class Model(ABC):
             stdout=log_file,
             stderr=log_file,
             env=process_env,
+            # XXX we may need to consider improving our termination *if* the cleanup
+            # of a new session should be unreliable.
+            start_new_session=True,
         )
         log_file.close()  # child inherited the FD; we no longer need our copy
         try:

@@ -94,6 +94,11 @@ Pydantic models in `config.py` files. Key patterns:
 - Model files: URL + SHA256 hash for verification
 - Logging: structlog with IP anonymization
 
+## Tests
+
+- prefer to create pytest fixtures for reusable code
+- fix warnings if possible - if not, make a list of warnings that are still there
+
 ## Code Style
 
 - "-> None"  is not needed on `__init__` methods
@@ -140,6 +145,8 @@ Pydantic models in `config.py` files. Key patterns:
         stderr=asyncio.subprocess.PIPE,
     )
   ```
+
+- do not make overly aggressive use of _ (underscore) methods or attributes. this is python, not java.
 
 - if you log an exception, use the log.exception() function to ensure we see a proper traceback
 

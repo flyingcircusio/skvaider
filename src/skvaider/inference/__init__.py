@@ -142,6 +142,7 @@ def app_factory(lifespan: Any = lifespan) -> FastAPI:
         logger=getLogger("skvaider.accesslog"),
         trust_remote_request_id=True,
         has_debugger=False,
+        skip_paths=frozenset({"/metrics", "/manager/health"}),
     )
 
     @app.exception_handler(Exception)
@@ -178,4 +179,5 @@ def main():
         host=config.server.host,
         port=config.server.port,
         factory=True,
+        access_log=False,
     )

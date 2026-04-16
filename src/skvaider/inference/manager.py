@@ -8,6 +8,7 @@ from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
 import structlog
 
 from skvaider.inference.model import Model
+from skvaider.manifest import Serial
 from skvaider.utils import TaskManager
 
 from .resources import (
@@ -22,11 +23,11 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
-class HasLock(Protocol):
-    _lock: asyncio.Lock
+class HasModelLock(Protocol):
+    model_lock: asyncio.Lock
 
 
-SelfT = TypeVar("SelfT", bound=HasLock)
+SelfT = TypeVar("SelfT", bound=HasModelLock)
 
 
 class UserManagerLock:
@@ -59,11 +60,11 @@ class UserManagerLock:
 def locked(
     func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
-    """Decorator that acquires self._lock before executing an async method."""
+    """Decorator that acquires self.model_lock before executing an async method."""
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
-        async with self._lock:  # pyright: ignore[reportPrivateUsage]
+        async with self.model_lock:
             return await func(self, *args, **kwargs)
 
     return wrapper
@@ -78,13 +79,24 @@ class Manager:
     models: dict[str, Model]
     monitors: dict[str, MemoryMonitor]
     _tasks: list[asyncio.Task[None]]
+    model_lock: asyncio.Lock
+
+    # The manifest manages the intended state for this inference service.
+    # At the moment it's the list of model names that should be loaded here.
+
+    manifest_serial: Serial
+    _manifest: set[str]
+    _manifest_changed: asyncio.Event
 
     def __init__(self, models_dir: Path, log_dir: Path):
         self.tasks = TaskManager()
         self.models_dir = models_dir
         self.log_dir = log_dir
         self.models = {}
-        self._lock = asyncio.Lock()
+        self.model_lock = asyncio.Lock()
+        self._manifest = set()
+        self.manifest_serial = Serial.floor()
+        self._manifest_changed = asyncio.Event()
 
         self.monitors = {"ram": RAMMonitor(self)}
         # if shutil.which("rocm-smi"):
@@ -96,6 +108,8 @@ class Manager:
             self.tasks.poll(monitor.update_global_usage, interval=10)
             self.tasks.poll(monitor.update_model_usage, interval=10)
 
+        self.tasks.create(self.converge)
+
     def add_model(self, model: Model) -> None:
         assert model.config.id is not None
         assert model.config.id not in self.models
@@ -106,6 +120,77 @@ class Manager:
 
     def list_models(self) -> list[Model]:
         return list(self.models.values())
+
+    @property
+    def manifest(self) -> set[str]:
+        return self._manifest
+
+    @manifest.setter
+    def manifest(self, value: set[str]) -> None:
+        self._manifest = set(
+            [model_id for model_id in value if model_id in self.models]
+        )
+        self._manifest_changed.set()
+
+    def update_manifest(self, model_ids: set[str], serial: Serial) -> None:
+        if serial <= self.manifest_serial:
+            log.info(
+                "ignoring manifest with stale serial",
+                serial=serial,
+                current=self.manifest_serial,
+            )
+            return
+        self.manifest_serial = serial
+        self.manifest = model_ids
+
+    async def apply_manifest(self) -> None:
+        """Converge once on the manifest."""
+        previous_todo = (), ()
+        while True:
+            running = {
+                name
+                for name, m in self.models.items()
+                if m.process_status in ("running", "starting")
+            }
+            to_unload = list(running - self.manifest)
+            to_load = list(self.manifest - running)
+            if not (to_unload or to_load):
+                break
+            if previous_todo == (to_unload, to_load):
+                log.warning(
+                    "Not making progress during convergence, giving up."
+                )
+                break
+            previous_todo = (to_unload, to_load)
+            if to_unload:
+                model_id = to_unload[0]
+                try:
+                    await self.unload_model(model_id)
+                except Exception:
+                    log.exception(
+                        "Error unloading model during convergence",
+                        model=model_id,
+                    )
+            else:
+                model_id = to_load[0]
+                try:
+                    await self.start_model(model_id)
+                except Exception:
+                    log.exception(
+                        "Error starting model during convergence",
+                        model=model_id,
+                    )
+
+    async def converge(self) -> None:
+        while True:
+            try:
+                await self._manifest_changed.wait()
+                await self.apply_manifest()
+                self._manifest_changed.clear()
+            except Exception:
+                log.exception(
+                    "Unexpected exception in manifest convergence loop"
+                )
 
     @locked
     async def start_model(
@@ -120,7 +205,7 @@ class Manager:
             raise ModelAlreadyLoading()
         await model.lock.manager_acquire()
         try:
-            if "active" not in model.status:
+            if "running" not in model.status:
                 try:
                     await asyncio.wait_for(model.start(), timeout=timeout)
                 except asyncio.TimeoutError:
