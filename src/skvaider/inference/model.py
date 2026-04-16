@@ -104,6 +104,7 @@ class Model(ABC):
     status_changed: asyncio.Event
 
     health_status: Literal["healthy", "unhealthy", ""] = ""
+    health_checks: dict[str, str] = {}  # check name -> "" ok, or failure reason
     health_check_interval: float = 300  # every 5 minutes
     health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
     _health_checks: int = 0  # support testing
@@ -166,7 +167,7 @@ class Model(ABC):
 
         return result
 
-    async def _check_health(self) -> bool: ...
+    async def _check_health(self) -> dict[str, str]: ...
 
     async def _monitor_health(self) -> None:
         """Periodically check if the model is responsive."""
@@ -192,15 +193,13 @@ class Model(ABC):
 
             # 3. Real health check immediately afterwards and switching to a slower interval.
             try:
-                new_status = (
-                    "healthy" if (await self._check_health()) else "unhealthy"
-                )
+                new_checks = await self._check_health()
             except Exception as e:
-                log.exception(
-                    "Health check error", model=self.config.id, error=str(e)
-                )
-                new_status = "unhealthy"
+                log.exception("Health check error", model=self.config.id)
+                new_checks = {"health": str(e) or type(e).__name__}
 
+            self.health_checks = new_checks
+            new_status = "unhealthy" if any(new_checks.values()) else "healthy"
             interval = self.health_check_interval
 
     async def _wait_for_startup(self) -> None:
@@ -234,66 +233,50 @@ class Model(ABC):
         # Clean up
         await self.terminate()
 
-    async def _check_embedding_health(self) -> bool:
+    async def _check_embedding_health(self) -> dict[str, str]:
+        checks: dict[str, str] = {}
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
             input_texts = ["health check"]
             expected_embeddings: list[list[float]] | None = None
             if self.verification_data:
-                # input texts are keys
                 input_texts = list(self.verification_data.keys())
                 expected_embeddings = list(self.verification_data.values())
 
             resp = await client.post(
                 f"{self.endpoint}/v1/embeddings",
-                json={
-                    "input": input_texts,
-                    "model": self.config.id,
-                },
+                json={"input": input_texts, "model": self.config.id},
             )
-
             if resp.status_code != 200:
-                log.warning(
-                    "Health check failed",
-                    model=self.config.id,
-                    status=resp.status_code,
-                )
-                return False
+                checks["embedding"] = f"HTTP {resp.status_code}"
+                return checks
+
+            checks["embedding"] = ""
 
             if expected_embeddings is not None:
                 data = resp.json()
                 for i, item in enumerate(data.get("data", [])):
                     embedding = item.get("embedding", [])
                     if not embedding:
-                        log.warning(
-                            "Health check failed: missing embedding",
-                            model=self.config.id,
-                        )
-                        return False
-                    # Compare with expected
+                        checks["numerical"] = "missing embedding"
+                        return checks
                     expected = expected_embeddings[i]
                     if len(embedding) != len(expected):
-                        log.warning(
-                            "Health check failed: embedding size mismatch",
-                            model=self.config.id,
+                        checks["numerical"] = (
+                            f"size mismatch: got {len(embedding)}, expected {len(expected)}"
                         )
-                        return False
-                    # Allow small numerical differences
-                    for a, b in zip(embedding, expected):
+                        return checks
+                    for j, (a, b) in enumerate(zip(embedding, expected)):
                         if abs(a - b) > 1e-2:
-                            log.warning(
-                                "Health check failed: embedding value mismatch",
-                                model=self.config.id,
-                                index=i,
-                                expected=a,
-                                got=b,
-                                input_text=input_texts[i],
+                            checks["numerical"] = (
+                                f"value mismatch at dim {j} for {input_texts[i]!r}: got {a:.6f}, expected {b:.6f}"
                             )
-                            return False
-            return True
+                            return checks
+                checks["numerical"] = ""
+        return checks
 
-    async def _check_completion_health(self) -> bool:
+    async def _check_completion_health(self) -> dict[str, str]:
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
@@ -301,14 +284,11 @@ class Model(ABC):
                 f"{self.endpoint}/v1/completions",
                 json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
             )
-            if resp.status_code != 200:
-                log.warning(
-                    "Health check failed",
-                    model=self.config.id,
-                    status=resp.status_code,
-                )
-                return False
-            return True
+            return {
+                "completion": ""
+                if resp.status_code == 200
+                else f"HTTP {resp.status_code}"
+            }
 
     async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""

@@ -68,7 +68,7 @@ class ServerConfig(BaseModel):
 
 
 class AuthConfig(BaseModel):
-    static_tokens: list[str] = []
+    admin_tokens: list[str] = []
 
 
 class AramakiConfig(BaseModel):

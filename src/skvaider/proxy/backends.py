@@ -355,14 +355,30 @@ class SkvaiderBackend(Backend):
             model_obj.limit = model["max_requests"]
             model_obj.memory_usage = model.get("memory_usage") or {}
 
-            # if model_obj.is_loaded:
-            #     for resource, (
-            #         actual,
-            #         configured,
-            #     ) in model_obj.check_memory_usage().items():
-            #         # XXX make this available to the check, logging doesn't help here
-            #         pass
+            from .models import CheckResult
 
+            checks: dict[str, CheckResult] = {}
+
+            exceeding = model_obj.check_memory_usage()
+            if exceeding:
+                over = ", ".join(
+                    f"{r}: {actual} > {configured}"
+                    for r, (actual, configured) in exceeding.items()
+                )
+                checks["memory"] = CheckResult(
+                    status="warning",
+                    message=f"exceeds configured memory: {over}",
+                )
+            else:
+                checks["memory"] = CheckResult(status="ok", message="ok")
+
+            if model_obj.is_loaded:
+                for name, message in model.get("health_checks", {}).items():
+                    checks[name] = CheckResult(
+                        status="ok" if not message else "critical",
+                        message=message or "ok",
+                    )
+            model_obj.checks = checks
         self.models = updated_models
         self.pool.tasks.create(self.pool.rebalance)
 

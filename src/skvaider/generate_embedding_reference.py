@@ -1,8 +1,8 @@
 """Fetch embeddings from the live proxy and write a reference JSON file.
 
-Output format: {model_id: {input_text: [float, ...]}}
-This matches the embedding_verification_file format consumed by inference
-health checks and by skvaider-check --reference-file.
+Output format: {model_id: {input_text: [float, ...]}}.
+This matches the embedding_verification_file format consumed by the
+inference health check.
 """
 
 import argparse
@@ -92,11 +92,11 @@ def main() -> None:
             host = "127.0.0.1"
         base = f"http://{host}:{config.server.port}"
 
-    if config.auth.static_tokens:
-        key = config.auth.static_tokens[0]
+    if config.auth.admin_tokens:
+        key = config.auth.admin_tokens[0]
     else:
         print(
-            "error: no bearer token — set static_tokens in config",
+            "error: no bearer token — set admin_tokens in config",
             file=sys.stderr,
         )
         sys.exit(1)

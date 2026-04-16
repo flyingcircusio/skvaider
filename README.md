@@ -48,7 +48,7 @@ your `config.toml`:
 
 ```toml
 [auth]
-static_tokens = ["<token>"]
+admin_tokens = ["<token>"]
 ```
 
 Generate a secure token:
@@ -57,7 +57,7 @@ Generate a secure token:
 openssl rand -hex 32
 ```
 
-The same token is used by `check-skvaider` (read from `config.auth.static_tokens[0]`)
+The same token is used by `check-skvaider` (read from `config.auth.admin_tokens[0]`)
 and by API clients in the `Authorization: Bearer <token>` header.
 
 
@@ -65,7 +65,7 @@ and by API clients in the `Authorization: Bearer <token>` header.
 
 Pre-recorded embedding vectors used for numerical stability checks. Format:
 `{model_id: {text: [float, ...]}}`. Consumed by the inference health check
-(`embedding_verification_file` in inference config) and by `check-skvaider --reference-file`.
+Consumed by the inference health check (`embedding_verification_file` in inference config).
 
 Generate from a live instance:
 

@@ -23,11 +23,11 @@ async def test_monitor_health_updates_model_status_completion():
     model.health_check_interval = 0.01
     model.health_check_timeout = 0.01
 
-    async def health_ok() -> bool:
-        return True
+    async def health_ok() -> dict[str, str]:
+        return {}
 
-    async def health_not_ok() -> bool:
-        return False
+    async def health_not_ok() -> dict[str, str]:
+        return {"health": "not ok"}
 
     # Phase 1: startup, no process, no health info
     model._check_health = health_ok
@@ -95,12 +95,12 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
         ],
         "usage": {"prompt_tokens": 0, "total_tokens": 0},
     }
-    assert await model._check_embedding_health()
+    assert not any((await model._check_embedding_health()).values())
     assert openai_server.last_request_json["input"] == ["test input"]
 
     # 2. Simulate wrong embedding -> unhealthy
     openai_server.response["data"][0]["embedding"] = [0.9, 0.9, 0.9]
-    assert not await model._check_embedding_health()
+    assert any((await model._check_embedding_health()).values())
 
 
 async def test_health_check_completions(openai_server: OpenAIServerMock):
@@ -116,10 +116,10 @@ async def test_health_check_completions(openai_server: OpenAIServerMock):
 
     # 2. Simulate correct response -> healthy
     openai_server.response = {}
-    assert await model._check_completion_health()
+    assert not any((await model._check_completion_health()).values())
     assert openai_server.last_request_json["prompt"] == "2+2="
 
     # 2. Simulate wrong response -> unhealthy
     openai_server.response_status = 500
-    assert not await model._check_completion_health()
+    assert any((await model._check_completion_health()).values())
     assert openai_server.last_request_json["prompt"] == "2+2="

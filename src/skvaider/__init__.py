@@ -19,10 +19,11 @@ from fastapi.responses import JSONResponse
 import skvaider.auth
 import skvaider.proxy.backends
 import skvaider.proxy.pool
+import skvaider.routers.admin
 import skvaider.routers.metrics
 import skvaider.routers.openai
 from aramaki import Manager as AramakiManager
-from skvaider.auth import verify_token
+from skvaider.auth import verify_admin_token, verify_token
 from skvaider.config import Config
 from skvaider.debug import DebuggingMiddleware
 from skvaider.logging import LoggingMiddleware, logging_config
@@ -126,10 +127,10 @@ async def lifespan(
             enter=False,
         )
 
-    if config.auth.static_tokens:
+    if config.auth.admin_tokens:
         registry.register_value(  # pyright: ignore[reportUnknownMemberType]
-            skvaider.auth.StaticAuthTokens,
-            skvaider.auth.StaticAuthTokens(config.auth.static_tokens),
+            skvaider.auth.AdminTokens,
+            skvaider.auth.AdminTokens(config.auth.admin_tokens),
         )
 
     yield
@@ -153,6 +154,10 @@ def app_factory(
         dependencies=[Security(verify_token)],
     )
     app.include_router(skvaider.routers.metrics.router)
+    app.include_router(
+        skvaider.routers.admin.router,
+        dependencies=[Security(verify_admin_token)],
+    )
     app.add_middleware(
         DebuggingMiddleware,
         directory=config.server.directory / "debug",
