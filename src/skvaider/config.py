@@ -43,19 +43,6 @@ class ModelInstanceConfig(BaseModel):
     def total_size(self) -> int:
         return sum(self.memory.values())
 
-    def check_memory_usage(
-        self, actual_usage: dict[str, int]
-    ) -> dict[str, tuple[int, int]]:
-        """Return resources where actual usage exceeds configured limits.
-
-        Keys in the result map to (actual, configured) pairs.
-        """
-        return {
-            resource: (actual, self.memory.get(resource, 0))
-            for resource, actual in actual_usage.items()
-            if actual > self.memory.get(resource, 0)
-        }
-
 
 class DebugConfig(BaseModel):
     slow_threshold: float = 0

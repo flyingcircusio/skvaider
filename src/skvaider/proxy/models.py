@@ -54,6 +54,19 @@ class AIModel(BaseModel):
     def total_size(self) -> int:
         return sum(self.configured_memory.values())
 
+    def check_memory_usage(self) -> dict[str, tuple[int, int]]:
+        """Check actual vs configured memory usage.
+
+        Returns a dict of resource -> (actual, configured) for resources
+        where actual exceeds configured.
+        """
+        exceeding: dict[str, tuple[int, int]] = {}
+        for resource, actual in self.memory_usage.items():
+            configured = self.configured_memory.get(resource, 0)
+            if actual > configured:
+                exceeding[resource] = (actual, configured)
+        return exceeding
+
     def fit_score(self, resources: dict[str, int] | None = None) -> float:
         """A score (higher) is better how well this model fits or would fit on it's backend
         compared to the same model on other backends.
