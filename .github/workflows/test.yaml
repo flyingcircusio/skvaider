@@ -32,5 +32,9 @@ jobs:
           path: |
             .models
           key: ${{ runner.os }}-models
+      - name: Start processes
+        run: devenv up -d
+      - name: Wait for services
+        run: devenv processes wait
       - name: Run tests
-        run: devenv test
+        run: devenv shell run-tests
