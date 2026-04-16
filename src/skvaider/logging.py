@@ -92,27 +92,31 @@ class LoggingMiddleware:
                 lambda msg: self._capture_status(msg, send, request),
             )
         finally:
-            if request.url.path in self.skip_paths:
-                return
+            # I have the additional indentation level here. However, using a guardian
+            # that just returns confuses fastapi/uvicorn and leads us to breaking the
+            # ASGI protocol, leaving us with useless "ASGI callable returned without
+            # starting response" messages if an error occurs during processing.
+            if request.url.path not in self.skip_paths:
+                process_time = round(time.perf_counter() - start_time, 3)
+                backend = (
+                    request.state.backend.url
+                    if request.state.backend
+                    else "n/a"
+                )
+                stream = "S" if request.state.stream else "-"
 
-            process_time = round(time.perf_counter() - start_time, 3)
-            backend = (
-                request.state.backend.url if request.state.backend else "n/a"
-            )
-            stream = "S" if request.state.stream else "-"
+                if self.has_debugger:
+                    debug_flag = request.state.debug_recorder.trigger_flag()
+                else:
+                    debug_flag = "_"
 
-            if self.has_debugger:
-                debug_flag = request.state.debug_recorder.trigger_flag()
-            else:
-                debug_flag = "_"
-
-            time_queue = round(request.state.time_queue, 3)
-            time_server = round(request.state.time_server, 3)
-            p = request.state
-            # XXX when streaming: add time to time first token
-            self._logger.info(
-                f'{anon_ip} {p.model} {backend} {p.request_id} {time_queue}/{time_server}/{process_time} {p.status_code} {p.tokens_prompt}/{p.tokens_completion}/{p.tokens_total} {stream}{debug_flag} {p.retries} {p.parallel_total}/{p.parallel_model}/{p.parallel_backend} "{request.method} {request.url.path}" '
-            )
+                time_queue = round(request.state.time_queue, 3)
+                time_server = round(request.state.time_server, 3)
+                p = request.state
+                # XXX when streaming: add time to time first token
+                self._logger.info(
+                    f'{anon_ip} {p.model} {backend} {p.request_id} {time_queue}/{time_server}/{process_time} {p.status_code} {p.tokens_prompt}/{p.tokens_completion}/{p.tokens_total} {stream}{debug_flag} {p.retries} {p.parallel_total}/{p.parallel_model}/{p.parallel_backend} "{request.method} {request.url.path}" '
+                )
 
 
 def logging_config(config: LoggingConfig) -> dict[str, Any]:
