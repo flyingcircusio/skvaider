@@ -85,8 +85,6 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
     model.endpoint = openai_server.endpoint
 
     expected_embedding = [0.1, 0.2, 0.3]
-    model.verification_data = {"test input": expected_embedding}
-
     openai_server.response = {
         "model": "test-embed",
         "object": "list",
@@ -95,10 +93,19 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
         ],
         "usage": {"prompt_tokens": 0, "total_tokens": 0},
     }
-    assert not any((await model._check_embedding_health()).values())
+
+    # 1. No verification data -> embedding ok, numerical warns
+    result = await model._check_embedding_health()
+    assert result["embedding"] == ""
+    assert result["numerical"] == "no reference data"
+
+    # 2. With verification data, correct embedding -> all ok
+    model.verification_data = {"test input": expected_embedding}
+    result = await model._check_embedding_health()
+    assert not any(result.values())
     assert openai_server.last_request_json["input"] == ["test input"]
 
-    # 2. Simulate wrong embedding -> unhealthy
+    # 3. Wrong embedding -> numerical fails
     openai_server.response["data"][0]["embedding"] = [0.9, 0.9, 0.9]
     assert any((await model._check_embedding_health()).values())
 
