@@ -1,5 +1,5 @@
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,6 +9,11 @@ from skvaider.config import ModelInstanceConfig
 from .backends import Backend
 
 log = structlog.stdlib.get_logger()
+
+
+class CheckResult(BaseModel):
+    status: Literal["ok", "warning", "critical"]
+    message: str
 
 
 class AIModel(BaseModel):
@@ -26,6 +31,7 @@ class AIModel(BaseModel):
     backend: Backend = Field(exclude=True)
     is_loaded: bool = Field(default=False, exclude=True)
     memory_usage: dict[str, int] = Field(default_factory=dict, exclude=True)
+    functional_check: CheckResult | None = Field(default=None, exclude=True)
 
     limit: int = Field(default=1, exclude=True)
     in_progress: int = Field(default=0, exclude=True)

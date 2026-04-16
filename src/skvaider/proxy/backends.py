@@ -11,7 +11,7 @@ from ..typing import ConfigDict, ConfigValue, JSONObject
 
 if TYPE_CHECKING:
     # Avoid circular imports
-    from .models import AIModel
+    from .models import AIModel, CheckResult
     from .pool import Pool
 
 
@@ -355,8 +355,45 @@ class SkvaiderBackend(Backend):
             model_obj.limit = model["max_requests"]
             model_obj.memory_usage = model.get("memory_usage") or {}
 
+            if model_obj.is_loaded and model_obj.config.task != "embedding":
+                model_obj.functional_check = await self._probe_chat(model_id)
+
         self.models = updated_models
         self.pool.tasks.create(self.pool.rebalance)
+
+    async def _probe_chat(self, model_id: str) -> "CheckResult":
+        from .models import CheckResult
+
+        try:
+            result = await self.post(
+                "/openai/v1/chat/completions",
+                {
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": "Hello"}],
+                    "stream": False,
+                    "max_tokens": 1000,
+                },
+            )
+            assert result["object"] == "chat.completion"
+            msg = result["choices"][0]["message"]
+            assert "content" in msg
+            assert "role" in msg
+
+            result = await self.post(
+                "/openai/v1/completions",
+                {
+                    "model": model_id,
+                    "prompt": "say hello",
+                    "stream": False,
+                    "max_tokens": 1000,
+                },
+            )
+            assert result["object"] == "text_completion"
+            assert "text" in result["choices"][0]
+
+            return CheckResult(status="ok", message="ok")
+        except Exception as e:
+            return CheckResult(status="critical", message=str(e))
 
     async def _update_usage(self) -> None:
         async with httpx.AsyncClient(follow_redirects=True) as client:
