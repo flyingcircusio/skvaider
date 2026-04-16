@@ -82,7 +82,9 @@ async def test_check_memory_usage_returns_exceeding_resources(
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
-    assert model.check_memory_usage() == {"ram": (200, 100)}
+    assert model.config.check_memory_usage(model.memory_usage) == {
+        "ram": (200, 100)
+    }
 
 
 async def test_check_memory_usage_empty_when_within_limits(
@@ -99,7 +101,7 @@ async def test_check_memory_usage_empty_when_within_limits(
         [dummy_backend],
     )
     task_managers.append(pool.tasks)
-    assert model.check_memory_usage() == {}
+    assert model.config.check_memory_usage(model.memory_usage) == {}
 
 
 async def test_fit_score_uses_backend_free_memory(

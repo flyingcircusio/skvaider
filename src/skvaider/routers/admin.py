@@ -41,7 +41,7 @@ async def health(
             for resource, (
                 actual,
                 configured,
-            ) in model.check_memory_usage().items():
+            ) in model.config.check_memory_usage(model.memory_usage).items():
                 name = f"memory[{model.id}@{backend.url},{resource}]"
                 checks[name] = CheckResult(
                     status="warning",
