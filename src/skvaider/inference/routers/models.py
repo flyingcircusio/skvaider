@@ -30,6 +30,7 @@ def model_info(model: Model, manager: Manager) -> JSONObject:
             monitor.id: monitor.model_usage(model)
             for monitor in manager.monitors.values()
         },
+        "health_checks": dict(model.health_checks),
     }
 
 
