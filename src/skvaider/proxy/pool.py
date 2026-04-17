@@ -298,16 +298,18 @@ class Pool:
         async with self.model_management_lock:
             map = self.placement_map()
             map_changed = map != self.last_map
-            if not map_changed:
-                return
-            self.last_map = map
-            self.map_serial.update()
-            lines = [f"  serial: {self.map_serial}"] + [
-                f"  {url}: {sorted(models)}"
-                for url, models in sorted(map.items())
-            ]
-            log.info("New model distribution map\n" + "\n".join(lines))
+            if map_changed:
+                self.last_map = map
+                self.map_serial.update()
+                lines = [f"  serial: {self.map_serial}"] + [
+                    f"  {url}: {sorted(models)}"
+                    for url, models in sorted(map.items())
+                ]
+                log.info("New model distribution map\n" + "\n".join(lines))
 
+            # Rebalances also happen when backends lifecycle changes but without
+            # affecting the map. This is the chance to see that backends have an
+            # outdated manifest.
             for backend in self.backends:
                 await backend.update_manifest()
 

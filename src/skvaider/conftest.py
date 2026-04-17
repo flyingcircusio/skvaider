@@ -20,7 +20,14 @@ import aramaki
 import skvaider.auth
 from aramaki.typing import JSONObject
 from skvaider import app_factory, metrics
-from skvaider.config import ModelInstanceConfig, parse_size
+from skvaider.config import (
+    AuthConfig,
+    Config,
+    LoggingConfig,
+    ModelInstanceConfig,
+    ServerConfig,
+    parse_size,
+)
 from skvaider.proxy.backends import DummyBackend, SkvaiderBackend
 from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
@@ -317,7 +324,14 @@ async def auth_header(
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
-    with TestClient(app_factory(lifespan=test_lifespan)) as client:
+    config = Config(
+        auth=AuthConfig(admin_tokens=["asdf"]),
+        server=ServerConfig(),
+        backend=[],
+        models=[],
+        logging=LoggingConfig(),
+    )
+    with TestClient(app_factory(config, lifespan=test_lifespan)) as client:
         yield client
 
 

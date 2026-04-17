@@ -7,7 +7,6 @@ inference health check.
 
 import argparse
 import json
-import os
 import sys
 import tomllib
 
@@ -39,9 +38,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--config",
-        default=os.environ.get("SKVAIDER_CONFIG_FILE"),
+        required=True,
         metavar="PATH",
-        help="Path to proxy config.toml (default: $SKVAIDER_CONFIG_FILE)",
+        help="Path to proxy config.toml",
     )
     parser.add_argument(
         "--url",
@@ -68,13 +67,6 @@ def main() -> None:
         help="Timeout for individual requests.",
     )
     args = parser.parse_args()
-
-    if not args.config:
-        print(
-            "error: no config file — pass --config or set SKVAIDER_CONFIG_FILE",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
     with open(args.config, "rb") as f:
         config = Config.model_validate(tomllib.load(f))

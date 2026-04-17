@@ -42,8 +42,8 @@ Routes requests to inference backends with load balancing, authentication, healt
 - **Port**: 8000
 
 Key components:
-- `proxy/pool.py` - Request queue and backend load balancing
-- `proxy/backends.py` - Backend interface (SkvaiderBackend)
+- `proxy/pool.py` - Request queue, backend load balancing, and persistent cluster state (`cluster-state.json` in `server.directory`)
+- `proxy/backends.py` - Backend interface (SkvaiderBackend), Ceph-inspired `map_up`/`map_in` state tracking via `StateFlag`
 - `routers/openai.py` - OpenAI-compatible endpoints (`/openai/v1/...`)
 - `auth.py` - Token authentication via aramaki
 
@@ -52,7 +52,7 @@ Key components:
 Runs local LLMs via llama-server subprocesses.
 
 - **Entry point**: `src/skvaider/inference/__init__.py`
-- **Config file**: `config-inference-{1,2}.toml` (via `SKVAIDER_CONFIG_FILE` env var)
+- **Config file**: `config-inference-{1,2}.toml`
 - **Ports**: 8001, 8002
 
 Key components:
@@ -82,11 +82,21 @@ introduced under any circumstances.
 
 ## Model Status System
 
-Models track two status dimensions (inspired by Ceph):
+### Inference server (per model)
+
+Models track two status dimensions:
 - `process_status`: stopped → starting → running → stopping
 - `health_status`: "" → healthy/unhealthy
 
 Combined into `status` set with "active" (running+healthy) or "inactive".
+
+### Proxy (per backend, Ceph-inspired)
+
+Backends track two independent state flags via `StateFlag`:
+- `map_up`: is the backend currently reachable? (`up` / `down`)
+- `map_in`: should the backend be used for model placement? (`in` / `out`)
+
+A backend transitions to `out` only after being `down` for `DOWN_OUT_INTERVAL` (grace period), avoiding spurious rebalancing on transient failures. These flags, along with known memory resources and model memory usage, are persisted to `cluster-state.json` in `server.directory` so proxy restarts don't lose placement context. The `healthy` flag is also persisted so the first health-check result after restart correctly detects state changes.
 
 ## Configuration
 

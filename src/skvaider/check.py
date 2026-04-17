@@ -8,7 +8,6 @@ Nagios/Sensu exit codes:
 """
 
 import argparse
-import os
 import sys
 import tomllib
 
@@ -27,9 +26,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--config",
-        default=os.environ.get("SKVAIDER_CONFIG_FILE"),
+        required=True,
         metavar="PATH",
-        help="Path to skvaider proxy config.toml (default: $SKVAIDER_CONFIG_FILE)",
+        help="Path to skvaider proxy config.toml",
     )
     parser.add_argument(
         "--request-timeout",
@@ -38,12 +37,6 @@ def main() -> None:
         help="Timeout in seconds for the /health request.",
     )
     args = parser.parse_args()
-
-    if not args.config:
-        print(
-            "CHECKS CRITICAL - no config file: pass --config or set SKVAIDER_CONFIG_FILE"
-        )
-        sys.exit(2)
 
     with open(args.config, "rb") as f:
         config = Config.model_validate(tomllib.load(f))
