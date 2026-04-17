@@ -1,9 +1,12 @@
 import asyncio
 import contextlib
 import datetime
-from typing import TYPE_CHECKING, Any, Iterable
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Iterable, Literal
 
 import structlog
+from pydantic import BaseModel
 
 from skvaider import utils
 from skvaider.config import ModelInstanceConfig
@@ -16,6 +19,26 @@ if TYPE_CHECKING:
     from .backends import Backend
 
 log = structlog.stdlib.get_logger()
+
+
+class ModelStateRecord(BaseModel):
+    id: str
+    memory_usage: dict[str, int]
+
+
+class BackendStateRecord(BaseModel):
+    url: str
+    healthy: bool = False
+    memory: dict[str, dict[str, int]]
+    map_up: Literal["up", "down"]
+    map_up_last_change: datetime.datetime
+    map_in: Literal["in", "out"]
+    map_in_last_change: datetime.datetime = datetime.datetime.now(datetime.UTC)
+    models: dict[str, ModelStateRecord]
+
+
+class ClusterState(BaseModel):
+    backends: dict[str, BackendStateRecord]
 
 
 class ModelSemaphore:
@@ -45,6 +68,8 @@ class ModelSemaphore:
             for b in self.pool.backends
             if self.model_id in b.models
             and b.healthy
+            and b.map_in == "in"
+            and b.map_up == "up"
             and b.models[self.model_id].is_loaded
             and b.url not in excluded_backends
         ]
@@ -117,16 +142,19 @@ class Pool:
 
     last_map: ModelMap
     map_serial: Serial
+    state_file: Path | None
 
     def __init__(
         self,
         model_configs: Iterable[ModelInstanceConfig] = (),
         backends: Iterable["Backend"] = (),
+        data_dir: Path | None = None,
     ):
         self.tasks = TaskManager()
         self.semaphores = {}
         self.last_map = {}
         self.map_serial = Serial()
+        self.state_file = data_dir / "cluster-state.json" if data_dir else None
 
         # Model configurations from config file
         self.model_configs = {m.id: m for m in model_configs}
@@ -140,7 +168,68 @@ class Pool:
         for backend in backends:
             self.backends.append(backend)
             backend.pool = self
+
+        self._load_state()
+
+        for backend in self.backends:
             self.tasks.create(backend.monitor_health_and_update_models)
+
+    def _load_state(self) -> None:
+        if not self.state_file or not self.state_file.exists():
+            return
+        state = ClusterState.model_validate_json(self.state_file.read_text())
+        for backend in self.backends:
+            record = state.backends.get(backend.url)
+            if not record:
+                continue
+            backend.memory = record.memory
+            backend.map_up.state = record.map_up
+            backend.map_up.last_change = record.map_up_last_change
+            backend.map_in.state = record.map_in
+            backend.map_in.last_change = record.map_in_last_change
+            backend.healthy = record.healthy
+            for model_id, model_record in record.models.items():
+                if model_id not in self.model_configs:
+                    continue
+                if model_id not in backend.models:
+                    backend.models[model_id] = AIModel(
+                        id=model_id,
+                        created=0,
+                        owned_by="skvaider",
+                        backend=backend,
+                    )
+                model_obj = backend.models[model_id]
+                model_obj.memory_usage = model_record.memory_usage
+
+    def save_state(self) -> None:
+        if not self.state_file:
+            return
+        records = {
+            backend.url: BackendStateRecord(
+                url=backend.url,
+                healthy=backend.healthy,
+                memory=backend.memory,
+                map_up=backend.map_up.state,
+                map_up_last_change=backend.map_up.last_change,
+                map_in=backend.map_in.state,
+                map_in_last_change=backend.map_in.last_change,
+                models={
+                    model_id: ModelStateRecord(
+                        id=model_id,
+                        memory_usage=model.memory_usage,
+                    )
+                    for model_id, model in backend.models.items()
+                },
+            )
+            for backend in self.backends
+        }
+        state = ClusterState(backends=records)
+        data = state.model_dump_json(indent=2)
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(data)
+        with tmp.open() as f:
+            os.fsync(f.fileno())
+        tmp.rename(self.state_file)
 
     def placement_map(self) -> ModelMap:
         """Create a placement map of "which model should go where."
@@ -169,7 +258,9 @@ class Pool:
         ):
             unplaced_instances = model.instances
             candidates = [
-                b for b in self.backends if b.healthy and model.id in b.models
+                b
+                for b in self.backends
+                if (b.map_in == "in") and model.id in b.models
             ]
             candidates.sort(
                 key=lambda b: (
