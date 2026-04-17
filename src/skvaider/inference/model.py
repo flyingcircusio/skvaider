@@ -199,7 +199,15 @@ class Model(ABC):
                 new_checks = {"health": str(e) or type(e).__name__}
 
             self.health_checks = new_checks
-            new_status = "unhealthy" if any(new_checks.values()) else "healthy"
+            new_status = (
+                "unhealthy"
+                if any(
+                    v
+                    for v in new_checks.values()
+                    if v and v != "no reference data"
+                )
+                else "healthy"
+            )
             interval = self.health_check_interval
 
     async def _wait_for_startup(self) -> None:
