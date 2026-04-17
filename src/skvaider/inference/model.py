@@ -648,6 +648,7 @@ class VllmModel(Model):
 
 
 class SystemdModel(Model):
+    # This one will probably move to be a integrated docker runner ?
     _engine = "systemd"
 
     def __init__(self, config: SystemdModelConfig):
@@ -655,12 +656,56 @@ class SystemdModel(Model):
         self._config = config
 
     async def pids(self) -> list[int]:
-        """Get PIDs from the systemd unit via systemctl show."""
+        """Get PIDs belonging to this model.
+
+        Always resolves PIDs from the systemd unit's MainPID.
+        If docker_container is also configured, resolves and combines
+        container PIDs (deduplicated).
+        """
+        pids = await self._pids_from_systemd_unit(self._config.unit)
+        if self._config.docker_container:
+            docker_pids = await self._pids_from_docker(
+                self._config.docker_container
+            )
+            seen = set(pids)
+            pids += [p for p in docker_pids if p not in seen]
+        return pids
+
+    async def _pids_from_docker(self, container_name: str) -> list[int]:
+        """Resolve PIDs for a running docker container by name."""
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "inspect",
+            "--format={{.State.Pid}}",
+            container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return []
+        try:
+            container_pid = int(stdout.decode().strip())
+        except ValueError:
+            return []
+        if container_pid == 0:
+            # Docker reports 0 when the container is not running
+            return []
+        pids = [container_pid]
+        try:
+            parent = psutil.Process(container_pid)
+            pids += [c.pid for c in parent.children(recursive=True)]
+        except psutil.NoSuchProcess:
+            pass
+        return pids
+
+    async def _pids_from_systemd_unit(self, unit: str) -> list[int]:
+        """Resolve PIDs from the systemd unit's MainPID."""
         proc = await asyncio.create_subprocess_exec(
             "systemctl",
             "show",
             "--property=MainPID",
-            self._config.unit,
+            unit,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )

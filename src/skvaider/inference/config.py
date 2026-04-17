@@ -70,6 +70,9 @@ class SystemdModelConfig(ModelConfig):
     engine: Literal["systemd"] = "systemd"
     unit: str
     max_requests: int = 16
+    # If the systemd unit runs a Docker container, specify the container name here.
+    # When set, PIDs are resolved via `docker inspect` instead of MainPID.
+    docker_container: str | None = None
 
 
 AnyModelConfig = Annotated[
