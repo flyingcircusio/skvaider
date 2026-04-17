@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from skvaider.config import ModelInstanceConfig, parse_size
 from skvaider.conftest import registered_model_factory
+from skvaider.manifest import Serial
 from skvaider.proxy.backends import DummyBackend
 from skvaider.proxy.models import AIModel
 from skvaider.utils import TaskManager
@@ -272,6 +273,41 @@ async def test_complex_rebalance_multiple_models(
         "http://backend-2": set(),
         "http://backend-3": {"m2", "m1"},
     }
+
+
+async def test_restarted_backend_receives_manifest_even_when_map_unchanged(
+    task_managers: list[TaskManager],
+    dummy_backend_factory: Callable[..., DummyBackend],
+):
+    """A backend that restarts (serial reset) must get a manifest update even
+    if the placement map did not change."""
+    backend = dummy_backend_factory(ram=parse_size("200K"))
+    registered_model_factory("m1", backend, ram=parse_size("100K"))
+
+    pool = Pool(
+        [
+            ModelInstanceConfig(
+                id="m1",
+                instances=1,
+                memory={"ram": parse_size("100K")},
+                task="chat",
+            )
+        ],
+        [backend],
+    )
+    task_managers.append(pool.tasks)
+
+    await pool.rebalance()
+    assert backend.current_serial == pool.map_serial
+
+    # Simulate backend restart: serial is reset, as happens in
+    # monitor_health_and_update_models when the backend goes down.
+    backend.current_serial = Serial.floor()
+    assert backend.current_serial != pool.map_serial
+
+    # The map hasn't changed, but rebalance must still push the manifest.
+    await pool.rebalance()
+    assert backend.current_serial == pool.map_serial
 
 
 async def test_pool_report_map_contains_backends_and_models(
