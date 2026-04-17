@@ -1,6 +1,5 @@
 import argparse
 import asyncio
-import os
 import tomllib
 from asyncio import AbstractEventLoop
 from collections.abc import AsyncGenerator
@@ -83,10 +82,7 @@ def global_exception_handler(
 async def lifespan(
     app: FastAPI, registry: svcs.Registry
 ) -> AsyncGenerator[None]:
-    config_file = os.environ.get("SKVAIDER_CONFIG_FILE", "config.toml")
-    with open(config_file, "rb") as f:
-        config_data = tomllib.load(f)
-    config = Config.model_validate(config_data)
+    config = app.state.config
 
     loop = asyncio.get_running_loop()
 
@@ -141,15 +137,9 @@ async def lifespan(
     pool.close()
 
 
-def app_factory(
-    lifespan: Any = lifespan,
-) -> FastAPI:
-    config_file = os.environ.get("SKVAIDER_CONFIG_FILE", "config.toml")
-    with open(config_file, "rb") as f:
-        config_data = tomllib.load(f)
-    config = Config.model_validate(config_data)
-
+def app_factory(config: Config, lifespan: Any) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
+    app.state.config = config
     app.include_router(
         skvaider.routers.openai.router,
         prefix="/openai",
@@ -215,9 +205,7 @@ def main():
         logging_config(config.logging),
     )
 
+    app = app_factory(config, lifespan)
     uvicorn.run(
-        "skvaider:app_factory",
-        host=config.server.host,
-        port=config.server.port,
-        factory=True,
+        app, host=config.server.host, port=config.server.port, access_log=False
     )

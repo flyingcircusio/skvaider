@@ -15,7 +15,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from skvaider.inference import app_factory
-from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
+from skvaider.inference.config import (
+    Config,
+    LlamaModelFile,
+    LlamaServerModelConfig,
+    LoggingConfig,
+    OpenAIConfig,
+    ServerConfig,
+)
 from skvaider.inference.manager import Manager
 from skvaider.inference.model import LlamaModel
 from skvaider.utils import ModelAPI
@@ -63,7 +70,16 @@ def client(
 
         yield
 
-    with TestClient(app_factory(lifespan=test_lifespan)) as client:
+    config = Config(
+        models_dir=manager.models_dir,
+        server=ServerConfig(),
+        logging=LoggingConfig(),
+        openai=OpenAIConfig(models=[]),
+    )
+
+    with TestClient(
+        app_factory(config=config, lifespan=test_lifespan)
+    ) as client:
         yield client
 
 

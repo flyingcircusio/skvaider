@@ -1,4 +1,3 @@
-import os
 import sys
 import tomllib
 from pathlib import Path
@@ -11,7 +10,7 @@ def check_skvaider_config() -> None:
     if len(sys.argv) > 1:
         config_file = sys.argv[1]
     else:
-        config_file = os.environ.get("SKVAIDER_CONFIG_FILE", "config.toml")
+        config_file = "config.toml"
     path = Path(config_file)
     if not path.exists():
         print(f"Configuration file {config_file} not found.")
@@ -33,9 +32,7 @@ def check_inference_config() -> None:
     if len(sys.argv) > 1:
         config_file = sys.argv[1]
     else:
-        config_file = os.environ.get(
-            "SKVAIDER_CONFIG_FILE", "config-inference.toml"
-        )
+        config_file = "config-inference.toml"
     path = Path(config_file)
     if not path.exists():
         print(f"Inference configuration file {config_file} not found.")

@@ -44,7 +44,7 @@ def load_config() -> Config:
         default="config.toml",
         help="Path to the configuration file",
     )
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
     with open(args.config_path, "rb") as f:
         config_data = tomllib.load(f)
     return Config.model_validate(config_data)
@@ -54,7 +54,7 @@ def load_config() -> Config:
 async def lifespan(
     app: FastAPI, registry: svcs.Registry
 ) -> AsyncGenerator[None]:
-    config = load_config()
+    config = app.state.config
 
     verification_data = {}
     if config.embedding_verification_file:
@@ -131,8 +131,9 @@ async def lifespan(
     tasks.terminate()
 
 
-def app_factory(lifespan: Any = lifespan) -> FastAPI:
+def app_factory(config: Config, lifespan: Any = lifespan) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
+    app.state.config = config
     app.include_router(skvaider.inference.routers.models.router)
     app.include_router(skvaider.inference.routers.manager.router)
     app.include_router(skvaider.inference.routers.metrics.router)
@@ -174,10 +175,10 @@ def main():
         logging_config(config.logging),
     )
 
+    app = app_factory(config, lifespan)
     uvicorn.run(
-        "skvaider.inference:app_factory",
+        app,
         host=config.server.host,
         port=config.server.port,
-        factory=True,
         access_log=False,
     )
