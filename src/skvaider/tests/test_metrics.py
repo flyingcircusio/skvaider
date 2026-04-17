@@ -100,6 +100,7 @@ async def test_retry_total_increments_on_backend_unavailable(
     b2 = DummyBackend("http://test-backend-2")
     b2.pool = pool
     b2.healthy = True
+    b2.map_up.mark("up")
     model = AIModel(id="test-model", owned_by="test", backend=b2)
     model.memory_usage = {"ram": 10}
     model.is_loaded = True

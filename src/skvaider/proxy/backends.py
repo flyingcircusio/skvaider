@@ -1,6 +1,15 @@
 import asyncio
+import datetime
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
+    Generic,
+    Literal,
+    LiteralString,
+    TypeVar,
+)
 
 import httpx
 import httpx_sse
@@ -37,6 +46,30 @@ class ModelConfig:
         return {}
 
 
+T = TypeVar("T", bound=LiteralString)
+
+
+class StateFlag(Generic[T]):
+    last_change = datetime.datetime.now(datetime.UTC)
+
+    def __init__(self, initial_state: T):
+        self.state = initial_state
+
+    def mark(self, state: T):
+        if state == self.state:
+            return
+        self.state = state
+        self.last_change = datetime.datetime.now(datetime.UTC)
+
+    @property
+    def age(self):
+        return datetime.datetime.now(datetime.UTC) - self.last_change
+
+    def __eq__(self, other: object):
+        assert isinstance(other, str)
+        return other == self.state
+
+
 class Backend(ABC):
     """Connection to a single backend."""
 
@@ -52,12 +85,27 @@ class Backend(ABC):
 
     memory: dict[str, dict[str, int]]
 
+    # Map state management. The lifecycle is inspired by Ceph, but we don't
+    # have persistency, yet, so a bit of improvisation. This lifecycle is intended
+    # to handle the "gravity" of instances being up/down and allow skvaider
+    # proxy restarts and inference server restarts without immediately triggering
+    # redistribution.
+    DOWN_OUT_INTERVAL = datetime.timedelta(minutes=15)
+    map_up: StateFlag[Literal["up", "down"]]  # is the backend reachable?
+    map_in: StateFlag[
+        Literal["in", "out"]
+    ]  # should the backend be used when placing models?
+    last_updown_change = datetime.datetime.now(datetime.UTC)
+
     def __init__(self, url: str):
         self.url = url
         self.models = {}
         self.memory = {}
         self.log = structlog.stdlib.get_logger().bind(backend=self.url)
         self.request_health_update = asyncio.Event()
+
+        self.map_up = StateFlag("down")
+        self.map_in = StateFlag("in")
 
     @abstractmethod
     async def post(
@@ -268,15 +316,23 @@ class SkvaiderBackend(Backend):
                 pass
             elif self.healthy:
                 # we just became healthy
-                self.log.info("backend became HEALTHY", backend=self.url)
+                self.log.info(
+                    "backend became HEALTHY, marking UP and IN",
+                    backend=self.url,
+                )
+                self.map_up.mark("up")
+                self.map_in.mark("in")
+                self.pool.save_state()
                 await self.pool.tasks.create(self.pool.rebalance)
             elif not self.healthy:
-                self.log.info(
-                    "backend became UNHEALTHY",
+                self.log.warning(
+                    "backend became UNHEALTHY, marking DOWN",
                     backend=self.url,
                     reason=self.unhealthy_reason,
                 )
+                self.map_up.mark("down")
                 self.current_serial = Serial.floor()
+                self.pool.save_state()
                 await self.pool.tasks.create(self.pool.rebalance)
 
             # Handle steady states
@@ -301,7 +357,7 @@ class SkvaiderBackend(Backend):
         in an idempotent/convergent fashion while the backend is in healthy state.
 
         """
-        pass
+        self.map_in.mark("in")
 
     async def ensure_unhealthy(self):
         """Perform actions for ensuring consistency in unhealthy state.
@@ -310,13 +366,20 @@ class SkvaiderBackend(Backend):
         in an idempotent/convergent fashion.
 
         """
-        pass
+        # Only mark out after a grace period.
+        if self.map_in == "in" and self.map_up.age > self.DOWN_OUT_INTERVAL:
+            self.log.warning(
+                f"backend was DOWN for {self.DOWN_OUT_INTERVAL} - marking OUT"
+            )
+            self.map_in.mark("out")
+            self.pool.save_state()
 
     async def _update_health(self) -> None:
         health = await self.backend_api(BackendHealthRequest())
 
         assert health.status == "ok"
         self.memory = health.usage
+        self.pool.save_state()
         self.current_serial = health.current_serial
 
         from .models import AIModel

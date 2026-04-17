@@ -106,7 +106,9 @@ async def lifespan(
         else:
             raise TypeError(backend_config.type)
 
-    pool = skvaider.proxy.pool.Pool(config.models, backends)
+    pool = skvaider.proxy.pool.Pool(
+        config.models, backends, data_dir=config.server.directory
+    )
     registry.register_value(  # pyright: ignore[reportUnknownMemberType]
         skvaider.proxy.pool.Pool, pool
     )

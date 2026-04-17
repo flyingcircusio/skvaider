@@ -164,6 +164,7 @@ async def test_rebalance_after_backend_becomes_healthy(
     backend1 = dummy_backend_factory(ram=parse_size("200K"))
     backend2 = dummy_backend_factory(ram=parse_size("200K"))
     backend2.healthy = False
+    backend2.map_in.mark("out")
     model1_b1 = registered_model_factory("m1", backend1, ram=parse_size("100K"))
     model1_b2 = registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
@@ -177,6 +178,7 @@ async def test_rebalance_after_backend_becomes_healthy(
     assert pool.count_loaded_instances("m1") == 1
 
     backend2.healthy = True
+    backend2.map_in.mark("in")
     await pool.rebalance()
     assert pool.count_loaded_instances("m1") == 2
     assert model1_b1.is_loaded
@@ -206,6 +208,7 @@ async def test_rebalance_after_backend_becomes_unhealthy(
     }
 
     backend2.healthy = False
+    backend2.map_in.mark("out")
 
     await pool.rebalance()
 
@@ -256,6 +259,7 @@ async def test_complex_rebalance_multiple_models(
     }
 
     backend2.healthy = False
+    backend2.map_in.mark("out")
     await pool.rebalance()
 
     assert pool.count_loaded_instances("m1") == 2

@@ -219,6 +219,7 @@ def dummy_backend_factory() -> Callable[..., DummyBackend]:
             url or f"http://backend-{next(backend_id)}", fail_count=fail_count
         )
         b.healthy = True
+        b.map_up.mark("up")
         b.memory = {"ram": {"free": ram, "total": ram}}
         return b
 
