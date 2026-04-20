@@ -32,6 +32,17 @@ from skvaider.utils import TaskManager, slugify
 
 log = structlog.get_logger()
 
+
+def walk_process_tree(root_pid: int) -> list[int]:
+    pids = [root_pid]
+    try:
+        parent = psutil.Process(root_pid)
+        pids += [c.pid for c in parent.children(recursive=True)]
+    except psutil.NoSuchProcess:
+        pass
+    return pids
+
+
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -128,13 +139,7 @@ class Model(ABC):
         """
         if not self.process:
             return []
-        pids = [self.process.pid]
-        try:
-            proc = psutil.Process(self.process.pid)
-            pids += [c.pid for c in proc.children(recursive=True)]
-        except psutil.NoSuchProcess:
-            pass
-        return pids
+        return walk_process_tree(self.process.pid)
 
     # Shared implementation:
 
@@ -658,21 +663,23 @@ class SystemdModel(Model):
     async def pids(self) -> list[int]:
         """Get PIDs belonging to this model.
 
-        Always resolves PIDs from the systemd unit's MainPID.
-        If docker_container is also configured, resolves and combines
+        Resolves PIDs from the systemd unit's MainPID.
+        If docker_container is configured, also resolves and combines
         container PIDs (deduplicated).
         """
-        pids = await self._pids_from_systemd_unit(self._config.unit)
+        pids: set[int] = set()
+        systemd_pid = await self.resolve_systemd_pid(self._config.unit)
+        if systemd_pid:
+            pids.update(walk_process_tree(systemd_pid))
         if self._config.docker_container:
-            docker_pids = await self._pids_from_docker(
+            docker_pid = await self.resolve_docker_pid(
                 self._config.docker_container
             )
-            seen = set(pids)
-            pids += [p for p in docker_pids if p not in seen]
-        return pids
+            if docker_pid:
+                pids.update(walk_process_tree(docker_pid))
+        return list(pids)
 
-    async def _pids_from_docker(self, container_name: str) -> list[int]:
-        """Resolve PIDs for a running docker container by name."""
+    async def resolve_docker_pid(self, container_name: str) -> int | None:
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "inspect",
@@ -683,24 +690,14 @@ class SystemdModel(Model):
         )
         stdout, _ = await proc.communicate()
         if proc.returncode != 0:
-            return []
+            return None
         try:
-            container_pid = int(stdout.decode().strip())
+            pid = int(stdout.decode().strip())
         except ValueError:
-            return []
-        if container_pid == 0:
-            # Docker reports 0 when the container is not running
-            return []
-        pids = [container_pid]
-        try:
-            parent = psutil.Process(container_pid)
-            pids += [c.pid for c in parent.children(recursive=True)]
-        except psutil.NoSuchProcess:
-            pass
-        return pids
+            return None
+        return pid if pid != 0 else None
 
-    async def _pids_from_systemd_unit(self, unit: str) -> list[int]:
-        """Resolve PIDs from the systemd unit's MainPID."""
+    async def resolve_systemd_pid(self, unit: str) -> int | None:
         proc = await asyncio.create_subprocess_exec(
             "systemctl",
             "show",
@@ -711,26 +708,17 @@ class SystemdModel(Model):
         )
         stdout, _ = await proc.communicate()
         if proc.returncode != 0:
-            return []
-        # Output is "MainPID=1234\n"
+            return None
         value = stdout.decode().strip().removeprefix("MainPID=")
         try:
-            main_pid = int(value)
+            pid = int(value)
         except ValueError:
-            return []
-        if main_pid == 0:
-            # systemd reports 0 when the unit is not running
-            return []
-        pids = [main_pid]
-        try:
-            parent = psutil.Process(main_pid)
-            pids += [c.pid for c in parent.children(recursive=True)]
-        except psutil.NoSuchProcess:
-            pass
-        return pids
+            return None
+        return pid if pid != 0 else None
 
     @property
     def slug(self) -> str:
+        assert self.config.id is not None
         assert self.config.id is not None
         return slugify(self.config.id, 64)
 
