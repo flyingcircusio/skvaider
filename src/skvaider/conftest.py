@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import prometheus_client
 import pytest
+import structlog
 import svcs
 from argon2 import PasswordHasher
 from fastapi import FastAPI, Request
@@ -28,11 +29,17 @@ from skvaider.config import (
     ServerConfig,
     parse_size,
 )
-from skvaider.proxy.backends import DummyBackend, SkvaiderBackend
+from skvaider.proxy.backends import (
+    BackendHealthRequest,
+    DummyBackend,
+    SkvaiderBackend,
+)
 from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
 from skvaider.routers.openai import OpenAIProxy
 from skvaider.utils import TaskManager
+
+log = structlog.stdlib.get_logger()
 
 hasher = PasswordHasher()
 
@@ -179,13 +186,34 @@ async def test_lifespan(
 
     await wait_for_healthy_backends()
 
-    @wait_for_condition()
+    @wait_for_condition(timeout=300)
     async def wait_for_models_active() -> bool:
         # Wait for at least one instance of each model to be active
-        return all(
-            pool.count_loaded_instances(model_id)
+        loaded = {
+            model_id: pool.count_loaded_instances(model_id)
             for model_id in pool.model_configs.keys()
-        )
+        }
+        if not all(loaded.values()):
+            # Dump backend health for debugging flaky CI
+            try:
+                health = await backend.backend_api(BackendHealthRequest())
+                log.warning(
+                    "waiting for models",
+                    loaded=loaded,
+                    backend_models=[
+                        {"id": m.id, "status": list(m.status)}
+                        for m in health.models
+                    ],
+                    backend_serial=str(health.current_serial),
+                )
+            except Exception as e:
+                log.warning(
+                    "waiting for models, health check failed",
+                    loaded=loaded,
+                    error=str(e),
+                )
+            return False
+        return True
 
     await wait_for_models_active()
 
