@@ -97,8 +97,6 @@ class RAMMonitor(MemoryMonitor):
     async def update_model_usage(self) -> None:
         for model in self._manager.list_models():
             pids = await model.pids()
-            if not pids:
-                continue
             usage = 0
             for pid in pids:
                 try:

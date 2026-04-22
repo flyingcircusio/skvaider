@@ -70,12 +70,17 @@ class SystemdModelConfig(ModelConfig):
     engine: Literal["systemd"] = "systemd"
     unit: str
     max_requests: int = 16
-    # If the systemd unit runs a Docker container, specify the container name here.
-    # When set, PIDs are resolved via `docker inspect` instead of MainPID.
-    docker_container: str | None = None
+
+
+class SystemdDockerModelConfig(SystemdModelConfig):
+    engine: Literal["systemd-docker"] = "systemd-docker"  # type: ignore[assignment]
+    docker_container: str
 
 
 AnyModelConfig = Annotated[
-    LlamaServerModelConfig | VllmModelConfig | SystemdModelConfig,
+    LlamaServerModelConfig
+    | VllmModelConfig
+    | SystemdModelConfig
+    | SystemdDockerModelConfig,
     Field(discriminator="engine"),
 ]
