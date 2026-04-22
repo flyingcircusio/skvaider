@@ -313,22 +313,13 @@ class OpenAIProxy:
                     endpoint,
                     request_data,
                 )
-
-            request_id = request.state.request_id
-            if isinstance(result, StreamingResponse):
-                result.headers["X-Skvaider-Request-ID"] = request_id
-            else:
-                result = JSONResponse(
-                    content=result,
-                    headers={"X-Skvaider-Request-ID": request_id},
-                )
+            if not isinstance(result, StreamingResponse):
+                result = JSONResponse(content=result)
             return result
         except HTTPException as e:
             status = "error"
             raise HTTPException(
-                status_code=e.status_code,
-                detail=e.detail,
-                headers={"X-Skvaider-Request-ID": request.state.request_id},
+                status_code=e.status_code, detail=e.detail
             ) from e
         except Exception:
             status = "error"

@@ -4,6 +4,7 @@ import itertools
 import json
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Generator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -323,10 +324,10 @@ async def auth_header(
 
 
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
+def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     config = Config(
         auth=AuthConfig(admin_tokens=["asdf"]),
-        server=ServerConfig(),
+        server=ServerConfig(directory=tmp_path),
         backend=[],
         models=[],
         logging=LoggingConfig(),
@@ -340,6 +341,11 @@ def cleanup_prometheus_metrics():
     for m in metrics.__dict__.values():
         if isinstance(m, prometheus_client.metrics.MetricWrapperBase):
             m.clear()
+
+
+@pytest.fixture(autouse=True)
+def cleanup_auth_cache():
+    skvaider.auth.cache.cache.clear()
 
 
 @pytest.fixture
