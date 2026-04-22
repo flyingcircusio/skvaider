@@ -26,7 +26,7 @@ from skvaider.inference.config import (
     LlamaServerModelConfig,
     ModelConfig,
     SystemdDockerModelConfig,
-    SystemdModelConfig,
+    SystemdModelConfigBase,
     VllmModelConfig,
 )
 from skvaider.utils import TaskManager, slugify
@@ -668,7 +668,7 @@ class SystemdModel(Model):
     # This one will probably move to be a integrated docker runner ?
     _engine = "systemd"
 
-    def __init__(self, config: SystemdModelConfig):
+    def __init__(self, config: SystemdModelConfigBase):
         super().__init__(config)
         self._config = config
 
