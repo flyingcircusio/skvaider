@@ -66,14 +66,17 @@ class VllmModelConfig(ModelConfig):
     context_size: int
 
 
-class SystemdModelConfig(ModelConfig):
-    engine: Literal["systemd"] = "systemd"
+class SystemdModelConfigBase(ModelConfig):
     unit: str
     max_requests: int = 16
 
 
-class SystemdDockerModelConfig(SystemdModelConfig):
-    engine: Literal["systemd-docker"] = "systemd-docker"  # type: ignore[assignment]
+class SystemdModelConfig(SystemdModelConfigBase):
+    engine: Literal["systemd"] = "systemd"
+
+
+class SystemdDockerModelConfig(SystemdModelConfigBase):
+    engine: Literal["systemd-docker"] = "systemd-docker"
     docker_container: str
 
 
