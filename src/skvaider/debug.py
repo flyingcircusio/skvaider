@@ -183,6 +183,14 @@ class DebugRecorder:
         path.write_text(_format_response(data))
 
     async def record(self) -> None:
+        if 400 <= self.status_code < 500:
+            # Never ever trigger debug recording for client-side issues
+            # except to avoid DoSing through unauthenticated requests or
+            # 404s or ...
+            self.enabled = False
+            self.triggers = []
+            return
+
         try:
             self.request_body_json = json.loads(
                 self.captured_request_body.decode("utf-8")
@@ -206,7 +214,7 @@ class DebugRecorder:
             time.time() - self.time_start > self.slow_threshold
         ):
             self.triggers.append("slow")
-        if self.status_code >= 400:
+        if self.status_code >= 500:
             self.triggers.append("error")
 
         if not self.triggers:

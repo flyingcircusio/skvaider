@@ -64,7 +64,7 @@ class Config(BaseModel):
 class ServerConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
-    directory: Path = Path(".")
+    directory: Path
 
 
 class AuthConfig(BaseModel):

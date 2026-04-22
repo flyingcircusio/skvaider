@@ -6,6 +6,7 @@ from typing import Any
 import shortuuid
 import structlog
 from fastapi import Request
+from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from skvaider.config import LoggingConfig
@@ -36,6 +37,8 @@ class LoggingMiddleware:
     ):
         if message["type"] == "http.response.start":
             request.state.status_code = message["status"]
+            headers = MutableHeaders(scope=message)
+            headers["x-skvaider-request-id"] = request.state.request_id
         await send(message)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
