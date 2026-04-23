@@ -147,6 +147,12 @@ class ReplicationManager:
 
     """
 
+    # TODO This could be improved using a more dynamic timeout that
+    # resets whenever we make progress to support longer catchups.
+    #
+    # seconds to wait for catchup steps before re-requesting
+    CATCHUP_TIMEOUT: float = 60
+
     catchup_running: bool = False
     tasks: set[asyncio.Task[Any]]
 
@@ -217,16 +223,19 @@ class ReplicationManager:
 
     async def process_update_message(self, msg: dict[str, Any]) -> None:
         log.debug("collection-process-update-message", id=msg.get("@id"))
-        await self.update_buffer.put(msg["version"], msg)
+        self.update_buffer.put(msg["version"], msg)
 
     async def process_update_buffer(self) -> None:
         while True:
             update_version, msg = await self.update_buffer.get()
-            assert msg["record_id"]  # defensive against peers breaking protocol
+            # XXX consider switching to pydantic models here
+            if not msg.get("record_id"):
+                # defensive against peers breaking protocol
+                continue
             log.debug(
                 "collection-process-update-message",
                 id=msg.get("@id"),
-                parition=msg["partition"],
+                partition=msg["partition"],
                 version=update_version,
             )
             async with (
@@ -261,7 +270,7 @@ class ReplicationManager:
 
                 if update_version > current_version + 1:
                     # This message is too new, keep it in the buffer and wait for another one
-                    await self.update_buffer.put_back(update_version, msg)
+                    self.update_buffer.put_back(update_version, msg)
                     continue
 
                 assert update_version == current_version + 1
@@ -403,7 +412,18 @@ class ReplicationManager:
                     )
 
             # Let the sync continue
-            await self.catchup_finished.wait()
+            try:
+                await asyncio.wait_for(
+                    self.catchup_finished.wait(), timeout=self.CATCHUP_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                log.error(
+                    "collection-catchup-timeout",
+                    partition=partition,
+                    start_version=start_version,
+                )
+                utils.create_task(self.request_catchup())
+                return
 
             if is_full_sync:
                 log.debug("collection-full-sync", status="finished")
@@ -416,7 +436,7 @@ class ReplicationManager:
                     )
 
     async def process_catchup_step_message(self, msg: dict[str, Any]) -> None:
-        await self.catchup_buffer.put(msg["from_version"], msg)
+        self.catchup_buffer.put(msg["from_version"], msg)
 
     async def process_catchup_step_buffer(self) -> None:
         while True:
@@ -441,7 +461,7 @@ class ReplicationManager:
                     continue
                 if msg["from_version"] > current_version:
                     # This message is too new, keep it in the buffer and wait for another one
-                    await self.catchup_buffer.put_back(from_version, msg)
+                    self.catchup_buffer.put_back(from_version, msg)
                     continue
 
                 record = await db_session.get(
@@ -486,35 +506,51 @@ class PriorityPushbackQueue:
     It also supports non-hashable objects.
 
     Putting an item back means we do not pass it out to waiters
-    until at least one another item has been put in.
+    until at least one another item with a lower priority
+    has been put in.
 
     """
 
     metric_put_back: int = 0
     items: dict[int, list[Any]]
     queue: asyncio.PriorityQueue[int]
+    last_put_back: int | None = None
 
     def __init__(self) -> None:
         self.items = {}
         self.queue = asyncio.PriorityQueue()
         self.new_item = asyncio.Event()
 
-    async def put(self, priority: int, item: Any) -> None:
+    def put(self, priority: int, item: Any) -> None:
         self.items.setdefault(priority, []).append(item)
-        await self.queue.put(priority)
+        self.queue.put_nowait(priority)
+        # Only signal new items if we haven't put anything back
+        # or got a higher priority since the last putback
+        if self.last_put_back and priority >= self.last_put_back:
+            return
+        self.last_put_back = None
         self.new_item.set()
 
-    async def put_back(self, priority: int, item: Any) -> None:
+    def put_back(self, priority: int, item: Any) -> None:
         self.metric_put_back += 1
         self.items.setdefault(priority, []).append(item)
-        self.new_item.clear()
-        await self.queue.put(priority)
+        if self.queue.empty() or self.queue._queue[0] >= priority:  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+            # If other items can in they must be of higher priority
+            # to allow immediately passing through without waiting
+            # for new items. There is a bit of further optimization
+            # possible if we'd keep track of the last priority that was
+            # put back and then not setting
+            self.new_item.clear()
+            self.last_put_back = priority
+        self.queue.put_nowait(priority)
         # The client should not mark this as "task done", we do that for it.
         self.queue.task_done()
 
     async def get(self) -> tuple[int, Any]:
         await self.new_item.wait()
-        priority = await self.queue.get()
+        priority = self.queue.get_nowait()
+        if self.queue.empty():
+            self.new_item.clear()
         return priority, self.items[priority].pop(0)
 
     async def join(self) -> None:
