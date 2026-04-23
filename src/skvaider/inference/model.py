@@ -18,18 +18,42 @@ from typing import (
 
 import anyio
 import httpx
+import psutil
 import structlog
 
 from skvaider.inference import metrics
 from skvaider.inference.config import (
     LlamaServerModelConfig,
     ModelConfig,
-    SystemdModelConfig,
+    SystemdDockerModelConfig,
+    SystemdModelConfigBase,
     VllmModelConfig,
 )
 from skvaider.utils import TaskManager, slugify
 
 log = structlog.get_logger()
+
+
+def walk_process_tree(root_pid: int) -> set[int]:
+    pids = {root_pid}
+    try:
+        parent = psutil.Process(root_pid)
+        pids.update(c.pid for c in parent.children(recursive=True))
+    except psutil.NoSuchProcess:
+        pass
+    return pids
+
+
+async def run_command_stdout(*cmd: str) -> bytes | None:
+    """Run a command, return stdout bytes on success or None on failure."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await proc.communicate()
+    return stdout if proc.returncode == 0 else None
+
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -119,6 +143,15 @@ class Model(ABC):
     async def download(self) -> None: ...
 
     async def start(self) -> None: ...
+
+    async def pids(self) -> set[int]:
+        """Return all PIDs belonging to this model's process tree.
+
+        Override in subclasses that don't own a subprocess directly (e.g. SystemdModel).
+        """
+        if not self.process:
+            return set()
+        return walk_process_tree(self.process.pid)
 
     # Shared implementation:
 
@@ -632,11 +665,32 @@ class VllmModel(Model):
 
 
 class SystemdModel(Model):
+    # This one will probably move to be a integrated docker runner ?
     _engine = "systemd"
 
-    def __init__(self, config: SystemdModelConfig):
+    def __init__(self, config: SystemdModelConfigBase):
         super().__init__(config)
         self._config = config
+
+    async def pids(self) -> set[int]:
+        pids: set[int] = set()
+        systemd_pid = await self.resolve_systemd_pid(self._config.unit)
+        if systemd_pid:
+            pids.update(walk_process_tree(systemd_pid))
+        return pids
+
+    async def resolve_systemd_pid(self, unit: str) -> int | None:
+        stdout = await run_command_stdout(
+            "systemctl", "show", "--property=MainPID", unit
+        )
+        if stdout is None:
+            return None
+        value = stdout.decode().strip().removeprefix("MainPID=")
+        try:
+            pid = int(value)
+        except ValueError:
+            return None
+        return pid if pid != 0 else None
 
     @property
     def slug(self) -> str:
@@ -699,3 +753,35 @@ class SystemdModel(Model):
 
     async def download(self) -> None:
         pass
+
+
+class SystemdDockerModel(SystemdModel):
+    _engine = "systemd-docker"
+
+    def __init__(self, config: SystemdDockerModelConfig):
+        super().__init__(config)
+        self._config = config
+
+    async def pids(self) -> set[int]:
+        pids: set[int] = set()
+        systemd_pid = await self.resolve_systemd_pid(self._config.unit)
+        if systemd_pid:
+            pids.update(walk_process_tree(systemd_pid))
+        docker_pid = await self.resolve_docker_pid(
+            self._config.docker_container
+        )
+        if docker_pid:
+            pids.update(walk_process_tree(docker_pid))
+        return pids
+
+    async def resolve_docker_pid(self, container_name: str) -> int | None:
+        stdout = await run_command_stdout(
+            "docker", "inspect", "--format={{.State.Pid}}", container_name
+        )
+        if stdout is None:
+            return None
+        try:
+            pid = int(stdout.decode().strip())
+        except ValueError:
+            return None
+        return pid if pid != 0 else None
