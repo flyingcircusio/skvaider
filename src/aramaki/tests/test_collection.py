@@ -111,26 +111,37 @@ async def test_null_record(tmp_path: Path):
 
 async def test_pushback_queue():
     queue = aramaki.collection.PriorityPushbackQueue()
-    await queue.put(3, "3")
-    await queue.put(1, "1")
-    await queue.put(2, "2")
+    queue.put(3, "3")
+    queue.put(1, "1")
+    queue.put(2, "2")
     assert await queue.get() == (1, "1")
     assert await queue.get() == (2, "2")
     assert await queue.get() == (3, "3")
 
-    await queue.put(3, "3")
-    await queue.put(2, "2")
+    queue.put(3, "3")
+    queue.put(2, "2")
     assert await queue.get() == (2, "2")
-    await queue.put_back(2, "2")
+    queue.put_back(2, "2")
 
     task = asyncio.create_task(queue.get())
     await asyncio.sleep(0.1)
     assert not task.done()
-    await queue.put(1, "1")
+    queue.put(1, "1")
     await task
     assert task.result() == (1, "1")
     assert await queue.get() == (2, "2")
     assert await queue.get() == (3, "3")
+
+
+async def test_pushback_queue_race_condition():
+    queue = aramaki.collection.PriorityPushbackQueue()
+    queue.put(2, "item 2")
+    p, _ = await queue.get()
+    assert p == 2
+    queue.put(1, "item 1")
+    queue.put_back(2, "item 2")
+    p, _ = await asyncio.wait_for(queue.get(), timeout=10.0)
+    assert p == 1
 
 
 class AramakiDummy:
@@ -432,6 +443,64 @@ async def test_replication_catchup_sync(tmp_path: Path):
 
         assert await collection.get("1") is None
         assert await collection.get("2") == {"key": "value-10"}
+
+
+async def test_catchup_timeout_releases_lock_and_rerequests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """If the server never sends is_final_record, the lock must not be held forever."""
+    db = aramaki.db.DBSessionManager(tmp_path)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
+    )
+
+    manager.CATCHUP_TIMEOUT = 0.05
+
+    async with manager.get_collection_with_session():
+        await aramaki_manager.message_received.wait()
+        aramaki_manager.message_received.clear()
+        aramaki_manager.message = None
+
+        # Start catchup — server never sends is_final_record, catchup_finished never set
+        catchup_task = asyncio.create_task(
+            manager.process_start_catchup_message(
+                {"start_version": 6, "partition": "partition-1"}
+            )
+        )
+
+        # Timeout fires, re-requests catchup, releases update_lock
+        await asyncio.wait_for(
+            aramaki_manager.message_received.wait(), timeout=2
+        )
+
+        assert catchup_task.done()
+        assert aramaki_manager.message is not None
+        assert (
+            aramaki_manager.message[0][0]
+            == "directory.collection.catchup.request"
+        )
+
+        # update_lock must be released — update_buffer can drain without deadlocking
+        await manager.process_update_message(
+            {
+                "record_id": "1",
+                "partition": "partition-1",
+                "version": 1,
+                "change": "update",
+                "data": {"key": "value"},
+            }
+        )
+        # The update triggers another catchup (unknown partition), but the point
+        # is that update_buffer.join() completes — the lock is no longer held.
+        await asyncio.wait_for(manager.update_buffer.join(), timeout=1)
+
+    manager.stop()
 
 
 async def test_full_sync_deletes_superfluous_records_at_end(
