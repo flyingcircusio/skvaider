@@ -52,6 +52,9 @@ line_length = 80
 [tool.coverage.run]
 concurrency = ["thread", "greenlet"]
 
+[tool.uv]
+exclude-newer = "7 days"
+
 [tool.uv.build-backend]
 module-name = ["aramaki", "skvaider"]
 
