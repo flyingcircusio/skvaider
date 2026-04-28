@@ -37,6 +37,7 @@ class ModelConfig(BaseModel):
 
     id: str
     task: Literal["chat", "embedding"]
+    supports_tools: bool = False
     max_requests: int
     port: int
 
