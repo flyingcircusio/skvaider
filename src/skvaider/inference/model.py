@@ -1,11 +1,13 @@
 import asyncio
 import functools
 import hashlib
+import json
 import os
 import shutil
 import time
 from abc import ABC
 from collections.abc import Callable, Coroutine
+from json import JSONDecodeError
 from pathlib import Path
 from typing import (
     Any,
@@ -18,8 +20,15 @@ from typing import (
 
 import anyio
 import httpx
+import openai
 import psutil
 import structlog
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionToolParam,
+    ChatCompletionUserMessageParam,
+)
+from openai.types.shared_params import FunctionDefinition
 
 from skvaider.inference import metrics
 from skvaider.inference.config import (
@@ -161,11 +170,6 @@ class Model(ABC):
         self.status_changed = asyncio.Event()
         self._tasks = TaskManager()
 
-        if self.is_embedding():
-            self._check_health = self._check_embedding_health
-        else:
-            self._check_health = self._check_completion_health
-
     def is_embedding(self) -> bool:
         return self.config.task == "embedding"
 
@@ -200,7 +204,19 @@ class Model(ABC):
 
         return result
 
-    async def _check_health(self) -> dict[str, str]: ...
+    async def _check_health(self) -> dict[str, str]:
+        if self.is_embedding():
+            checks = [self._check_embedding_health]
+        else:
+            checks = [self._check_completion_health]
+            if self.config.supports_tools:
+                checks.append(self._check_completion_streaming_tool_call_health)
+
+        result: dict[str, str] = {}
+        for check in checks:
+            result.update(await check())
+
+        return result
 
     async def _monitor_health(self) -> None:
         """Periodically check if the model is responsive."""
@@ -332,6 +348,83 @@ class Model(ABC):
                 if resp.status_code == 200
                 else f"HTTP {resp.status_code}"
             }
+
+    async def _check_completion_streaming_tool_call_health(
+        self,
+    ) -> dict[str, str]:
+        result = {"completion_tool_call": ""}
+        tools: list[ChatCompletionToolParam] = [
+            ChatCompletionToolParam(
+                type="function",
+                function=FunctionDefinition(
+                    name="get_weather",
+                    strict=True,
+                    description="Get the current weather for a location.",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "location": {
+                                "type": "string",
+                                "description": "City and country, e.g. 'Berlin, Germany'",
+                            },
+                            "unit": {
+                                "type": "string",
+                                "enum": ["celsius", "fahrenheit"],
+                                "description": "Temperature unit",
+                            },
+                        },
+                        "required": ["location"],
+                    },
+                ),
+            )
+        ]
+        messages: list[ChatCompletionMessageParam] = [
+            ChatCompletionUserMessageParam(
+                role="user",
+                content="What's the weather like in Hamburg right now?",
+            )
+        ]
+        try:
+            client = openai.AsyncOpenAI(base_url=self.endpoint, api_key="")
+            s = client.chat.completions.stream(
+                model=self.config.id,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
+            async with s as stream:
+                async for _ in stream:
+                    pass
+                final = await stream.get_final_completion()
+        except openai.APIConnectionError as e:
+            result["completion_tool_call"] = f"Error connecting: {e}"
+            return result
+
+        choice = final.choices[0]
+        if not choice.message.tool_calls:
+            result["completion_tool_call"] = "No tool calls found"
+            return result
+
+        for i, call in enumerate(choice.message.tool_calls):
+            if not call.id:
+                result["completion_tool_call"] = (
+                    f"Missing tool call ID in tool call #{i}: {call.id!r}"
+                )
+                break
+            if call.function.name is None:  # pyright: ignore[reportUnnecessaryComparison]
+                result["completion_tool_call"] = (
+                    f"Missing tool function name in tool call #{i}: {call.function.name!r}"
+                )
+                break
+            try:
+                json.loads(call.function.arguments)
+            except JSONDecodeError:
+                result["completion_tool_call"] = (
+                    f"Invalid argument JSON in tool call #{i}: {call.function.arguments!r}"
+                )
+                break
+
+        return result
 
     async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""

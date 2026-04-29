@@ -1,4 +1,9 @@
 import asyncio
+from typing import Any
+from unittest.mock import AsyncMock, Mock
+
+import openai
+import pytest
 
 from skvaider.conftest import wait_for_condition
 from skvaider.inference.config import ModelConfig
@@ -113,7 +118,7 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
 async def test_health_check_completions(openai_server: OpenAIServerMock):
     model = Model(
         ModelConfig(
-            id="test-embed",
+            id="test-chat",
             port=openai_server.port,
             max_requests=10,
             task="chat",
@@ -130,3 +135,90 @@ async def test_health_check_completions(openai_server: OpenAIServerMock):
     openai_server.response_status = 500
     assert any((await model._check_completion_health()).values())
     assert openai_server.last_request_json["prompt"] == "2+2="
+
+
+async def test_health_check_streaming_tool_call_check_live(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    model = Model(
+        ModelConfig(
+            id="test-chat",
+            port=8100,
+            max_requests=10,
+            task="chat",
+        )
+    )
+    model.endpoint = "http://localhost:8100"
+    assert not any(
+        (await model._check_completion_streaming_tool_call_health()).values()
+    )
+
+    # offline endpoint
+    model.endpoint = "http://localhost:9000"
+    assert {
+        "completion_tool_call": "Error connecting: Connection error."
+    } == await model._check_completion_streaming_tool_call_health()
+
+
+async def test_health_check_streaming_tool_call_check_mocked(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    model = Model(
+        ModelConfig(
+            id="test-chat",
+            port=8100,
+            max_requests=10,
+            task="chat",
+        )
+    )
+    model.endpoint = "http://localhost:9999"
+
+    # mock openai
+    openai_mock = Mock()
+    openai_mock.return_value = client = AsyncMock()
+    monkeypatch.setattr(openai, "AsyncOpenAI", openai_mock)
+
+    class AsyncCmMock:
+        def __init__(self, mock: Any):
+            self.mock = mock
+
+        async def __aenter__(self):
+            return self.mock
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any):
+            pass
+
+    stream = AsyncMock()
+    client.chat.completions.stream = Mock(return_value=AsyncCmMock(stream))
+    stream.get_final_completion.return_value = final = Mock()
+    stream.__aiter__.return_value = [1, 2, 3]
+    choice = Mock()
+    choice.message.tool_calls = []
+    final.choices = [choice]
+    # no tool calls returned
+    assert {
+        "completion_tool_call": "No tool calls found",
+    } == await model._check_completion_streaming_tool_call_health()
+
+    # tool call without id returned
+    call = Mock()
+    call.id = None
+    choice.message.tool_calls = [call]
+    assert {
+        "completion_tool_call": "Missing tool call ID in tool call #0: None",
+    } == await model._check_completion_streaming_tool_call_health()
+
+    # no function name
+    call.id = "1234"
+    call.function.name = None
+    assert {
+        "completion_tool_call": "Missing tool function name in tool call #0: None",
+    } == await model._check_completion_streaming_tool_call_health()
+
+    # incorrect json args
+    call.id = "1234"
+    call.function.name = "Asdf"
+    call.function.arguments = r'{"object": 123'
+    assert {
+        "completion_tool_call": "Invalid argument JSON in tool call #0: '{\"object\": 123'",
+    } == await model._check_completion_streaming_tool_call_health()
