@@ -27,10 +27,11 @@ from skvaider.utils import TaskManager
 from .config import (
     LlamaServerModelConfig,
     ModelConfig,
+    SystemdDockerModelConfig,
     SystemdModelConfig,
     VllmModelConfig,
 )
-from .model import LlamaModel, SystemdModel, VllmModel
+from .model import LlamaModel, SystemdDockerModel, SystemdModel, VllmModel
 
 log = structlog.stdlib.get_logger()
 
@@ -95,6 +96,8 @@ async def lifespan(
             model = LlamaModel(model_config)
         elif isinstance(model_config, VllmModelConfig):
             model = VllmModel(model_config)
+        elif isinstance(model_config, SystemdDockerModelConfig):
+            model = SystemdDockerModel(model_config)
         elif isinstance(model_config, SystemdModelConfig):  # pyright: ignore[reportUnnecessaryIsInstance]
             model = SystemdModel(model_config)
         else:
