@@ -33,6 +33,39 @@ You can also activate the development environment with devenv shell:
 $ devenv shell
 ```
 
+### CPU-only vLLM on a devhost VM
+
+The `dev` batou environment provisions a devhost VM and deploys a local
+CPU-only vLLM setup. This is the closest equivalent to an editable `fc.qemu`
+workflow: batou copies this checkout into the VM's service user, writes the
+NixOS config, and triggers the platform rebuild.
+
+Create or update the VM and deploy skvaider from the batou deployment directory:
+
+```bash
+cd devhost
+./batou deploy dev
+```
+
+To rebuild the VM from scratch:
+
+```bash
+cd devhost
+./batou deploy dev --provision-rebuild
+```
+
+After deployment, batou writes `devhost/ssh_config_dev`. Check the local gateway through
+the provisioned VM:
+
+```bash
+ssh -F devhost/ssh_config_dev skvaider \
+  "curl -sf -H 'Authorization: Bearer developer' http://127.0.0.1:23211/openai/v1/models"
+```
+
+The served test model is `tiny-gpt2`; inference is forced through vLLM with
+`--device cpu`, so the workflow works without GPU hardware. The provisioning
+target and VM resources live in `devhost/environments/dev/environment.cfg`.
+
 ## Testing
 
 ```bash

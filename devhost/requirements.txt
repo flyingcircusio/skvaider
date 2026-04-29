@@ -1,0 +1,5 @@
+# appenv-python-preference: 3.12
+batou @ git+https://github.com/flyingcircusio/batou@e47553983b6d52a5dab9833950d08ae039176e3e
+batou_ext @ https://github.com/flyingcircusio/batou_ext/archive/710595f71c395fe8d31d3949f96a09baa9dfec65.zip#sha256=77a50f9f2a93d1f240c02213b2dbf79dbc462626e16a8ac3c8dd385189c75fe1
+
+setuptools<81

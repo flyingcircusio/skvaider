@@ -21,6 +21,16 @@ result
 .coverage*
 htmlcov
 var/
+devhost/.batou-lock
+devhost/insecure-private.key
+devhost/ssh_config_*
+devhost/environments/*/hostmap.json
+devhost/.appenv/
+devhost/appenv
+devhost/.appenv
+.appenv
+insecure-private.key
+ssh_config_*
 
 # Devenv
 .devenv*

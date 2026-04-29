@@ -1,0 +1,24 @@
+# appenv-requirements-hash: 4c3fbc3d763199c164a162f2c600731a6370362cd562d8b078fa58ffd078653f
+ConfigUpdater==3.2
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+PyYAML==6.0.3
+batou @ git+https://github.com/flyingcircusio/batou@e47553983b6d52a5dab9833950d08ae039176e3e
+
+batou_ext @ https://github.com/flyingcircusio/batou_ext/archive/710595f71c395fe8d31d3949f96a09baa9dfec65.zip#sha256=77a50f9f2a93d1f240c02213b2dbf79dbc462626e16a8ac3c8dd385189c75fe1
+
+certifi==2026.4.22
+charset-normalizer==3.4.7
+execnet==2.1.2
+idna==3.13
+inquirerpy==0.3.4
+pfzy==0.3.4
+prompt_toolkit==3.0.52
+py==1.11.0
+pyaml==26.2.1
+remote-pdb==2.1.0
+requests==2.33.1
+setuptools==80.10.2
+six==1.17.0
+urllib3==2.6.3
+wcwidth==0.6.0
