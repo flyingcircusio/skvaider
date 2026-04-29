@@ -36,7 +36,10 @@ repos:
       - id: ruff-format
     repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.14
-  - repo: https://github.com/DetachHead/basedpyright-pre-commit-mirror
-    rev: 1.37.1 # or whatever the latest version is at the time
+  - repo: local
     hooks:
       - id: basedpyright
+        name: basedpyright
+        entry: uv run --group dev --with basedpyright basedpyright
+        language: system
+        pass_filenames: false

@@ -1,6 +1,6 @@
 import contextlib
 from pathlib import Path
-from typing import Any, AsyncIterator, Self
+from typing import Any, AsyncGenerator, Self
 
 import structlog.stdlib
 from alembic import command
@@ -66,7 +66,7 @@ class DBSessionManager:
         self._sessionmaker = None
 
     @contextlib.asynccontextmanager
-    async def session(self) -> AsyncIterator[AsyncSession]:
+    async def session(self) -> AsyncGenerator[AsyncSession]:
         if self._sessionmaker is None:
             raise SessionManagerClosed()
 

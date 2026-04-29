@@ -58,8 +58,8 @@ module-name = ["aramaki", "skvaider"]
 [tool.basedpyright]
 typeCheckingMode = "strict"
 venvPath = "."
-venv = ".devenv/state/venv"
-exclude = ["doc/**", "devhost/**"]
+venv = ".venv"
+exclude = [".venv/**", "doc/**", "devhost/**"]
 
 [[tool.basedpyright.executionEnvironments]]
 root = "src/skvaider/inference/tests"
