@@ -109,6 +109,10 @@ Pydantic models in `config.py` files. Key patterns:
 - prefer to create pytest fixtures for reusable code
 - fix warnings if possible - if not, make a list of warnings that are still there
 
+## Linting
+
+- run `pre-commit run -a` to check linting, types, etc.
+
 ## Code Style
 
 - "-> None"  is not needed on `__init__` methods
