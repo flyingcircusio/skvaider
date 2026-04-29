@@ -1,28 +1,5 @@
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 let
-  skvaiderSrc = builtins.path {
-    path = /srv/s-dev/deployment;
-    name = "skvaider-src";
-    filter =
-      path: _type:
-      !(builtins.elem (baseNameOf path) [
-        ".appenv"
-        ".venv"
-        "devhost"
-        "insecure-private.key"
-      ]);
-  };
-  skvaider = pkgs.callPackage skvaiderSrc {
-    src = skvaiderSrc;
-  };
-
-  nixpkgs-unstable = import (builtins.fetchTarball {
-    url = "https://github.com/NixOS/nixpkgs/archive/0182a361324364ae3f436a63005877674cf45efb.tar.gz";
-    sha256 = "1i04bclcxsqhk172wvj74fcgk2sd7037mi9bgxp7jdx42886bl6h";
-  }) { };
-
-  vllm-cpu = nixpkgs-unstable.vllm;
-
   tiny-gpt2 =
     let
       fetch =
@@ -40,17 +17,19 @@ let
       cp ${fetch "merges.txt" "1idd4rvkpqqbks51i2vjbd928inw7slij9l4r063w3y5fd3ndq8w"} $out/merges.txt
       cp ${fetch "pytorch_model.bin" "1rh4bk5fqjy74k5r1dwmm6ax40fj0djapmfycpkxyaq36i0b41mp"} $out/pytorch_model.bin
     '';
+in
+{
+  flyingcircus.roles.ai-model-server.enable = true;
+  flyingcircus.roles.ai-model-server.enableRocm = false;
+  flyingcircus.roles.ai-model-server.skvaider-inference.hf_token = "";
+  flyingcircus.roles.ai-model-server.skvaider-inference.enable = true;
 
-  configFile = (pkgs.formats.toml { }).generate "skvaider-inference.toml" {
+  systemd.services.skvaider-inference.path = lib.mkAfter [ pkgs.vllm ];
+
+  flyingcircus.roles.ai-model-server.skvaider-inference.settings = {
     models_dir = "/var/lib/skvaider/model";
-    server = {
-      host = "0.0.0.0";
-      port = 8000;
-    };
-    logging = {
-      log_level = "DEBUG";
-      log_dir = "/var/log/skvaider";
-    };
+    server.host = "0.0.0.0";
+    server.port = 8000;
     openai.models = [
       {
         id = "tiny-gpt2";
@@ -68,40 +47,6 @@ let
       }
     ];
   };
-in
-{
-  users.users.skvaider = {
-    description = "Skvaider user";
-    group = "service";
-    isSystemUser = true;
-  };
-
-  systemd.tmpfiles.rules = [
-    "d /var/lib/skvaider 0755 skvaider service -"
-    "d /var/lib/skvaider/model 0755 skvaider service -"
-    "d /var/log/skvaider 0755 skvaider service -"
-  ];
 
   networking.firewall.allowedTCPPorts = [ 8000 ];
-
-  systemd.services.skvaider-inference = {
-    description = "Skvaider dev inference";
-    wantedBy = [ "multi-user.target" ];
-    after = [ "network-online.target" ];
-    requires = [ "network-online.target" ];
-    path = [ vllm-cpu ];
-    environment = {
-      HF_HUB_DISABLE_PROGRESS_BARS = "1";
-      HF_TOKEN = "";
-      HOME = "/var/lib/skvaider/model";
-    };
-    serviceConfig = {
-      User = "skvaider";
-      Group = "service";
-      StateDirectory = "skvaider";
-      StateDirectoryMode = "0755";
-      Restart = "on-failure";
-      ExecStart = "${skvaider}/bin/skvaider-inference -c ${configFile}";
-    };
-  };
 }

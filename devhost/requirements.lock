@@ -1,4 +1,4 @@
-# appenv-requirements-hash: 4c3fbc3d763199c164a162f2c600731a6370362cd562d8b078fa58ffd078653f
+# appenv-requirements-hash: 19acd892435e628ad82a5e6a76e351af6a965a4066fa52121bda208de6652b7d
 ConfigUpdater==3.2
 Jinja2==3.1.6
 MarkupSafe==3.0.3

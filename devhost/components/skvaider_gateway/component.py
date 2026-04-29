@@ -9,6 +9,7 @@ class SkvaiderGateway(Component):
     inference_url = Attribute(str, default="")
 
     def configure(self):
+        self.require_one("skvaider-settings", host=self.host)
         inference = self.require_one("skvaider-inference")
         if not self.inference_url:
             self.inference_url = f"http://{inference.host.name}:8000"
