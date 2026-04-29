@@ -243,6 +243,7 @@ class Model(ABC):
                     log.info(
                         "checking endpoint",
                         endpoint=f"{expected_endpoint}/health",
+                        model=self.config.id,
                     )
                     resp = await client.get(f"{expected_endpoint}/health")
                     if resp.status_code == 200:
