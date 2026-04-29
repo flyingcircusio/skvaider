@@ -1,5 +1,14 @@
 { pkgs, lib, ... }:
 let
+  nixpkgs-unstable = import (pkgs.fetchFromGitHub {
+    owner = "NixOS";
+    repo = "nixpkgs";
+    rev = "0182a361324364ae3f436a63005877674cf45efb";
+    hash = "sha256-0NBlEBKkN3lufyvFegY4TYv5mCNHbi5OmBDrzihbBMQ=";
+  }) { };
+
+  vllm-cpu = nixpkgs-unstable.vllm;
+
   tiny-gpt2 =
     let
       fetch =
@@ -24,7 +33,7 @@ in
   flyingcircus.roles.ai-model-server.skvaider-inference.hf_token = "";
   flyingcircus.roles.ai-model-server.skvaider-inference.enable = true;
 
-  systemd.services.skvaider-inference.path = lib.mkAfter [ pkgs.vllm ];
+  systemd.services.skvaider-inference.path = lib.mkAfter [ vllm-cpu ];
 
   flyingcircus.roles.ai-model-server.skvaider-inference.settings = {
     models_dir = "/var/lib/skvaider/model";
