@@ -144,6 +144,30 @@ async def test_pushback_queue_race_condition():
     assert p == 1
 
 
+async def test_pushback_queue_put_high_priority_after_put_back():
+    queue = aramaki.collection.PriorityPushbackQueue()
+
+    queue.put(5, "item-5")
+    await queue.get()
+
+    queue.put_back(5, "item-5")
+    assert not queue.new_item.is_set()
+
+    # Same-or-lower priority (higher number) after put_back: new_item stays clear
+    queue.put(7, "item-7")
+    assert not queue.new_item.is_set()
+
+    # Higher priority (lower number) clears last_put_back and wakes up waiters
+    queue.put(3, "item-3")
+    assert queue.new_item.is_set()
+
+    assert await queue.get() == (3, "item-3")
+    assert await queue.get() == (5, "item-5")
+    assert await queue.get() == (7, "item-7")
+
+    assert not queue.new_item.is_set()
+
+
 class AramakiDummy:
     principal = "host1"
     application = "test"
@@ -312,6 +336,85 @@ async def test_replication(tmp_path: Path):
     manager.stop()
 
 
+async def test_full_sync_race_step_blocked_during_marking(
+    tmp_path: Path,
+):
+    """
+    Regression for the intermittent race described in the original failure log:
+
+        collection-process-catchup-step-buffer from_version=0 to_version=1   ← step committed first
+        collection-full-sync           status=start                          ← then marking tried UPDATE SET version=NULL
+        NOT NULL constraint failed: collection_record.version
+
+    Reproduced deterministically: pre-insert a record so that
+    process_start_catchup_message's UPDATE SET version=NULL immediately hits
+    NOT NULL constraint on unfixed code (version: Mapped[int]).  With the fix
+    (version: Mapped[int | None] and catchup_lock protecting both marking and
+    each step) the UPDATE succeeds and the step is processed after marking,
+    leaving the record intact.
+    """
+    db = aramaki.db.DBSessionManager(tmp_path)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
+    )
+
+    async with manager.get_collection_with_session() as collection:
+        await aramaki_manager.message_received.wait()
+
+        # Pre-insert a record to simulate a step having committed before the
+        # marking phase runs — this is what caused the intermittent crash.
+        async with db.session() as session:
+            aramaki.collection.Record.create(
+                session,
+                collection=DummyCollection.collection,
+                partition="partition-1",
+                record_id="1",
+                version=1,
+                data={"key": "old"},
+            )
+
+        catchup_task = asyncio.create_task(
+            manager.process_start_catchup_message(
+                {"start_version": 1, "partition": "partition-1"}
+            )
+        )
+        await manager.process_catchup_step_message(
+            {
+                "from_version": 0,
+                "record_id": "1",
+                "partition": "partition-1",
+                "to_version": 1,
+                "change": "update",
+                "is_final_record": False,
+                "data": {"key": "value"},
+            }
+        )
+        await manager.process_catchup_step_message(
+            {
+                "from_version": 1,
+                "record_id": "1",
+                "partition": "partition-1",
+                "to_version": 2,
+                "change": "update",
+                "is_final_record": True,
+                "data": {"key": "value"},
+            }
+        )
+
+        manager.CATCHUP_TIMEOUT = 5
+        await catchup_task
+
+        assert await collection.get("1") == {"key": "value"}
+
+    manager.stop()
+
+
 async def test_replication_empty_sync(tmp_path: Path):
     db = aramaki.db.DBSessionManager(tmp_path)
     db.upgrade()
@@ -445,6 +548,49 @@ async def test_replication_catchup_sync(tmp_path: Path):
         assert await collection.get("2") == {"key": "value-10"}
 
 
+async def test_catchup_step_discards_stale_message(tmp_path: Path):
+    db = aramaki.db.DBSessionManager(tmp_path)
+    db.upgrade()
+
+    aramaki_manager = AramakiDummy()
+    aramaki_manager.db = db
+
+    async with db.session() as session:
+        aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="1",
+            version=5,
+            data={"key": "current"},
+        )
+
+    manager = aramaki.collection.ReplicationManager(
+        aramaki_manager,  # pyright: ignore[reportArgumentType]
+        DummyCollection,
+    )
+
+    async with manager.get_collection_with_session() as collection:
+        # from_version=3 < current_version=5: the step should be discarded
+        await manager.process_catchup_step_message(
+            {
+                "from_version": 3,
+                "record_id": "1",
+                "partition": "partition-1",
+                "to_version": 4,
+                "change": "update",
+                "is_final_record": False,
+                "data": {"key": "stale"},
+            }
+        )
+
+        await manager.catchup_buffer.join()
+
+        assert await collection.get("1") == {"key": "current"}
+
+    manager.stop()
+
+
 async def test_catchup_timeout_releases_lock_and_rerequests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -454,6 +600,16 @@ async def test_catchup_timeout_releases_lock_and_rerequests(
 
     aramaki_manager = AramakiDummy()
     aramaki_manager.db = db
+
+    async with db.session() as session:
+        aramaki.collection.Record.create(
+            session,
+            collection="mydummycollection",
+            partition="partition-1",
+            record_id="1",
+            version=5,
+            data={},
+        )
 
     manager = aramaki.collection.ReplicationManager(
         aramaki_manager,  # pyright: ignore[reportArgumentType]
