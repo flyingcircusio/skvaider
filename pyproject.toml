@@ -27,6 +27,7 @@ dependencies = [
     "prometheus-client>=0.21.0",
     "shortuuid>=1.0.13",
     "httpx-sse>=0.4.3",
+    "openai>=1.100.2",
 ]
 
 [project.scripts]
@@ -75,7 +76,6 @@ reportPrivateUsage = "none"
 
 [dependency-groups]
 dev = [
-    "openai>=1.100.2",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=6.2.1",
