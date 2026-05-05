@@ -25,7 +25,7 @@ class Record(Base):
     collection: Mapped[str] = mapped_column(primary_key=True)
     partition: Mapped[str] = mapped_column(primary_key=True)
     record_id: Mapped[str] = mapped_column(primary_key=True)
-    version: Mapped[int] = mapped_column()
+    version: Mapped[int | None] = mapped_column()
     data: Mapped[JSONObject] = mapped_column(type_=JSON)
 
 
@@ -45,7 +45,11 @@ async def _currently_known_partition_and_version(
     ).one_or_none()
     if maybe_result is None:
         return None, 0
-    return tuple(maybe_result)
+    partition, max_version = tuple(maybe_result)
+    if max_version is None:
+        # During a full sync all versions are set to None; treat that as version 0.
+        max_version = 0
+    return partition, max_version
 
 
 async def _set_null_record(
@@ -355,64 +359,74 @@ class ReplicationManager:
             start_version=start_version,
         )
 
-        async with self.aramaki.db.session() as db_session:
-            current_partition, _ = await _currently_known_partition_and_version(
-                db_session, self.collection.collection
-            )
+        is_full_sync = False
 
-        async with self.update_lock, self.catchup_lock:
-            if start_version == 0:
-                # The partition is empty and we will not receive further messages.
-                async with self.aramaki.db.session() as session:
-                    await session.execute(
+        # update_lock is held for the entire catchup to block concurrent update
+        # message processing. catchup_lock is held only in two narrow phases
+        # (stale marking and cleanup) and released during the wait so that
+        # process_catchup_step_buffer (which also acquires catchup_lock per step)
+        # can proceed without deadlocking.
+        async with self.update_lock:
+            async with (
+                self.catchup_lock,
+                self.aramaki.db.session() as db_session,
+            ):
+                current_partition = (
+                    await _currently_known_partition_and_version(
+                        db_session, self.collection.collection
+                    )
+                )[0]
+
+                if start_version == 0:
+                    # The partition is empty and we will not receive further messages.
+                    await db_session.execute(
                         sqlalchemy.delete(Record).filter_by(
                             collection=self.collection.collection
                         )
                     )
                     await _set_null_record(
-                        session, self.collection.collection, partition, 0
+                        db_session, self.collection.collection, partition, 0
                     )
-                return
+                    return
 
-            if partition != current_partition and start_version > 1:
-                # We switched partitions but that means we can't do a partial sync.
-                # Re-request a full sync (not re-using request_catchup because
-                # we don't want to use the persistent data we have).
-                log.debug(
-                    "collection-request-catchup",
-                    partition=partition,
-                    current_version=0,
-                )
-                await self.aramaki.send_message(
-                    "directory.collection.catchup.request",
-                    {
-                        "collection": self.collection.collection,
-                        "partition": partition,
-                        "current_version": 0,
-                    },
-                )
-                return
+                if partition != current_partition and start_version > 1:
+                    # We switched partitions but that means we can't do a partial sync.
+                    # Re-request a full sync (not re-using request_catchup because
+                    # we don't want to use the persistent data we have).
+                    log.debug(
+                        "collection-request-catchup",
+                        partition=partition,
+                        current_version=0,
+                    )
+                    await self.aramaki.send_message(
+                        "directory.collection.catchup.request",
+                        {
+                            "collection": self.collection.collection,
+                            "partition": partition,
+                            "current_version": 0,
+                        },
+                    )
+                    return
 
-            is_full_sync = start_version == 1
-
-            if is_full_sync:
-                log.debug(
-                    "collection-full-sync",
-                    status="start",
-                    partition=partition,
-                    current_version=0,
-                )
-                # Remove version markers from all records for now (and delete them when the catchup has finished.)
-                # We keep the records to avoid "holes" for our clients while we're updating from an earlier state.
-                async with self.aramaki.db.session() as db_session:
+                if is_full_sync := start_version == 1:
+                    log.debug(
+                        "collection-full-sync",
+                        status="start",
+                        partition=partition,
+                        current_version=0,
+                    )
+                    # Mark all existing records as stale (version=None). Catchup
+                    # steps restore proper versions; any record still None after
+                    # the sync is deleted below. Holding catchup_lock here makes
+                    # this marking atomic with respect to step processing.
                     await db_session.execute(
                         sqlalchemy.update(Record)
                         .filter_by(collection=self.collection.collection)
                         .values(version=None)
                     )
-
-            # Let the sync continue
+            # Let the sync continue (we dropped the catchup lock)
             try:
+                log.error("waiting for timeout", timeout=self.CATCHUP_TIMEOUT)
                 await asyncio.wait_for(
                     self.catchup_finished.wait(), timeout=self.CATCHUP_TIMEOUT
                 )
@@ -427,11 +441,15 @@ class ReplicationManager:
 
             if is_full_sync:
                 log.debug("collection-full-sync", status="finished")
-                # Delete all items that haven't received version markers during the catchup.
-                async with self.aramaki.db.session() as db_session:
+                async with (
+                    self.catchup_lock,
+                    self.aramaki.db.session() as db_session,
+                ):
+                    # Delete all items that haven't received version markers during the catchup.
                     await db_session.execute(
                         sqlalchemy.delete(Record).filter_by(
-                            collection=self.collection.collection, version=None
+                            collection=self.collection.collection,
+                            version=None,
                         )
                     )
 
@@ -448,13 +466,15 @@ class ReplicationManager:
                 to_version=msg["to_version"],
                 change=msg["change"],
             )
-            async with self.aramaki.db.session() as db_session:
-                (
-                    _,
-                    current_version,
-                ) = await _currently_known_partition_and_version(
-                    db_session, self.collection.collection
-                )
+            async with (
+                self.catchup_lock,
+                self.aramaki.db.session() as db_session,
+            ):
+                current_version = (
+                    await _currently_known_partition_and_version(
+                        db_session, self.collection.collection
+                    )
+                )[1]
                 if msg["from_version"] < current_version:
                     # Discard the message, we already processed a newer one
                     self.catchup_buffer.task_done()
@@ -494,7 +514,7 @@ class ReplicationManager:
                         msg["partition"],
                         msg["to_version"],
                     )
-            # After commit
+            # After commit (catchup_lock released)
             if msg.get("is_final_record"):
                 self.catchup_finished.set()
             self.catchup_buffer.task_done()
@@ -508,6 +528,8 @@ class PriorityPushbackQueue:
     Putting an item back means we do not pass it out to waiters
     until at least one another item with a lower priority
     has been put in.
+
+    Typically inversed priority meaning: a lower number indicates a higher priority.
 
     """
 

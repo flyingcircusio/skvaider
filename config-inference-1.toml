@@ -16,6 +16,7 @@ engine = "llama-server"
 id = "gemma"
 context_size = 4096
 port = 8100
+supports_tools = true
 cmd_args = []
 max_requests = 21
 task = "chat"
