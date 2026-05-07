@@ -164,8 +164,11 @@ class Model(ABC):
 
     # Shared implementation:
 
-    def __init__(self, config: ModelConfig):
+    def __init__(
+        self, config: ModelConfig, on_unexpected_exit: Callable[[], None]
+    ):
         self.config = config
+        self.on_unexpected_exit = on_unexpected_exit
         self.lock = UserManagerLock()
         self.status_changed = asyncio.Event()
         self._tasks = TaskManager()
@@ -281,8 +284,8 @@ class Model(ABC):
             returncode=self.process.returncode,
             status=self.process_status,
         )
-        # Clean up
         await self.terminate()
+        self.on_unexpected_exit()
 
     async def _check_embedding_health(self) -> dict[str, str]:
         checks: dict[str, str] = {}
@@ -507,8 +510,12 @@ class Model(ABC):
 class LlamaModel(Model):
     _engine = "llama-server"
 
-    def __init__(self, config: LlamaServerModelConfig):
-        super().__init__(config)
+    def __init__(
+        self,
+        config: LlamaServerModelConfig,
+        on_unexpected_exit: Callable[[], None],
+    ):
+        super().__init__(config, on_unexpected_exit)
         self._config = config  # Allow access to type-specific config
 
     def is_embedding(self) -> bool:
@@ -658,8 +665,12 @@ class LlamaModel(Model):
 class VllmModel(Model):
     _engine = "vllm"
 
-    def __init__(self, config: VllmModelConfig):
-        super().__init__(config)
+    def __init__(
+        self,
+        config: VllmModelConfig,
+        on_unexpected_exit: Callable[[], None],
+    ):
+        super().__init__(config, on_unexpected_exit)
         self._config = config
 
     def is_embedding(self) -> bool:
@@ -762,8 +773,12 @@ class SystemdModel(Model):
     # This one will probably move to be a integrated docker runner ?
     _engine = "systemd"
 
-    def __init__(self, config: SystemdModelConfigBase):
-        super().__init__(config)
+    def __init__(
+        self,
+        config: SystemdModelConfigBase,
+        on_unexpected_exit: Callable[[], None],
+    ):
+        super().__init__(config, on_unexpected_exit)
         self._config = config
 
     async def pids(self) -> set[int]:
@@ -852,8 +867,12 @@ class SystemdModel(Model):
 class SystemdDockerModel(SystemdModel):
     _engine = "systemd-docker"
 
-    def __init__(self, config: SystemdDockerModelConfig):
-        super().__init__(config)
+    def __init__(
+        self,
+        config: SystemdDockerModelConfig,
+        on_unexpected_exit: Callable[[], None],
+    ):
+        super().__init__(config, on_unexpected_exit)
         self._config = config
 
     async def pids(self) -> set[int]:

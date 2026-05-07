@@ -92,14 +92,15 @@ async def lifespan(
             raise ValueError(
                 f"{model_config.id}: port {model_config.port} already in use by {duplicate_port_model.id}."
             )
+        on_crash = manager.manifest_changed.set
         if isinstance(model_config, LlamaServerModelConfig):
-            model = LlamaModel(model_config)
+            model = LlamaModel(model_config, on_crash)
         elif isinstance(model_config, VllmModelConfig):
-            model = VllmModel(model_config)
+            model = VllmModel(model_config, on_crash)
         elif isinstance(model_config, SystemdDockerModelConfig):
-            model = SystemdDockerModel(model_config)
+            model = SystemdDockerModel(model_config, on_crash)
         elif isinstance(model_config, SystemdModelConfig):  # pyright: ignore[reportUnnecessaryIsInstance]
-            model = SystemdModel(model_config)
+            model = SystemdModel(model_config, on_crash)
         else:
             raise ValueError(f"Unhandled model config: {model_config}")
 
