@@ -86,7 +86,7 @@ class Manager:
 
     manifest_serial: Serial
     _manifest: set[str]
-    _manifest_changed: asyncio.Event
+    manifest_changed: asyncio.Event
 
     def __init__(self, models_dir: Path, log_dir: Path):
         self.tasks = TaskManager()
@@ -96,7 +96,7 @@ class Manager:
         self.model_lock = asyncio.Lock()
         self._manifest = set()
         self.manifest_serial = Serial.floor()
-        self._manifest_changed = asyncio.Event()
+        self.manifest_changed = asyncio.Event()
 
         self.monitors = {"ram": RAMMonitor(self)}
         # if shutil.which("rocm-smi"):
@@ -130,7 +130,7 @@ class Manager:
         self._manifest = set(
             [model_id for model_id in value if model_id in self.models]
         )
-        self._manifest_changed.set()
+        self.manifest_changed.set()
 
     def update_manifest(self, model_ids: set[str], serial: Serial) -> None:
         if serial <= self.manifest_serial:
@@ -188,8 +188,8 @@ class Manager:
         # needed.
         while True:
             try:
-                await self._manifest_changed.wait()
-                self._manifest_changed.clear()
+                await self.manifest_changed.wait()
+                self.manifest_changed.clear()
                 await self.apply_manifest()
             except Exception:
                 log.exception(

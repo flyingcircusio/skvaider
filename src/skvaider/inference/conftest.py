@@ -203,7 +203,7 @@ async def prepare_model(
         task=task,
     )
 
-    model = LlamaModel(config)
+    model = LlamaModel(config, manager.manifest_changed.set)
     manager.add_model(model)
 
     cache_dir = models_cache / model.slug

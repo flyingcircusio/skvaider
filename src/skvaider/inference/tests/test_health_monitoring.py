@@ -23,7 +23,8 @@ async def test_monitor_health_updates_model_status_completion():
             max_requests=10,
             port=1000,
             task="chat",
-        )
+        ),
+        lambda: None,
     )
     model.health_check_interval = 0.01
     model.health_check_timeout = 0.01
@@ -85,7 +86,8 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
             port=openai_server.port,
             max_requests=10,
             task="embedding",
-        )
+        ),
+        lambda: None,
     )
     model.endpoint = openai_server.endpoint
 
@@ -122,7 +124,8 @@ async def test_health_check_completions(openai_server: OpenAIServerMock):
             port=openai_server.port,
             max_requests=10,
             task="chat",
-        )
+        ),
+        lambda: None,
     )
     model.endpoint = openai_server.endpoint
 
@@ -151,7 +154,8 @@ async def test_health_check_streaming_tool_call_check_offline():
             port=9000,
             max_requests=10,
             task="chat",
-        )
+        ),
+        lambda: None,
     )
     model.endpoint = "http://localhost:9000"
     assert {
@@ -168,7 +172,8 @@ async def test_health_check_streaming_tool_call_check_mocked(
             port=8100,
             max_requests=10,
             task="chat",
-        )
+        ),
+        lambda: None,
     )
     model.endpoint = "http://localhost:9999"
 
@@ -221,3 +226,56 @@ async def test_health_check_streaming_tool_call_check_mocked(
     assert {
         "completion_tool_call": "Invalid argument JSON in tool call #0: '{\"object\": 123'",
     } == await model._check_completion_streaming_tool_call_health()
+
+
+def make_mock_process(returncode: int = -9) -> Mock:
+    process = Mock()
+    process.wait = AsyncMock(return_value=None)
+    process.returncode = returncode
+    process.pid = 12345
+    return process
+
+
+async def test_monitor_process_calls_on_unexpected_exit_on_crash():
+    called: list[bool] = []
+    model = Model(
+        ModelConfig(id="test", max_requests=10, port=1000, task="chat"),
+        lambda: called.append(True),
+    )
+    model.process = make_mock_process()
+    model.process_status = "running"
+
+    await model._monitor_process()
+
+    assert called == [True]
+    assert model.process_status == "stopped"
+
+
+async def test_monitor_process_skips_on_unexpected_exit_on_normal_stop():
+    called: list[bool] = []
+    model = Model(
+        ModelConfig(id="test", max_requests=10, port=1000, task="chat"),
+        lambda: called.append(True),
+    )
+    model.process = make_mock_process(returncode=0)
+    model.process_status = "stopping"
+
+    await model._monitor_process()
+
+    assert called == []
+
+
+async def test_monitor_process_skips_on_unexpected_exit_on_abnormal_stop():
+    # A non-zero exit code while stopping (e.g. SIGTERM) is still expected —
+    # the callback must not fire.
+    called: list[bool] = []
+    model = Model(
+        ModelConfig(id="test", max_requests=10, port=1000, task="chat"),
+        lambda: called.append(True),
+    )
+    model.process = make_mock_process(returncode=-15)
+    model.process_status = "stopping"
+
+    await model._monitor_process()
+
+    assert called == []
