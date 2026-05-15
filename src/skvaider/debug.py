@@ -1,4 +1,6 @@
 import json
+import atexit
+import structlog.stdlib
 import re
 import time
 from datetime import datetime, timezone
@@ -7,6 +9,31 @@ from typing import Any
 
 from fastapi import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from skvaider.utils import TaskManager
+
+log = structlog.stdlib.get_logger()
+
+def cleanup_old_debug_files(directory: Path, ttl_seconds: float) -> int:
+    """Remove debug files older than ttl_seconds.
+
+    Returns the number of files removed.
+    """
+    if not directory.exists():
+        return 0
+    now = time.time()
+    removed = 0
+    for path in directory.iterdir():
+        if path.suffix not in (".request", ".response"):
+            continue
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if now - mtime > ttl_seconds:
+            path.unlink()
+            removed += 1
+    return removed
 
 
 def sanitize_debug_id(value: str) -> str:
@@ -77,13 +104,43 @@ class DebuggingMiddleware:
 
     directory: Path
     slow_threshold: float
+    ttl_seconds: float
 
-    def __init__(self, app: ASGIApp, *, directory: Path, slow_threshold: float):
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        directory: Path,
+        slow_threshold: float,
+        ttl_seconds: float = 3600 * 24 * 4,
+    ):
         self.app = app
         self.directory = directory
         self.directory.mkdir(parents=True, exist_ok=True)
 
         self.slow_threshold = slow_threshold
+        self.ttl_seconds = ttl_seconds
+
+        removed = cleanup_old_debug_files(directory, ttl_seconds)
+        if removed:
+            log.info(
+                "removed expired debug files",
+                count=removed,
+                ttl_days=ttl_seconds / 3600 / 24,
+            )
+
+        tasks = TaskManager()
+        tasks.poll(self._cleanup, directory, ttl_seconds, interval=3600)
+        atexit.register(tasks.terminate)
+
+    async def _cleanup(self, directory: Path, ttl_seconds: float) -> None:
+        removed = cleanup_old_debug_files(directory, ttl_seconds)
+        if removed:
+            log.info(
+                "removed expired debug files",
+                count=removed,
+                ttl_days=ttl_seconds / 3600 / 24,
+            )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http":

@@ -46,6 +46,7 @@ class ModelInstanceConfig(BaseModel):
 
 class DebugConfig(BaseModel):
     slow_threshold: float = 0
+    ttl_days: int = 4
 
 
 default_debug_config = DebugConfig()

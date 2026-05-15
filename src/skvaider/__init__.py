@@ -162,6 +162,7 @@ def app_factory(
         DebuggingMiddleware,
         directory=config.server.directory / "debug",
         slow_threshold=config.debug.slow_threshold,
+        ttl_seconds=config.debug.ttl_days * 3600 * 24,
     )
     app.add_middleware(
         LoggingMiddleware,
