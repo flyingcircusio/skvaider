@@ -19,6 +19,14 @@ if TYPE_CHECKING:
 
 from skvaider.manifest import ManifestRequest, Serial
 
+# Maximum time allowed for a single health-check round-trip.
+# The inference server's /internal/health endpoint is a lightweight GET
+# that returns the current model state; it should never take long.
+HEALTH_CHECK_TIMEOUT = 5.0  # seconds
+
+# Maximum time allowed for a manifest update (PATCH).
+MANIFEST_UPDATE_TIMEOUT = 5.0  # seconds
+
 
 class ModelConfig:
     """Configuration for model-specific options"""
@@ -236,7 +244,18 @@ class SkvaiderBackend(Backend):
             backend_serial=str(self.current_serial),
             pool_serial=str(self.pool.map_serial),
         )
-        await self.backend_api(ManifestRequest(models=model_ids, serial=serial))
+        try:
+            await asyncio.wait_for(
+                self.backend_api(
+                    ManifestRequest(models=model_ids, serial=serial)
+                ),
+                timeout=MANIFEST_UPDATE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            self.log.warning(
+                "manifest update timed out, will retry on next cycle",
+                backend=self.url,
+            )
 
     async def monitor_health_and_update_models(self) -> None:
         self.log.debug("starting monitor")
@@ -251,11 +270,19 @@ class SkvaiderBackend(Backend):
                     # unloading of healthy models.
                     pass
                 else:
-                    await self._update_health()
+                    await asyncio.wait_for(
+                        self._update_health(),
+                        timeout=HEALTH_CHECK_TIMEOUT,
+                    )
                     self.healthy = True
             except httpx.ConnectError as e:
                 self.healthy = False
                 self.unhealthy_reason = str(e)
+            except asyncio.TimeoutError:
+                self.healthy = False
+                self.unhealthy_reason = (
+                    f"health check timed out after {HEALTH_CHECK_TIMEOUT}s"
+                )
             except Exception as e:
                 self.healthy = False
                 self.unhealthy_reason = repr(e)
