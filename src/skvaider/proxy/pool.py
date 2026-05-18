@@ -13,6 +13,7 @@ from skvaider.config import ModelInstanceConfig
 from skvaider.manifest import Serial
 from skvaider.utils import TaskManager
 
+from . import placement
 from .models import AIModel
 
 if TYPE_CHECKING:
@@ -232,64 +233,23 @@ class Pool:
         tmp.rename(self.state_file)
 
     def placement_map(self) -> ModelMap:
-        """Create a placement map of "which model should go where."
-
-        The idea here is that we have a stable sorting that doesn't flap around too much
-        when backends disappear and come back.
-
-        Returns a map of backend IDs -> set of model ids to be loaded there.
-
-        """
-        available_resources: dict[
-            str, dict[str, int]
-        ] = {}  # backend -> resource_type -> total resource
-        map: dict[str, set[str]] = {}
-        # Fill the usage projection with the total memory.
-        for backend in self.backends:
-            available_resources[backend.url] = resources = {}
-            for resource, params in backend.memory.items():
-                resources[resource] = params["total"]
-            map[backend.url] = set()
-
-        for model in sorted(
-            self.model_configs.values(),
-            key=lambda m: m.total_size(),
-            reverse=True,
-        ):
-            unplaced_instances = model.instances
-            candidates = [
-                b
+        return placement.placement_map(
+            [
+                placement.BackendSlot(
+                    id=b.url,
+                    capacity={r: p["total"] for r, p in b.memory.items()},
+                    map_in=b.map_in.state,
+                )
                 for b in self.backends
-                if (b.map_in == "in") and model.id in b.models
-            ]
-            candidates.sort(
-                key=lambda b: (
-                    b.models[model.id].fit_score(available_resources[b.url]),
-                    b.url,
-                ),
-                reverse=True,
-            )
-            for backend in candidates:
-                use_this_backend = True
-                # First pass: check whether this model fits here.
-                for resource in available_resources[backend.url]:
-                    available = available_resources[backend.url][resource]
-                    required = model.memory.get(resource, 0)
-                    if required > available:
-                        use_this_backend = False
-                        break
-                if not use_this_backend:
-                    continue
-                # Make a second pass to update the usage map.
-                for resource in available_resources[backend.url]:
-                    available_resources[backend.url][resource] -= (
-                        model.memory.get(resource, 0)
-                    )
-                map[backend.url].add(model.id)
-                unplaced_instances -= 1
-                if not unplaced_instances:
-                    break
-        return map
+            ],
+            [
+                placement.ModelSpec(
+                    id=m.id, size=m.memory, instances=m.instances
+                )
+                for m in self.model_configs.values()
+            ],
+            self.last_map,
+        )
 
     async def rebalance(self) -> None:
         """Rebalance model instances across backends to match desired state."""
