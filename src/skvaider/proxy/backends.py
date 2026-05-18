@@ -322,7 +322,7 @@ class SkvaiderBackend(Backend):
                 )
                 self.map_up.mark("up")
                 self.map_in.mark("in")
-                self.pool.save_state()
+                await self.pool.save_state()
                 await self.pool.tasks.create(self.pool.rebalance)
             elif not self.healthy:
                 self.log.warning(
@@ -332,7 +332,7 @@ class SkvaiderBackend(Backend):
                 )
                 self.map_up.mark("down")
                 self.current_serial = Serial.floor()
-                self.pool.save_state()
+                await self.pool.save_state()
                 await self.pool.tasks.create(self.pool.rebalance)
 
             # Handle steady states
@@ -372,14 +372,14 @@ class SkvaiderBackend(Backend):
                 f"backend was DOWN for {self.DOWN_OUT_INTERVAL} - marking OUT"
             )
             self.map_in.mark("out")
-            self.pool.save_state()
+            await self.pool.save_state()
 
     async def _update_health(self) -> None:
         health = await self.backend_api(BackendHealthRequest())
 
         assert health.status == "ok"
         self.memory = health.usage
-        self.pool.save_state()
+        await self.pool.save_state()
         self.current_serial = health.current_serial
 
         from .models import AIModel

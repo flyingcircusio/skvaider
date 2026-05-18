@@ -1,10 +1,10 @@
 import asyncio
 import contextlib
 import datetime
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Literal
 
+import aiofiles
 import structlog
 from pydantic import BaseModel
 
@@ -201,9 +201,10 @@ class Pool:
                 model_obj = backend.models[model_id]
                 model_obj.memory_usage = model_record.memory_usage
 
-    def save_state(self) -> None:
+    async def save_state(self) -> None:
         if not self.state_file:
             return
+
         records = {
             backend.url: BackendStateRecord(
                 url=backend.url,
@@ -225,10 +226,11 @@ class Pool:
         }
         state = ClusterState(backends=records)
         data = state.model_dump_json(indent=2)
+
         tmp = self.state_file.with_suffix(".tmp")
-        tmp.write_text(data)
-        with tmp.open() as f:
-            os.fsync(f.fileno())
+        async with aiofiles.open(tmp, mode="w") as f:
+            await f.write(data)
+            await f.flush()
         tmp.rename(self.state_file)
 
     def placement_map(self) -> ModelMap:
