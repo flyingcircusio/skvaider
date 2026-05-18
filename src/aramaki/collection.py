@@ -226,22 +226,27 @@ class ReplicationManager:
             yield self.collection(db_session)
 
     async def process_update_message(self, msg: dict[str, Any]) -> None:
-        log.debug("collection-process-update-message", id=msg.get("@id"))
+        log.debug("collection-buffer-update-message", id=msg.get("@id"))
         self.update_buffer.put(msg["version"], msg)
 
     async def process_update_buffer(self) -> None:
         while True:
             update_version, msg = await self.update_buffer.get()
             # XXX consider switching to pydantic models here
-            if not msg.get("record_id"):
-                # defensive against peers breaking protocol
-                continue
             log.debug(
                 "collection-process-update-message",
                 id=msg.get("@id"),
                 partition=msg["partition"],
                 version=update_version,
             )
+            if not msg.get("record_id"):
+                log.debug(
+                    "update-message-broken-protocol",
+                    reason="missing field",
+                    field="record_id",
+                )
+                # defensive against peers breaking protocol
+                continue
             async with (
                 self.update_lock,
                 self.aramaki.db.session() as db_session,
@@ -257,6 +262,12 @@ class ReplicationManager:
                     current_partition is None
                     or current_partition != msg["partition"]
                 ):
+                    log.info(
+                        "update-message-wrong-partition",
+                        current_partition=current_partition,
+                        update_partition=msg["partition"],
+                        action="catchup",
+                    )
                     # There's a certain chance here that, if we get too much of chaotic messages, then we may end up in a flapping
                     # state, e.g. if there's a number of update messages for two partitions (while partitions change) that can cause
                     # (due to version numbers of the new partition being lower) us to early on detect the partition change,
@@ -268,11 +279,23 @@ class ReplicationManager:
                     continue
 
                 if update_version <= current_version:
+                    log.info(
+                        "update-message-old-version",
+                        current_version=current_version,
+                        update_version=update_version,
+                        action="ignore",
+                    )
                     # This version is old, ignore it.
                     self.update_buffer.task_done()
                     continue
 
                 if update_version > current_version + 1:
+                    log.info(
+                        "update-message-skipped-version",
+                        current_version=current_version,
+                        update_version=update_version,
+                        action="put-back",
+                    )
                     # This message is too new, keep it in the buffer and wait for another one
                     self.update_buffer.put_back(update_version, msg)
                     continue
@@ -289,23 +312,52 @@ class ReplicationManager:
                 )
                 if msg["change"] == "update":
                     if record is None:
+                        log.info(
+                            "update-message-new-record",
+                        )
                         record = Record.create(
                             db_session,
                             collection=self.collection.collection,
                             partition=msg["partition"],
                             record_id=msg["record_id"],
+                            version=msg["version"],
+                        )
+                    else:
+                        log.info(
+                            "update-message-update-record",
+                            partition=msg["partition"],
+                            record_id=msg["record_id"],
+                            version=msg["version"],
                         )
                     record.version = msg["version"]
                     record.data = msg["data"]
                 if msg["change"] == "delete" and record is not None:
+                    log.info(
+                        "update-message-delete-record",
+                        partition=msg["partition"],
+                        record_id=msg["record_id"],
+                        version=msg["version"],
+                    )
                     await record.delete(db_session)
                 if msg["change"] == "delete" or msg["change"] == "null":
+                    log.info(
+                        "update-message-delete-with-null-record",
+                        partition=msg["partition"],
+                        record_id=msg["record_id"],
+                        version=msg["version"],
+                    )
                     await _set_null_record(
                         db_session,
                         self.collection.collection,
                         msg["partition"],
                         msg["version"],
                     )
+            log.debug(
+                "update-message-complete",
+                partition=msg["partition"],
+                record_id=msg["record_id"],
+                version=msg["version"],
+            )
             self.update_buffer.task_done()
 
     async def request_catchup(self) -> None:

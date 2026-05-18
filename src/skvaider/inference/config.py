@@ -64,7 +64,7 @@ class VllmModelConfig(ModelConfig):
     repo: str
     cmd_args: list[str] = []
     env: dict[str, str] = {}
-    context_size: int
+    context_size: int | Literal["auto"]
 
 
 class SystemdModelConfigBase(ModelConfig):
