@@ -254,19 +254,19 @@ async def test_complex_rebalance_multiple_models(
     assert pool.count_loaded_instances("m1") == 2
     assert pool.count_loaded_instances("m2") == 2
     assert pool.placement_map() == {
-        "http://backend-1": {"m1"},
+        "http://backend-1": {"m1", "m2"},
         "http://backend-2": {"m2"},
-        "http://backend-3": {"m2", "m1"},
+        "http://backend-3": {"m1"},
     }
 
     backend2.healthy = False
     backend2.map_in.mark("out")
     await pool.rebalance()
 
+    # m1 was never on backend2, so its count stays at 2.
+    # m2 was on backend2 (still loaded there, no unload on unhealthy backends)
+    # and is now also placed on backend3 → count 3.
     assert pool.count_loaded_instances("m1") == 2
-    # this says 3 instead of 2 because we do not touch unhealthy
-    # backends to avoid superfluous loading/unloading during
-    # temporary disruptions.
     assert pool.count_loaded_instances("m2") == 3
     assert pool.placement_map() == {
         "http://backend-1": {"m2", "m1"},
