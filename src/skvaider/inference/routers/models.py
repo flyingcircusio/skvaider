@@ -126,6 +126,7 @@ async def proxy_request(
 
         collect_tokens = path in TOKEN_ENDPOINTS
         chunks: list[bytes] = []
+        vllm_request_id = upstream.headers.get("x-request-id")
 
         async def stream() -> AsyncGenerator[bytes]:
             try:
@@ -134,6 +135,29 @@ async def proxy_request(
                         chunks.append(chunk)
                     yield chunk
             finally:
+                # Try to abort the vLLM request to stop wasting GPU time
+                # when the client disconnects early.
+                if vllm_request_id and path in TOKEN_ENDPOINTS:
+                    try:
+                        abort_url = (
+                            f"{model.endpoint}/v1/chat/completions/abort"
+                        )
+                        await client.post(
+                            abort_url,
+                            json={"request_ids": [vllm_request_id]},
+                        )
+                        log.debug(
+                            "aborted vLLM request on disconnect",
+                            model=model_name,
+                            request_id=vllm_request_id,
+                        )
+                    except Exception:
+                        log.debug(
+                            "failed to abort vLLM request",
+                            model=model_name,
+                            request_id=vllm_request_id,
+                            exc_info=True,
+                        )
                 await upstream.aclose()
                 await client.aclose()
                 await model.lock.user_release()

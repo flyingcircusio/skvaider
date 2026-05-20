@@ -250,6 +250,9 @@ class OpenAIProxy:
                         m.in_progress for m in _backend.models.values()
                     )
                     await context.__aexit__(None, None, None)
+                    # Close the backend stream to free the HTTP connection
+                    # and propagate disconnect to the inference server.
+                    await stream_aws.aclose()
 
             request.state.backend = backend
             return StreamingResponse(
