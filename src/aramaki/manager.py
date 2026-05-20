@@ -76,6 +76,7 @@ class Manager:
     collections: dict[type[Collection], ReplicationManager]
     subscriptions: dict[str, dict[str, str]]
     callbacks: dict[str, Callable[[dict[str, Any]], Awaitable[Any]]]
+    on_connect_callbacks: list[Callable[[], Awaitable[None]]]
     tasks: set[asyncio.Task[Any]]
 
     def __init__(
@@ -96,6 +97,7 @@ class Manager:
 
         self.subscriptions = {}
         self.callbacks = {}
+        self.on_connect_callbacks = []
         self.tasks = set()
         self.websocket_ready = asyncio.Event()
 
@@ -150,6 +152,9 @@ class Manager:
                     await websocket.send(self.prepare_message(subscription))
                     log.info("subscriptions", status="sent")
                     self.websocket_ready.set()
+                    # Fire connection callbacks (e.g., collection catchup)
+                    for cb in list(self.on_connect_callbacks):
+                        utils.create_task(cb())
 
                     log.info("Waiting for messages ...")
                     async for message in websocket:
