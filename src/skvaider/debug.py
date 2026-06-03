@@ -103,6 +103,44 @@ class DebuggingMiddleware:
         return result
 
 
+class BodyBuffer:
+    """Fixed-size capture buffer that keeps the head and tail of ingested bytes.
+
+    When total bytes exceed max_bytes, the middle is replaced with a marker
+    so both the start and end of long bodies are visible in debug output.
+    """
+
+    DEFAULT_MAX_BYTES = 500 * 1024
+
+    def __init__(self, max_bytes: int = DEFAULT_MAX_BYTES):
+        self._head_limit = max_bytes // 2
+        self._tail_limit = max_bytes // 2
+        self._head: bytearray = bytearray()
+        self._tail: bytearray = bytearray()
+        self._total: int = 0
+
+    def ingest(self, chunk: bytes) -> None:
+        self._total += len(chunk)
+        if len(self._head) < self._head_limit:
+            space = self._head_limit - len(self._head)
+            take = min(space, len(chunk))
+            self._head.extend(chunk[:take])
+            chunk = chunk[take:]
+        if chunk:
+            self._tail.extend(chunk)
+            excess = len(self._tail) - self._tail_limit
+            if excess > 0:
+                del self._tail[:excess]
+
+    @property
+    def data(self) -> bytes:
+        if self._total <= self._head_limit + self._tail_limit:
+            return bytes(self._head) + bytes(self._tail)
+        missing = self._total - self._head_limit - self._tail_limit
+        marker = f"\n\n[... {missing} bytes omitted ...]\n\n".encode()
+        return bytes(self._head) + marker + bytes(self._tail)
+
+
 class DebugRecorder:
     # XXX async file io!
     temp_file: Path | None
@@ -110,8 +148,6 @@ class DebugRecorder:
     time_start: float
     enabled: bool = False
     debug_id: str = ""
-
-    MAX_REQUEST_BUFFER = 500 * 1024  # 500k max buffer for requests/responses
 
     def __init__(
         self,
@@ -129,7 +165,7 @@ class DebugRecorder:
         self.slow_threshold = slow_threshold
         self.request = request
         self.temp_file = None
-        self.captured_request_body = b""
+        self._req_buffer = BodyBuffer()
 
         self.time_start = time.time()
 
@@ -141,17 +177,20 @@ class DebugRecorder:
             self.enabled = True
             self.triggers.append("header")
 
-        self.captured_response_body = b""
+        self._resp_buffer = BodyBuffer()
+
+    @property
+    def captured_request_body(self) -> bytes:
+        return self._req_buffer.data
+
+    @property
+    def captured_response_body(self) -> bytes:
+        return self._resp_buffer.data
 
     async def capture_request(self) -> Message:
         message = await self._orig_receive()
         if message["type"] == "http.request":
-            chunk = message.get("body", b"")
-            remaining_buffer_size = self.MAX_REQUEST_BUFFER - len(
-                self.captured_request_body
-            )
-            self.captured_request_body += chunk[:remaining_buffer_size]
-
+            self._req_buffer.ingest(message.get("body", b""))
         return message
 
     async def capture_response(self, message: Message):
@@ -161,11 +200,7 @@ class DebugRecorder:
                 k.decode(): v.decode() for k, v in message.get("headers", [])
             }
         elif message["type"] == "http.response.body":
-            chunk = message.get("body", b"")
-            remaining_buffer_size = self.MAX_REQUEST_BUFFER - len(
-                self.captured_response_body
-            )
-            self.captured_response_body += chunk[:remaining_buffer_size]
+            self._resp_buffer.ingest(message.get("body", b""))
         await self._orig_send(message)
 
     def trigger_flag(self):
