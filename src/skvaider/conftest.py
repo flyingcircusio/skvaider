@@ -238,6 +238,7 @@ def mock_request_factory() -> Callable[..., Request]:
         req.state = MagicMock()
         req.state.model = model
         req.state.stream = stream
+        req.state.token_id = "test-token"
         req.headers.get.return_value = None
         return req
 

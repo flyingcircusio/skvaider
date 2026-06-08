@@ -87,6 +87,7 @@ class LoggingMiddleware:
         request.state.parallel_backend = 0
         request.state.backend_endpoint = ""
         request.state.response_headers = {}
+        request.state.token_id = "n/a"
 
         try:
             await self.app(
@@ -118,7 +119,7 @@ class LoggingMiddleware:
                 p = request.state
                 # XXX when streaming: add time to time first token
                 self._logger.info(
-                    f'{anon_ip} {p.model} {backend} {p.request_id} {time_queue}/{time_server}/{process_time} {p.status_code} {p.tokens_prompt}/{p.tokens_completion}/{p.tokens_total} {stream}{debug_flag} {p.retries} {p.parallel_total}/{p.parallel_model}/{p.parallel_backend} "{request.method} {request.url.path}" '
+                    f'{anon_ip} {p.token_id} {p.model} {backend} {p.request_id} {time_queue}/{time_server}/{process_time} {p.status_code} {p.tokens_prompt}/{p.tokens_completion}/{p.tokens_total} {stream}{debug_flag} {p.retries} {p.parallel_total}/{p.parallel_model}/{p.parallel_backend} "{request.method} {request.url.path}" '
                 )
 
 
