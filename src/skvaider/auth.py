@@ -7,7 +7,7 @@ from typing import Annotated, cast
 
 import svcs
 from argon2 import PasswordHasher
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import aramaki
@@ -55,6 +55,7 @@ cache = Cache()  # XXX turn into service
 
 
 async def verify_token(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_auth)],
     services: svcs.fastapi.DepContainer,
 ) -> None:
@@ -67,6 +68,7 @@ async def verify_token(
         pass
     else:
         if credentials.credentials in admin_tokens.tokens:
+            request.state.token_id = "admin-token"
             return
 
     # XXX There's a lot of type issues going on here, because the mechanics of passing through
@@ -93,6 +95,7 @@ async def verify_token(
         try:
             assert isinstance(db_token["secret_hash"], str)
             hasher.verify(db_token["secret_hash"], client_token["secret"])
+            request.state.token_id = client_token["id"]
             cache.add(credentials.credentials)
         # We could specify explicit exceptions here but go the safe route and just catch all in case the lib addes one
         except Exception:
@@ -100,6 +103,7 @@ async def verify_token(
 
 
 async def verify_admin_token(
+    request: Request,
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(_bearer_auth)],
     services: svcs.fastapi.DepContainer,
 ) -> None:
@@ -110,3 +114,4 @@ async def verify_admin_token(
         raise HTTPException(401, detail="No admin tokens configured")
     if credentials.credentials not in admin_tokens.tokens:
         raise HTTPException(401, detail="Bad authentication")
+    request.state.token_id = "admin-token"
