@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+from pathlib import Path
 from typing import Callable
 from unittest.mock import patch
 
@@ -493,3 +494,29 @@ async def test_semaphore_use_yields_backend_and_releases(
     async with sem.use() as b:
         assert b is dummy_backend
     assert model.in_progress == 0
+
+
+async def test_save_state_writes_state_file(
+    dummy_backend: DummyBackend,
+    tmp_path: Path,
+):
+    """save_state() writes cluster state to disk asynchronously via aiofiles."""
+    dummy_backend.healthy = True
+    dummy_backend.memory = {"ram": {"free": 924, "total": 1024}}
+    registered_model_factory("m1", dummy_backend, ram=100)
+
+    pool = Pool(
+        [
+            ModelInstanceConfig(
+                id="m1", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
+        [dummy_backend],
+        data_dir=tmp_path,
+    )
+
+    await pool.save_state()
+    assert pool.state_file is not None
+    assert pool.state_file.exists()
+    content = pool.state_file.read_text()
+    assert "m1" in content

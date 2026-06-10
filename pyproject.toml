@@ -19,6 +19,7 @@ dependencies = [
     "rfc8785>=0.1.4",
     "structlog>=25.5.0",
     "aiosqlite>=0.21.0",
+    "aiofiles>=24.1.0",
     "alembic>=1.16.5",
     "argon2-cffi>=25.1.0",
     "uvicorn-worker>=0.3.0",
