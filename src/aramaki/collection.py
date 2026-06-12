@@ -137,6 +137,8 @@ class Collection:
             .all()
         )
         return [x.record_id for x in result]
+PUSHBACK_TIMEOUT = 30  # seconds to wait for a pushed-back item before releasing
+
 
 
 class ReplicationManager:
@@ -204,6 +206,8 @@ class ReplicationManager:
             self.process_update_message,
             collection=self.collection.collection,
         )
+        # Trigger catchup on every (re-)connection to the directory.
+        self.aramaki.on_connect_callbacks.append(self.request_catchup)
 
         for t in [
             self.request_catchup,
@@ -619,6 +623,23 @@ class PriorityPushbackQueue:
         self.queue.put_nowait(priority)
         # The client should not mark this as "task done", we do that for it.
         self.queue.task_done()
+        # Fire-and-forget: wait for a new item to arrive, but give up after
+        # PUSHBACK_TIMEOUT. If the expected message never arrives (e.g. lost
+        # in transit), the pushed-back item will be released so the caller
+        # can detect the gap and request a catchup.
+        asyncio.create_task(self._pushback_wait())
+
+    async def _pushback_wait(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self.new_item.wait(), timeout=PUSHBACK_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            self.new_item.set()
+            log.warning(
+                "pushback timeout expired",
+                timeout_sec=PUSHBACK_TIMEOUT,
+            )
 
     async def get(self) -> tuple[int, Any]:
         await self.new_item.wait()

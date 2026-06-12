@@ -109,8 +109,12 @@ async def test_null_record(tmp_path: Path):
         assert record_20.version == 20
 
 
-async def test_pushback_queue():
+async def test_pushback_queue(
+    monkeypatch: pytest.MonkeyPatch,
+):
     queue = aramaki.collection.PriorityPushbackQueue()
+    # Increase timeout so pushback doesn't auto-release during this test
+    monkeypatch.setattr(aramaki.collection, "PUSHBACK_TIMEOUT", 9999)
     queue.put(3, "3")
     queue.put(1, "1")
     queue.put(2, "2")
@@ -172,6 +176,7 @@ class AramakiDummy:
     principal = "host1"
     application = "test"
 
+    on_connect_callbacks: list = []
     db: aramaki.db.DBSessionManager
     message: tuple[tuple[Any, ...], dict[str, Any]] | None
 

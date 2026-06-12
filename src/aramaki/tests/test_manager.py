@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import json
+import random
 import time
 import unittest.mock
 import uuid
@@ -345,3 +346,116 @@ async def test_manager_run_loop(
             '{"key": "value", "@type": "foobar", "@context": "https://flyingcircus.io/ns/aramaki", "@version": 1, "@principal": "host1", "@application": "app", "@issued": "1970-01-01T00:00:00+00:00", "@expiry": "1970-01-01T01:00:00+00:00", "@id": "64473ce93de046988f93a3feb6e11914", "@signature": {"alg": "HS256", "signature": "5a97fe6881c6dbe8a73ba95ef63ca1dc2f9882d8494c58b2c6799b13f79e37da"}}'
         ),
     ]
+
+async def test_priority_pushback_queue_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Ensure a pushed-back item is released after PUSHBACK_TIMEOUT."""
+    import aramaki.collection as aramaki_col
+    from aramaki.collection import PriorityPushbackQueue
+
+    queue = PriorityPushbackQueue()
+    monkeypatch.setattr(aramaki_col, "PUSHBACK_TIMEOUT", 0.2)
+
+    queue.put(1, "first")
+    put_back_done = asyncio.Event()
+
+    async def pushback():
+        queue.put_back(2, "pushed_back")
+        put_back_done.set()
+
+    task = asyncio.create_task(pushback())
+    await asyncio.wait_for(put_back_done.wait(), timeout=2.0)
+
+    priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
+    assert priority == 1
+    assert item == "first"
+    priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
+    assert priority == 2
+    assert item == "pushed_back"
+    task.cancel()
+
+
+async def test_priority_pushback_queue_normal_release(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """When a new item arrives before timeout, pushed-back item released normally."""
+    import aramaki.collection as aramaki_col
+    from aramaki.collection import PriorityPushbackQueue
+
+    queue = PriorityPushbackQueue()
+    monkeypatch.setattr(aramaki_col, "PUSHBACK_TIMEOUT", 5.0)
+
+    queue.put(1, "first")
+    pushback_done = asyncio.Event()
+
+    async def pushback():
+        queue.put_back(2, "pushed_back")
+        pushback_done.set()
+
+    task = asyncio.create_task(pushback())
+    await asyncio.sleep(0.05)
+    queue.put(3, "new")
+    await asyncio.wait_for(pushback_done.wait(), timeout=2.0)
+    task.cancel()
+
+    priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
+    assert priority == 1
+    assert item == "first"
+    priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
+    assert priority == 2
+    assert item == "pushed_back"
+    priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
+    assert priority == 3
+    assert item == "new"
+
+
+async def test_on_connect_callbacks(
+    now: unittest.mock.Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Verify on_connect_callbacks are fired when websocket connects."""
+    import uuid as uuid_mod
+
+    websocket = unittest.mock.AsyncMock()
+    connect = unittest.mock.Mock()
+    connect.return_value = AsyncContextManagerMock(websocket)
+    monkeypatch.setattr(websockets, "connect", connect)
+
+    async def receive_messages(self: Any) -> AsyncGenerator[bytes, None]:
+        await asyncio.sleep(10000)
+
+    websocket.__aiter__ = receive_messages
+
+    m_uuid = unittest.mock.Mock()
+    m_uuid().hex = "64473ce93de046988f93a3feb6e11914"
+    monkeypatch.setattr(uuid_mod, "uuid4", m_uuid)
+
+    manager = Manager("host1", "app", "dummy", "asdf", tmp_path)
+    manager.start()
+
+    cb_called = asyncio.Event()
+
+    async def on_connect() -> None:
+        cb_called.set()
+
+    manager.on_connect_callbacks.append(on_connect)
+    await manager.websocket_ready.wait()
+    await asyncio.wait_for(cb_called.wait(), timeout=2.0)
+    assert cb_called.is_set()
+
+
+async def test_catchup_on_websocket_reconnect(
+    now: unittest.mock.Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Ensure catchup callback is registered on collection creation."""
+    from aramaki.collection import Collection
+
+    class TestCollection(Collection):
+        collection = "test"
+
+    manager = Manager("host1", "app", "dummy", "asdf", tmp_path)
+    manager.register_collection(TestCollection)
+
+    assert len(manager.on_connect_callbacks) == 1
+    callback = manager.on_connect_callbacks[0]
+    assert hasattr(callback, "__self__")
