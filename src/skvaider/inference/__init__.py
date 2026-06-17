@@ -12,7 +12,7 @@ import structlog.dev
 import structlog.stdlib
 import svcs
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import skvaider.inference.routers.manager
@@ -165,6 +165,24 @@ def app_factory(config: Config, lifespan: Any = lifespan) -> FastAPI:
         return JSONResponse(
             status_code=500,
             content={"detail": "An internal server error occurred."},
+        )
+
+    @app.exception_handler(HTTPException)
+    async def _http_exception_handler(  # pyright: ignore[reportUnusedFunction]
+        request: Request, exc: HTTPException
+    ) -> JSONResponse:
+        """
+        Log HTTPException errors at ERROR level when status >= 500
+        before returning the default error response.
+        """
+        if exc.status_code >= 500:
+            log.error(
+                f"HTTP {exc.status_code} for request: {request.method} {request.url}",
+                detail=exc.detail,
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
         )
 
     return app
