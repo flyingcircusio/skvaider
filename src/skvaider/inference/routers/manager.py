@@ -67,6 +67,12 @@ async def update_manifest(
     models = {m.lower() for m in body.models}
     unknown = models - manager.models.keys()
     if unknown:
+        log.error(
+            "manifest rejected: unknown models",
+            unknown=sorted(unknown),
+            requested=sorted(models),
+            configured=sorted(manager.models.keys()),
+        )
         raise HTTPException(
             status_code=500,
             detail=f"Unknown models: {sorted(unknown)}",
