@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import functools
 import hashlib
 import json
@@ -24,6 +25,7 @@ import openai
 import psutil
 import structlog
 from openai.types.chat import (
+    ChatCompletionContentPartImageParam,
     ChatCompletionMessageParam,
     ChatCompletionToolParam,
     ChatCompletionUserMessageParam,
@@ -41,6 +43,12 @@ from skvaider.inference.config import (
 from skvaider.utils import TaskManager, slugify
 
 log = structlog.get_logger()
+
+# https://commons.wikimedia.org/wiki/File:Aster_Tataricus.JPG
+flower_path = Path(__file__).parent / "assets" / "250px-Aster_Tataricus.JPG"
+flower_image_b64 = None
+with open(flower_path, "rb") as f:
+    flower_image_b64 = base64.b64encode(f.read()).decode()
 
 
 def walk_process_tree(root_pid: int) -> set[int]:
@@ -214,6 +222,8 @@ class Model(ABC):
             checks = [self._check_completion_health]
             if self.config.supports_tools:
                 checks.append(self._check_completion_streaming_tool_call_health)
+            if self.config.supports_images:
+                checks.append(self._check_completion_with_image_input_health)
 
         result: dict[str, str] = {}
         for check in checks:
@@ -428,6 +438,41 @@ class Model(ABC):
                 break
 
         return result
+
+    async def _check_completion_with_image_input_health(self) -> dict[str, str]:
+        messages = [
+            ChatCompletionUserMessageParam(
+                role="user",
+                content=[
+                    {"type": "text", "text": "What is in this image?"},
+                    ChatCompletionContentPartImageParam(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{flower_image_b64}"
+                            },
+                        }
+                    ),
+                ],
+            )
+        ]
+        try:
+            client = openai.AsyncOpenAI(base_url=self.endpoint, api_key="")
+            resp = await client.chat.completions.create(
+                model=self.config.id,
+                messages=messages,
+            )
+        except openai.APIConnectionError as e:
+            return {"completion_with_image_input": f"Error connecting: {e}"}
+        content = resp.choices[0].message.content
+        strings = ["flower", "plant", "blossom", "petal"]
+        if not content:
+            return {"completion_with_image_input": "Response content is empty"}
+        if not any(s in content.lower() for s in strings):
+            return {
+                "completion_with_image_input": "Response does not contain expected terms"
+            }
+        return {"completion_with_image_input": ""}
 
     async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""
