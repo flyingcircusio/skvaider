@@ -50,6 +50,12 @@ flower_image_b64 = None
 with open(flower_path, "rb") as f:
     flower_image_b64 = base64.b64encode(f.read()).decode()
 
+# https://commons.wikimedia.org/wiki/File:Soni_test_image.png
+test_image_path = Path(__file__).parent / "assets" / "960px-Soni_test_image.png"
+test_image_b64 = None
+with open(test_image_path, "rb") as f:
+    test_image_b64 = base64.b64encode(f.read()).decode()
+
 
 def walk_process_tree(root_pid: int) -> set[int]:
     pids = {root_pid}
@@ -439,7 +445,9 @@ class Model(ABC):
 
         return result
 
-    async def _check_completion_with_image_input_health(self) -> dict[str, str]:
+    async def _check_completion_with_image_input_health_flower(
+        self,
+    ) -> dict[str, str]:
         messages = [
             ChatCompletionUserMessageParam(
                 role="user",
@@ -449,7 +457,7 @@ class Model(ABC):
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{flower_image_b64}"
+                                "url": f"data:image/jpeg;base64,{flower_image_b64}",
                             },
                         }
                     ),
@@ -471,6 +479,41 @@ class Model(ABC):
         if not any(s in content.lower() for s in strings):
             return {
                 "completion_with_image_input": "Response does not contain expected terms"
+            }
+        return {"completion_with_image_input": ""}
+
+    async def _check_completion_with_image_input_health(self) -> dict[str, str]:
+        messages = [
+            ChatCompletionUserMessageParam(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Please extract image text"},
+                    ChatCompletionContentPartImageParam(
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{test_image_b64}",
+                            },
+                        }
+                    ),
+                ],
+            )
+        ]
+        try:
+            client = openai.AsyncOpenAI(base_url=self.endpoint, api_key="")
+            resp = await client.chat.completions.create(
+                model=self.config.id,
+                messages=messages,
+            )
+        except openai.APIConnectionError as e:
+            return {"completion_with_image_input": f"Error connecting: {e}"}
+        content = resp.choices[0].message.content
+        expected = "This is a test image"
+        if not content:
+            return {"completion_with_image_input": "Response content is empty"}
+        if expected not in content:
+            return {
+                "completion_with_image_input": f"Response does not contain expected text: {expected!r} not in {content!r}"
             }
         return {"completion_with_image_input": ""}
 
