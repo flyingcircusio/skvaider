@@ -93,6 +93,8 @@ async def lifespan(
 
     loop.set_exception_handler(global_exception_handler)
 
+    skvaider.auth.start_verify_pool()
+
     backends: list[skvaider.proxy.backends.Backend] = []
     for backend_config in config.backend:
         if backend_config.type == "skvaider":
@@ -135,6 +137,7 @@ async def lifespan(
     if aramaki:
         aramaki.stop()
     pool.close()
+    skvaider.auth.stop_verify_pool()
 
 
 def app_factory(config: Config, lifespan: Any) -> FastAPI:

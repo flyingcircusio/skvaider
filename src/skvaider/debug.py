@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import aiofiles
 from fastapi import Request
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -142,7 +143,6 @@ class BodyBuffer:
 
 
 class DebugRecorder:
-    # XXX async file io!
     temp_file: Path | None
     triggers: list[str]
     time_start: float
@@ -211,11 +211,13 @@ class DebugRecorder:
 
     async def write_request(self, stem: str, data: dict[str, Any]) -> None:
         path = self.directory / f"{stem}.request"
-        path.write_text(_format_request(data))
+        async with aiofiles.open(path, mode="w") as f:
+            await f.write(_format_request(data))
 
     async def write_response(self, stem: str, data: dict[str, Any]) -> None:
         path = self.directory / f"{stem}.response"
-        path.write_text(_format_response(data))
+        async with aiofiles.open(path, mode="w") as f:
+            await f.write(_format_response(data))
 
     async def record(self) -> None:
         if 400 <= self.status_code < 500:

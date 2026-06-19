@@ -133,9 +133,16 @@ class Manager:
         self.manifest_changed.set()
 
     def update_manifest(self, model_ids: set[str], serial: Serial) -> None:
-        if serial <= self.manifest_serial:
+        if serial < self.manifest_serial:
             log.info(
                 "ignoring manifest with stale serial",
+                serial=serial,
+                current=self.manifest_serial,
+            )
+            return
+        if serial == self.manifest_serial:
+            log.info(
+                "ignoring manifest with current serial",
                 serial=serial,
                 current=self.manifest_serial,
             )

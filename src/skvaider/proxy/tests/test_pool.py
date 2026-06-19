@@ -1,8 +1,11 @@
 import asyncio
+import contextlib
 import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, AsyncGenerator, Callable
 from unittest.mock import patch
+
+import aiofiles
 
 from skvaider.config import ModelInstanceConfig, parse_size
 from skvaider.conftest import registered_model_factory
@@ -11,7 +14,7 @@ from skvaider.proxy.backends import DummyBackend
 from skvaider.proxy.models import AIModel
 from skvaider.utils import TaskManager
 
-from ..pool import Pool
+from ..pool import ClusterState, Pool
 
 
 async def test_maps_only_includes_desired_models(
@@ -520,3 +523,57 @@ async def test_save_state_writes_state_file(
     assert pool.state_file.exists()
     content = pool.state_file.read_text()
     assert "m1" in content
+
+
+async def test_save_state_serializes_concurrent_calls(
+    dummy_backend: DummyBackend,
+    tmp_path: Path,
+):
+    """Concurrent save_state() calls must not race on the shared temp file.
+
+    Multiple backend health monitors call save_state() concurrently. Without
+    serialization they share one temp file and the second rename() fails with
+    FileNotFoundError once the first has moved the temp file into place.
+    """
+    dummy_backend.healthy = True
+    dummy_backend.memory = {"ram": {"free": 924, "total": 1024}}
+    registered_model_factory("m1", dummy_backend, ram=100)
+
+    pool = Pool(
+        [
+            ModelInstanceConfig(
+                id="m1", instances=1, memory={"ram": 100}, task="chat"
+            )
+        ],
+        [dummy_backend],
+        data_dir=tmp_path,
+    )
+
+    active = 0
+    max_active = 0
+    real_open: Callable[..., Any] = aiofiles.open
+
+    @contextlib.asynccontextmanager
+    async def tracking_open(
+        *args: Any, **kwargs: Any
+    ) -> AsyncGenerator[Any, None]:
+        nonlocal active, max_active
+        async with real_open(*args, **kwargs) as f:
+            active += 1
+            max_active = max(max_active, active)
+            # Force a scheduling point inside the critical section so any
+            # unserialized concurrency becomes observable.
+            await asyncio.sleep(0)
+            try:
+                yield f
+            finally:
+                active -= 1
+
+    with patch("skvaider.proxy.pool.aiofiles.open", tracking_open):
+        await asyncio.gather(*(pool.save_state() for _ in range(10)))
+
+    assert max_active == 1
+
+    assert pool.state_file is not None
+    # The final file is complete, valid JSON (no torn write left behind).
+    ClusterState.model_validate_json(pool.state_file.read_text())

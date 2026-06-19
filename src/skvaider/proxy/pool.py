@@ -161,6 +161,7 @@ class Pool:
         self.model_configs = {m.id: m for m in model_configs}
 
         self.model_management_lock = asyncio.Lock()
+        self.save_state_lock = asyncio.Lock()
 
         for model_id in self.model_configs:
             self.semaphores[model_id] = ModelSemaphore(model_id, self)
@@ -206,33 +207,36 @@ class Pool:
         if not self.state_file:
             return
 
-        records = {
-            backend.url: BackendStateRecord(
-                url=backend.url,
-                healthy=backend.healthy,
-                memory=backend.memory,
-                map_up=backend.map_up.state,
-                map_up_last_change=backend.map_up.last_change,
-                map_in=backend.map_in.state,
-                map_in_last_change=backend.map_in.last_change,
-                models={
-                    model_id: ModelStateRecord(
-                        id=model_id,
-                        memory_usage=model.memory_usage,
-                    )
-                    for model_id, model in backend.models.items()
-                },
-            )
-            for backend in self.backends
-        }
-        state = ClusterState(backends=records)
-        data = state.model_dump_json(indent=2)
+        # Serialize concurrent saves: multiple backend health monitors call
+        # this, and a shared temp file would race on the rename otherwise.
+        async with self.save_state_lock:
+            records = {
+                backend.url: BackendStateRecord(
+                    url=backend.url,
+                    healthy=backend.healthy,
+                    memory=backend.memory,
+                    map_up=backend.map_up.state,
+                    map_up_last_change=backend.map_up.last_change,
+                    map_in=backend.map_in.state,
+                    map_in_last_change=backend.map_in.last_change,
+                    models={
+                        model_id: ModelStateRecord(
+                            id=model_id,
+                            memory_usage=model.memory_usage,
+                        )
+                        for model_id, model in backend.models.items()
+                    },
+                )
+                for backend in self.backends
+            }
+            state = ClusterState(backends=records)
+            data = state.model_dump_json(indent=2)
 
-        tmp = self.state_file.with_suffix(".tmp")
-        async with aiofiles.open(tmp, mode="w") as f:
-            await f.write(data)
-            await f.flush()
-        tmp.rename(self.state_file)
+            tmp = self.state_file.with_suffix(".tmp")
+            async with aiofiles.open(tmp, mode="w") as f:
+                await f.write(data)
+                await f.flush()
+            tmp.rename(self.state_file)
 
     def placement_map(self) -> ModelMap:
         return placement.placement_map(
