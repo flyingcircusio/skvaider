@@ -1,7 +1,7 @@
 import time
 from typing import Any, Literal
 
-from pydantic import GetCoreSchemaHandler
+from pydantic import GetCoreSchemaHandler, field_validator
 from pydantic_core import core_schema
 
 from skvaider.utils import RequestMethod, RequestModel, ResponseModel
@@ -121,3 +121,8 @@ class ManifestRequest(RequestModel[ManifestResponse]):
 
     models: set[str]
     serial: Serial
+
+    @field_validator("models", mode="after")
+    @classmethod
+    def normalize_models(cls, models: set[str]) -> set[str]:
+        return {m.lower() for m in models}
