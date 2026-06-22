@@ -49,7 +49,9 @@ Key components:
 
 ### Inference server (`skvaider.inference:app_factory()`)
 
-Runs local LLMs via llama-server subprocesses.
+Runs LLM models. For development and E2E testing, ``engine = "dummy"`` in config
+starts an in-process aiohttp server (no model downloads, no subprocess). Real
+``engine = "llama-server"`` runs llama-server subprocesses with downloaded GGUF files.
 
 - **Entry point**: `src/skvaider/inference/__init__.py`
 - **Config file**: `config-inference-{1,2}.toml`
@@ -77,7 +79,7 @@ introduced under any circumstances.
 2. Proxy authenticates via aramaki tokens
 3. Pool assigns request to least-loaded backend but batches requests that are incoming at the same time.
 4. Backend proxies to inference server (`/models/{model}/proxy/v1/chat/completions`)
-5. Proxy starts models as needed (llama-server subprocess). At least one reserved model instance should always be available. Additional models are stopped and started as needed.
+5. Proxy starts models as needed (via DummyModel in dev, via llama-server subprocess in production). At least one reserved model instance should always be available. Additional models are stopped and started as needed.
 6. Response streams back through the chain
 
 ## Model Status System
