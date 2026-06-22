@@ -289,66 +289,75 @@ class SkvaiderBackend(Backend):
     async def monitor_health_and_update_models(self) -> None:
         self.log.debug("starting monitor")
         while True:
-            was_healthy = self.healthy
-
-            in_progress = sum([x.in_progress for x in self.models.values()])
             try:
-                if in_progress:
-                    # XXX skip health check as we can't communicate out of band at the moment
-                    # otherwise we mark busy backends as dead too fast and cause superfluous
-                    # unloading of healthy models.
-                    pass
-                else:
-                    await self._update_health()
-                    self.healthy = True
-            except httpx.ConnectError as e:
-                self.healthy = False
-                self.unhealthy_reason = str(e)
-            except Exception as e:
-                self.healthy = False
-                self.unhealthy_reason = repr(e)
-            else:
-                self.unhealthy_reason = ""
-
-            # Handle state changes
-            if was_healthy == self.healthy:
-                # nothing happened
-                pass
-            elif self.healthy:
-                # we just became healthy
-                self.log.info(
-                    "backend became HEALTHY, marking UP and IN",
-                    backend=self.url,
+                await self._monitor_health_and_update_models()
+            except Exception:
+                self.log.exception(
+                    "An error occured monitoring health and updating models - restarting monitor"
                 )
-                self.map_up.mark("up")
-                self.map_in.mark("in")
-                await self.pool.save_state()
-                await self.pool.tasks.create(self.pool.rebalance)
-            elif not self.healthy:
-                self.log.warning(
-                    "backend became UNHEALTHY, marking DOWN",
-                    backend=self.url,
-                    reason=self.unhealthy_reason,
-                )
-                self.map_up.mark("down")
-                self.current_serial = Serial.floor()
-                await self.pool.save_state()
-                await self.pool.tasks.create(self.pool.rebalance)
-
-            # Handle steady states
-            if self.healthy:
-                await self.ensure_healthy()
             else:
-                await self.ensure_unhealthy()
-
-            self.request_health_update.clear()
+                self.request_health_update.clear()
             try:
+                # Will retry immediately if request_health_update did not clear.
                 await asyncio.wait_for(
                     self.request_health_update.wait(),
                     timeout=self.health_interval,
                 )
             except asyncio.TimeoutError:
                 pass
+
+    async def _monitor_health_and_update_models(self):
+        was_healthy = self.healthy
+
+        in_progress = sum([x.in_progress for x in self.models.values()])
+        try:
+            if in_progress:
+                # XXX skip health check as we can't communicate out of band at the moment
+                # otherwise we mark busy backends as dead too fast and cause superfluous
+                # unloading of healthy models.
+                pass
+            else:
+                await self._update_health()
+                self.healthy = True
+        except httpx.ConnectError as e:
+            self.healthy = False
+            self.unhealthy_reason = str(e)
+        except Exception as e:
+            self.healthy = False
+            self.unhealthy_reason = repr(e)
+        else:
+            self.unhealthy_reason = ""
+
+        # Handle state changes
+        if was_healthy == self.healthy:
+            # nothing happened
+            pass
+        elif self.healthy:
+            # we just became healthy
+            self.log.info(
+                "backend became HEALTHY, marking UP and IN",
+                backend=self.url,
+            )
+            self.map_up.mark("up")
+            self.map_in.mark("in")
+            await self.pool.save_state()
+            await self.pool.tasks.create(self.pool.rebalance)
+        elif not self.healthy:
+            self.log.warning(
+                "backend became UNHEALTHY, marking DOWN",
+                backend=self.url,
+                reason=self.unhealthy_reason,
+            )
+            self.map_up.mark("down")
+            self.current_serial = Serial.floor()
+            await self.pool.save_state()
+            await self.pool.tasks.create(self.pool.rebalance)
+
+        # Handle steady states
+        if self.healthy:
+            await self.ensure_healthy()
+        else:
+            await self.ensure_unhealthy()
 
     async def ensure_healthy(self):
         """Perform actions to keep a healthy backend updated and consistent.

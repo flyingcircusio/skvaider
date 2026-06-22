@@ -152,7 +152,7 @@ def logging_config(config: LoggingConfig) -> dict[str, Any]:
                 "propagate": False,
             },
         },
-        "root": {"handlers": ["console"]},
+        "root": {"handlers": ["console"], "level": "WARNING"},
     }
 
     common_config = {

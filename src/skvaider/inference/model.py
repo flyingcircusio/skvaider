@@ -404,7 +404,10 @@ class Model(ABC):
             )
         ]
         try:
-            client = openai.AsyncOpenAI(base_url=self.endpoint, api_key="")
+            assert self.endpoint
+            client = openai.AsyncOpenAI(
+                base_url=self.endpoint + "/v1", api_key=""
+            )
             s = client.chat.completions.stream(
                 model=self.config.id,
                 messages=messages,
@@ -465,7 +468,10 @@ class Model(ABC):
             )
         ]
         try:
-            client = openai.AsyncOpenAI(base_url=self.endpoint, api_key="")
+            assert self.endpoint
+            client = openai.AsyncOpenAI(
+                base_url=self.endpoint + "/v1", api_key=""
+            )
             resp = await client.chat.completions.create(
                 model=self.config.id,
                 messages=messages,
@@ -500,7 +506,10 @@ class Model(ABC):
             )
         ]
         try:
-            client = openai.AsyncOpenAI(base_url=self.endpoint, api_key="")
+            assert self.endpoint
+            client = openai.AsyncOpenAI(
+                base_url=self.endpoint + "/v1", api_key=""
+            )
             resp = await client.chat.completions.create(
                 model=self.config.id,
                 messages=messages,

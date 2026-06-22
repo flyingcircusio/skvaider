@@ -12,8 +12,7 @@ import structlog.dev
 import structlog.stdlib
 import svcs
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 
 import skvaider.inference.routers.manager
 import skvaider.inference.routers.metrics
@@ -150,22 +149,24 @@ def app_factory(config: Config, lifespan: Any = lifespan) -> FastAPI:
         skip_paths=frozenset({"/metrics", "/manager/health"}),
     )
 
-    @app.exception_handler(Exception)
-    async def _exception_handler(  # pyright: ignore[reportUnusedFunction]
-        request: Request, exc: Exception
-    ) -> JSONResponse:
-        """
-        This catches all unhandled 500 errors anywhere in the app.
-        """
-        log.error(
-            f"Unhandled exception for request: {request.method} {request.url}",
-            exc_info=exc,
-        )
-
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "An internal server error occurred."},
-        )
+    # We used to try to figure out which exception handlers to add for logging.
+    # However, we found out that we don't want specific error handlers here.
+    # The default works fine and behaves like this:
+    #
+    # 1. If the application explicitly raises an HTTPException, this is not logged
+    #    as that is the path for the application to communicate *known* error states.
+    #
+    #    This is also provided with JSON output and information for the client.
+    #
+    # 2. If the application raises other unexpected exceptions, this is logged with
+    #    a traceback because this is a technical malfunction.
+    #
+    #    This causes a generic server error without any detailsa s we might leak
+    #    sensitive information otherwise.
+    #
+    # Unfortunately we had to discover this by cross-testing the behaviour
+    # and cross-reading the starlette/fastapi docs as the intention isn't quite clear
+    # or obvious from any specific doc.
 
     return app
 

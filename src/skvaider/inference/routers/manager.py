@@ -1,6 +1,6 @@
 import structlog
 import svcs
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from skvaider.inference.manager import Manager
@@ -64,12 +64,18 @@ async def update_manifest(
 ) -> JSONResponse:
     """Update the manifest of models to load; the manager converges asynchronously."""
     manager = services.get(Manager)
-    models = {m.lower() for m in body.models}
-    unknown = models - manager.models.keys()
-    if unknown:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unknown models: {sorted(unknown)}",
-        )
+    unknown = body.models - manager.models.keys()
+    models = body.models - unknown
     manager.update_manifest(models, body.serial)
+    if unknown:
+        log.warning(
+            "manifest accepted with errors: unknown models",
+            unknown=sorted(unknown),
+            manifest=sorted(models),
+            known=sorted(manager.models.keys()),
+        )
+        return JSONResponse(
+            status_code=400,
+            content={"status": "unknown models", "unknown": sorted(unknown)},
+        )
     return JSONResponse(status_code=202, content={"status": "ok"})
