@@ -223,6 +223,26 @@ async def gemma(gemma_dummy: DummyModel) -> DummyModel:
 
 
 @pytest.fixture
+async def embeddinggemma_dummy(manager: Manager) -> DummyModel:
+    """In-process dummy embedding model."""
+    config = DummyModelConfig(
+        id="embeddinggemma",
+        task="embedding",
+        max_requests=4,
+        port=get_port(),
+    )
+    model = DummyModel(config, manager.manifest_changed.set)
+    manager.add_model(model)
+    return model
+
+
+@pytest.fixture
+async def embeddinggemma(embeddinggemma_dummy: DummyModel) -> DummyModel:
+    """Default embeddinggemma fixture — uses the in-process dummy engine."""
+    return embeddinggemma_dummy
+
+
+@pytest.fixture
 async def embeddinggemma_real(
     models_cache: Path, manager: Manager
 ) -> LlamaModel:

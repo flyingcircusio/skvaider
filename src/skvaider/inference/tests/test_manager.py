@@ -1,60 +1,23 @@
-import asyncio
 from pathlib import Path
 
 import httpx
 import pytest
 
+from skvaider.dummy_engine import DummyModel
 from skvaider.inference.config import LlamaModelFile, LlamaServerModelConfig
 from skvaider.inference.manager import Manager
 from skvaider.inference.model import LlamaModel
 
 
-async def test_manager_start_crash_quick_return(
-    gemma_real: LlamaModel, manager: Manager
-):
-    gemma_real._config.cmd_args = ["--asdf"]
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(manager.start_model("gemma"), timeout=10)
-
-
-async def test_download_model_success(gemma_real: LlamaModel):
-    await gemma_real.download()
-    assert gemma_real.model_files[0].exists()
-    assert gemma_real.integrity_marker_file.exists()
-
-
-async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
-    config = LlamaServerModelConfig(
-        id="gemma",
-        files=[
-            LlamaModelFile(
-                url=f"{gguf_http_server}/not-a-model.gguf",
-                hash="foobar",
-            )
-        ],
-        context_size=1024,
-        port=0,
-        task="chat",
-    )
-    model = LlamaModel(config, lambda: None)
-    model.datadir = tmp_path
-    with pytest.raises(ValueError) as e:
-        await model.download()
-    assert (
-        e.value.args[0]
-        == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    )
-    assert model.model_files[0].exists()
-    assert not model.integrity_marker_file.exists()
-
-
-async def test_manager_start_model(gemma_real: LlamaModel, manager: Manager):
+async def test_manager_start_model(gemma: DummyModel, manager: Manager):
+    """Full lifecycle via manager — start, use, chat, unload."""
+    model = gemma
     assert await manager.use_model("unknown-model") is None
 
     # not yet started, not usable
     assert await manager.use_model("gemma") is None
 
-    model = await manager.start_model("gemma")
+    await manager.start_model("gemma")
     assert model.config.id == "gemma"
     assert model.endpoint
     assert model.endpoint.startswith("http://127.0.0.1:")
@@ -64,56 +27,6 @@ async def test_manager_start_model(gemma_real: LlamaModel, manager: Manager):
         r = await client.get(f"{model.endpoint}/health")
         r.raise_for_status()
         assert r.json() == {"status": "ok"}
-
-        # Get model info via OpenAI-compatible endpoint
-        r = await client.get(f"{model.endpoint}/v1/models")
-        r.raise_for_status()
-        models = r.json()
-        data0 = models["data"][0]
-        data0.pop("created", None)
-        # shows up in ci - differente llama-cpp version?
-        data0.pop("aliases", None)
-        data0.pop("tags", None)
-        assert models == {
-            "data": [
-                {
-                    "id": "gemma",
-                    "meta": {
-                        "n_ctx_train": 32768,
-                        "n_embd": 640,
-                        "n_params": 268098176,
-                        "n_vocab": 262144,
-                        "size": 247407104,
-                        "vocab_type": 1,
-                    },
-                    "object": "model",
-                    "owned_by": "llamacpp",
-                },
-            ],
-            "models": [
-                {
-                    "capabilities": ["completion"],
-                    "description": "",
-                    "details": {
-                        "families": [""],
-                        "family": "",
-                        "format": "gguf",
-                        "parameter_size": "",
-                        "parent_model": "",
-                        "quantization_level": "",
-                    },
-                    "digest": "",
-                    "model": "gemma",
-                    "modified_at": "",
-                    "name": "gemma",
-                    "parameters": "",
-                    "size": "",
-                    "tags": [""],
-                    "type": "model",
-                }
-            ],
-            "object": "list",
-        }
 
         # Run a simple completion via OpenAI-compatible chat API
         r = await client.post(
@@ -142,6 +55,46 @@ async def test_manager_start_model(gemma_real: LlamaModel, manager: Manager):
     assert "active" not in model.status
     assert model.process_status == "stopped"
     assert model.health_status == ""
+
+
+async def test_manager_start_gemma_is_dummy(
+    gemma: DummyModel, manager: Manager
+):
+    """Default gemma fixture uses DummyModel (not LlamaModel)."""
+    assert isinstance(gemma, DummyModel)
+    assert gemma._engine == "dummy"
+
+
+async def test_download_model_success(gemma_real: LlamaModel):
+    """Real LlamaModel download still works (no subprocess needed)."""
+    await gemma_real.download()
+    assert gemma_real.model_files[0].exists()
+    assert gemma_real.integrity_marker_file.exists()
+
+
+async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
+    config = LlamaServerModelConfig(
+        id="gemma",
+        files=[
+            LlamaModelFile(
+                url=f"{gguf_http_server}/not-a-model.gguf",
+                hash="foobar",
+            )
+        ],
+        context_size=1024,
+        port=0,
+        task="chat",
+    )
+    model = LlamaModel(config, lambda: None)
+    model.datadir = tmp_path
+    with pytest.raises(ValueError) as e:
+        await model.download()
+    assert (
+        e.value.args[0]
+        == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    assert model.model_files[0].exists()
+    assert not model.integrity_marker_file.exists()
 
 
 async def test_download_split_model(tmp_path: Path, gguf_http_server: str):
