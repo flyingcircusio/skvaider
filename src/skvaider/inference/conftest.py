@@ -1,6 +1,5 @@
 import asyncio
 import http.server
-import json
 import shutil
 import threading
 from collections.abc import AsyncGenerator
@@ -14,9 +13,11 @@ import svcs.fastapi
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from skvaider.dummy_engine import DummyModel
 from skvaider.inference import app_factory
 from skvaider.inference.config import (
     Config,
+    DummyModelConfig,
     LlamaModelFile,
     LlamaServerModelConfig,
     LoggingConfig,
@@ -58,7 +59,7 @@ def test_api(client: TestClient) -> TestAPI:
 
 @pytest.fixture
 def client(
-    manager: Manager, gemma: LlamaModel
+    manager: Manager, gemma: DummyModel
 ) -> Generator[TestClient, None, None]:
     @svcs.fastapi.lifespan
     async def test_lifespan(
@@ -117,72 +118,26 @@ def get_port() -> int:
     return next
 
 
-class OpenAIServerMock(object):
-    response_status: int = 200
-    response: dict[str, Any] | None = None
-    last_request_json: dict[str, Any]
-    host: str
-    port: int
-
-    def __call__(self, *args: Any, **kw: Any):
-        handler = OpenAIServerMockHandler(self, *args, **kw)
-        return handler
-
-    @property
-    def endpoint(self):
-        return f"http://{self.host}:{self.port}"
-
-
-class OpenAIServerMockHandler(http.server.BaseHTTPRequestHandler):
-    def __init__(self, mock: OpenAIServerMock, *args: Any, **kw: Any):
-        self.mock = mock
-        super().__init__(*args, **kw)
-
-    def do_POST(self):
-        if self.path in ("/v1/completions", "/v1/embeddings"):
-            length = int(self.headers.get("content-length", 0))
-            if length > 0:
-                try:
-                    self.mock.last_request_json = json.loads(
-                        self.rfile.read(length)
-                    )
-                except Exception:
-                    pass
-            self.send_response(self.mock.response_status)
-            self.end_headers()
-            if self.mock.response is not None:
-                self.wfile.write(json.dumps(self.mock.response).encode())
-            else:
-                self.wfile.write(b"{}")
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, format: str, *args: Any) -> None:
-        pass
-
-
 @pytest.fixture
-def openai_server() -> Generator[OpenAIServerMock, None, None]:
-    """In-process HTTP server an OpenAI server.
+async def openai_server() -> AsyncGenerator[DummyModel, None]:
+    """In-process dummy engine for health check tests.
 
-    Yields an OpenAIServerMock instance. Mutate its attribute to change behaviour.
-
+    Controlled via HTTP at ``{endpoint}/__control/`` endpoints.
+    See ``DummyModel`` docstring for the control API.
     """
-    openai_server_mock = OpenAIServerMock()
-    openai_server_mock.host = "127.0.0.1"
-    server = http.server.HTTPServer(
-        (openai_server_mock.host, 0), openai_server_mock
+    port = get_port()
+    config = DummyModelConfig(
+        id="openai-mock",
+        task="chat",
+        max_requests=4,
+        port=port,
     )
-    openai_server_mock.port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    model = DummyModel(config, lambda: None)
+    await model.start()
     try:
-        yield openai_server_mock
+        yield model
     finally:
-        shutdown_thread = threading.Thread(target=server.shutdown)
-        shutdown_thread.start()
-        shutdown_thread.join(timeout=1.0)
+        await model.terminate()
 
 
 async def prepare_model(
@@ -228,7 +183,7 @@ async def prepare_model(
 
 
 @pytest.fixture
-async def gemma(models_cache: Path, manager: Manager) -> LlamaModel:
+async def gemma_real(models_cache: Path, manager: Manager) -> LlamaModel:
     return await prepare_model(
         "gemma",
         4096,
@@ -244,7 +199,33 @@ async def gemma(models_cache: Path, manager: Manager) -> LlamaModel:
 
 
 @pytest.fixture
-async def embeddinggemma(models_cache: Path, manager: Manager) -> LlamaModel:
+async def gemma_dummy(manager: Manager) -> DummyModel:
+    """In-process dummy model for testing (no real llama-server required)."""
+    config = DummyModelConfig(
+        id="gemma",
+        task="chat",
+        max_requests=4,
+        port=get_port(),
+    )
+    model = DummyModel(config, manager.manifest_changed.set)
+    manager.add_model(model)
+    return model
+
+
+@pytest.fixture
+async def gemma(gemma_dummy: DummyModel) -> DummyModel:
+    """Default gemma fixture — uses the in-process dummy engine.
+
+    Tests that need the real llama-server subprocess should use
+    ``gemma_real`` instead.
+    """
+    return gemma_dummy
+
+
+@pytest.fixture
+async def embeddinggemma_real(
+    models_cache: Path, manager: Manager
+) -> LlamaModel:
     return await prepare_model(
         "embeddinggemma",
         4096,

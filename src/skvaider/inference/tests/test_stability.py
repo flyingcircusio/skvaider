@@ -8,12 +8,12 @@ from skvaider.inference.manager import Model
 
 
 @pytest.mark.timeout(120)
-async def test_embeddinggemma_output_stability(embeddinggemma: Model):
-    await embeddinggemma.start()
+async def test_embeddinggemma_output_stability(embeddinggemma_real: Model):
+    await embeddinggemma_real.start()
 
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
-            f"{embeddinggemma.endpoint}/v1/embeddings",
+            f"{embeddinggemma_real.endpoint}/v1/embeddings",
             json={
                 "input": "why is the sky blue?",
                 "temperature": 0.0,

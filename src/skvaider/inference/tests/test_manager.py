@@ -10,17 +10,17 @@ from skvaider.inference.model import LlamaModel
 
 
 async def test_manager_start_crash_quick_return(
-    gemma: LlamaModel, manager: Manager
+    gemma_real: LlamaModel, manager: Manager
 ):
-    gemma._config.cmd_args = ["--asdf"]
+    gemma_real._config.cmd_args = ["--asdf"]
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(manager.start_model("gemma"), timeout=10)
 
 
-async def test_download_model_success(gemma: LlamaModel):
-    await gemma.download()
-    assert gemma.model_files[0].exists()
-    assert gemma.integrity_marker_file.exists()
+async def test_download_model_success(gemma_real: LlamaModel):
+    await gemma_real.download()
+    assert gemma_real.model_files[0].exists()
+    assert gemma_real.integrity_marker_file.exists()
 
 
 async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
@@ -48,7 +48,7 @@ async def test_download_model_wrong_hash(tmp_path: Path, gguf_http_server: str):
     assert not model.integrity_marker_file.exists()
 
 
-async def test_manager_start_model(gemma: LlamaModel, manager: Manager):
+async def test_manager_start_model(gemma_real: LlamaModel, manager: Manager):
     assert await manager.use_model("unknown-model") is None
 
     # not yet started, not usable

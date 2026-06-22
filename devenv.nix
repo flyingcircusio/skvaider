@@ -5,7 +5,6 @@
 {
 
   packages = with pkgs; [
-    llama-cpp
   ];
 
   tasks = {

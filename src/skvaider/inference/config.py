@@ -82,10 +82,18 @@ class SystemdDockerModelConfig(SystemdModelConfigBase):
     docker_container: str
 
 
+class DummyModelConfig(ModelConfig):
+    """Configuration for an in-process dummy model (testing only)."""
+
+    engine: Literal["dummy"] = "dummy"
+    max_requests: int = 4
+
+
 AnyModelConfig = Annotated[
     LlamaServerModelConfig
     | VllmModelConfig
     | SystemdModelConfig
-    | SystemdDockerModelConfig,
+    | SystemdDockerModelConfig
+    | DummyModelConfig,
     Field(discriminator="engine"),
 ]
