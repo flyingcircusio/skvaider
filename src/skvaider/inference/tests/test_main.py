@@ -1,4 +1,3 @@
-from skvaider.conftest import wait_for_condition
 from skvaider.inference.conftest import TestAPI
 from skvaider.inference.manager import Manager
 from skvaider.inference.model import Model
@@ -12,20 +11,11 @@ async def test_health(test_api: TestAPI, gemma: Model):
 
     await gemma.start()
 
-    # the model should be started but health check not completed yet.
-    # this might be flaky.
+    # DummyModel becomes healthy immediately; real llama-server would
+    # have an intermediate "inactive, running" phase.
     health = await test_api(BackendHealthRequest())
     models = {m.id: m for m in health.models}
-    assert models["gemma"].status == {"inactive", "running"}
-
-    @wait_for_condition()
-    async def healthy_model():
-        health = await test_api(BackendHealthRequest())
-        models = {m.id: m for m in health.models}
-        assert models["gemma"].status == {"active", "healthy", "running"}
-        return True
-
-    await healthy_model()
+    assert models["gemma"].status == {"active", "healthy", "running"}
 
 
 async def test_usage_returns_ram_structure(

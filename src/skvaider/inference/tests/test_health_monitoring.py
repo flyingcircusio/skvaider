@@ -2,12 +2,13 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import openai
 import pytest
 
 from skvaider.conftest import wait_for_condition
+from skvaider.dummy_engine import DummyModel
 from skvaider.inference.config import ModelConfig
-from skvaider.inference.conftest import OpenAIServerMock
 from skvaider.inference.model import Model
 
 
@@ -79,65 +80,112 @@ async def test_monitor_health_updates_model_status_completion():
     assert model.status == set(["running", "healthy", "active"])
 
 
-async def test_health_check_embeddings(openai_server: OpenAIServerMock):
+async def test_health_check_embeddings(openai_server: DummyModel) -> None:
+    dummy = openai_server
     model = Model(
         ModelConfig(
             id="test-embed",
-            port=openai_server.port,
+            port=dummy.config.port,
             max_requests=10,
             task="embedding",
         ),
         lambda: None,
     )
-    model.endpoint = openai_server.endpoint
+    model.endpoint = dummy.endpoint
 
     expected_embedding = [0.1, 0.2, 0.3]
-    openai_server.response = {
-        "model": "test-embed",
-        "object": "list",
-        "data": [
-            {"embedding": expected_embedding, "index": 0, "object": "embedding"}
-        ],
-        "usage": {"prompt_tokens": 0, "total_tokens": 0},
-    }
+
+    def _embed_response() -> dict[str, Any]:
+        return {
+            "model": "test-embed",
+            "object": "list",
+            "data": [
+                {
+                    "embedding": expected_embedding,
+                    "index": 0,
+                    "object": "embedding",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "total_tokens": 0},
+        }
+
+    def _embed_response_wrong() -> dict[str, Any]:
+        return {
+            "model": "test-embed",
+            "object": "list",
+            "data": [
+                {
+                    "embedding": [0.9, 0.9, 0.9],
+                    "index": 0,
+                    "object": "embedding",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "total_tokens": 0},
+        }
+
+    async def _set_override(body: dict[str, Any], status: int = 200) -> None:
+        async with httpx.AsyncClient() as c:
+            await c.post(
+                f"{dummy.endpoint}/__control/set_response",
+                json={"path": "/v1/embeddings", "status": status, "body": body},
+            )
 
     # 1. No verification data -> embedding ok, numerical warns
+    await _set_override(_embed_response())
     result = await model._check_embedding_health()
     assert result["embedding"] == ""
     assert result["numerical"] == "no reference data"
 
     # 2. With verification data, correct embedding -> all ok
     model.verification_data = {"test input": expected_embedding}
+    await _set_override(_embed_response())
     result = await model._check_embedding_health()
     assert not any(result.values())
-    assert openai_server.last_request_json["input"] == ["test input"]
+
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{dummy.endpoint}/__control/last_request")
+        assert r.json()["body"]["input"] == ["test input"]
 
     # 3. Wrong embedding -> numerical fails
-    openai_server.response["data"][0]["embedding"] = [0.9, 0.9, 0.9]
+    await _set_override(_embed_response_wrong())
     assert any((await model._check_embedding_health()).values())
 
 
-async def test_health_check_completions(openai_server: OpenAIServerMock):
+async def test_health_check_completions(openai_server: DummyModel) -> None:
+    dummy = openai_server
     model = Model(
         ModelConfig(
             id="test-chat",
-            port=openai_server.port,
+            port=dummy.config.port,
             max_requests=10,
             task="chat",
         ),
         lambda: None,
     )
-    model.endpoint = openai_server.endpoint
+    model.endpoint = dummy.endpoint
 
-    # 2. Simulate correct response -> healthy
-    openai_server.response = {}
+    async with httpx.AsyncClient() as c:
+        # Simulate correct response -> healthy
+        await c.post(
+            f"{dummy.endpoint}/__control/set_response",
+            json={"path": "/v1/completions", "status": 200, "body": {}},
+        )
     assert not any((await model._check_completion_health()).values())
-    assert openai_server.last_request_json["prompt"] == "2+2="
 
-    # 2. Simulate wrong response -> unhealthy
-    openai_server.response_status = 500
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{dummy.endpoint}/__control/last_request")
+        assert r.json()["body"]["prompt"] == "2+2="
+
+        # Simulate wrong response -> unhealthy
+        await c.post(
+            f"{dummy.endpoint}/__control/set_response",
+            json={"path": "/v1/completions", "status": 500, "body": {}},
+        )
     assert any((await model._check_completion_health()).values())
-    assert openai_server.last_request_json["prompt"] == "2+2="
+
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{dummy.endpoint}/__control/last_request")
+        assert r.json()["body"]["prompt"] == "2+2="
 
 
 async def test_health_check_streaming_tool_call_check_live(gemma: Model):

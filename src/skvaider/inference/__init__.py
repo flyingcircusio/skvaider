@@ -25,6 +25,7 @@ from skvaider.logging import LoggingMiddleware, logging_config
 from skvaider.utils import TaskManager
 
 from .config import (
+    DummyModelConfig,
     LlamaServerModelConfig,
     ModelConfig,
     SystemdDockerModelConfig,
@@ -101,6 +102,10 @@ async def lifespan(
             model = SystemdDockerModel(model_config, on_crash)
         elif isinstance(model_config, SystemdModelConfig):  # pyright: ignore[reportUnnecessaryIsInstance]
             model = SystemdModel(model_config, on_crash)
+        elif isinstance(model_config, DummyModelConfig):
+            from skvaider.dummy_engine import DummyModel
+
+            model = DummyModel(model_config, on_crash)
         else:
             raise ValueError(f"Unhandled model config: {model_config}")
 
