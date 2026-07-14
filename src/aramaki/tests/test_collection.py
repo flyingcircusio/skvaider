@@ -114,7 +114,9 @@ async def test_pushback_queue(
 ):
     queue = aramaki.collection.PriorityPushbackQueue()
     # Increase timeout so pushback doesn't auto-release during this test
-    monkeypatch.setattr(aramaki.collection, "PUSHBACK_TIMEOUT", 9999)
+    monkeypatch.setattr(
+        aramaki.collection.PriorityPushbackQueue, "PUSHBACK_TIMEOUT", 9999
+    )
     queue.put(3, "3")
     queue.put(1, "1")
     queue.put(2, "2")
@@ -176,7 +178,7 @@ class AramakiDummy:
     principal = "host1"
     application = "test"
 
-    on_connect_callbacks: list = []
+    on_connect_callbacks: list = []  # type: ignore[type-arg]
     db: aramaki.db.DBSessionManager
     message: tuple[tuple[Any, ...], dict[str, Any]] | None
 

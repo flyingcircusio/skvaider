@@ -1,7 +1,6 @@
 import asyncio
 import datetime
 import json
-import random
 import time
 import unittest.mock
 import uuid
@@ -347,67 +346,49 @@ async def test_manager_run_loop(
         ),
     ]
 
+
 async def test_priority_pushback_queue_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Ensure a pushed-back item is released after PUSHBACK_TIMEOUT."""
-    import aramaki.collection as aramaki_col
-    from aramaki.collection import PriorityPushbackQueue
+    from aramaki.collection import (
+        PUSHBACK_TIMEOUT_SENTINEL,
+        PriorityPushbackQueue,
+    )
 
     queue = PriorityPushbackQueue()
-    monkeypatch.setattr(aramaki_col, "PUSHBACK_TIMEOUT", 0.2)
+    monkeypatch.setattr(PriorityPushbackQueue, "PUSHBACK_TIMEOUT", 0.2)
 
-    queue.put(1, "first")
-    put_back_done = asyncio.Event()
+    # Simulate: version 1 processed, version 3 arrives (too new), waiting for 2
+    queue.put_back(3, "version_3")
+    # new_item is cleared, waiting for a higher-priority item
 
-    async def pushback():
-        queue.put_back(2, "pushed_back")
-        put_back_done.set()
-
-    task = asyncio.create_task(pushback())
-    await asyncio.wait_for(put_back_done.wait(), timeout=2.0)
-
-    priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
-    assert priority == 1
-    assert item == "first"
-    priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
-    assert priority == 2
-    assert item == "pushed_back"
-    task.cancel()
+    # Timeout fires, sentinel is placed
+    _, item = await asyncio.wait_for(queue.get(), timeout=2.0)
+    assert item is PUSHBACK_TIMEOUT_SENTINEL
 
 
 async def test_priority_pushback_queue_normal_release(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """When a new item arrives before timeout, pushed-back item released normally."""
-    import aramaki.collection as aramaki_col
     from aramaki.collection import PriorityPushbackQueue
 
     queue = PriorityPushbackQueue()
-    monkeypatch.setattr(aramaki_col, "PUSHBACK_TIMEOUT", 5.0)
+    monkeypatch.setattr(PriorityPushbackQueue, "PUSHBACK_TIMEOUT", 5.0)
 
-    queue.put(1, "first")
-    pushback_done = asyncio.Event()
+    # Simulate: version 1 processed, version 3 arrives (too new), waiting for 2
+    queue.put_back(3, "version_3")
+    # new_item is cleared
 
-    async def pushback():
-        queue.put_back(2, "pushed_back")
-        pushback_done.set()
+    # Version 2 arrives before timeout
+    queue.put(2, "version_2")
 
-    task = asyncio.create_task(pushback())
-    await asyncio.sleep(0.05)
-    queue.put(3, "new")
-    await asyncio.wait_for(pushback_done.wait(), timeout=2.0)
-    task.cancel()
-
-    priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
-    assert priority == 1
-    assert item == "first"
     priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
     assert priority == 2
-    assert item == "pushed_back"
+    assert item == "version_2"
     priority, item = await asyncio.wait_for(queue.get(), timeout=2.0)
     assert priority == 3
-    assert item == "new"
+    assert item == "version_3"
 
 
 async def test_on_connect_callbacks(
@@ -422,7 +403,7 @@ async def test_on_connect_callbacks(
     monkeypatch.setattr(websockets, "connect", connect)
 
     async def receive_messages(self: Any) -> AsyncGenerator[bytes, None]:
-        await asyncio.sleep(10000)
+        yield b""  # type: ignore[misc]  # never actually yields
 
     websocket.__aiter__ = receive_messages
 
