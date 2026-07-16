@@ -9,29 +9,32 @@ authors = [
     { name = "Flying Circus Internet Operations GmbH", email = "mail@flyingcircus.io" },
 ]
 dependencies = [
+    # keep-sorted start
+    "aiofiles>=24.1.0",
+    "aiosqlite>=0.21.0",
+    "alembic>=1.16.5",
+    "anyio>=4.0.0",
+    "argon2-cffi>=25.1.0",
     "fastapi[standard]>=0.116.1",
-    "httpx>=0.28.1",
     "greenlet>=3.2.4",
+    "httpx-sse>=0.4.3",
+    "httpx>=0.28.1",
+    "openai>=1.100.2",
+    "prometheus-client>=0.21.0",
+    "psutil>=7.2.2",
     "psycopg>=3.2.9",
     "pydantic-settings>=2.10.1",
-    "sqlalchemy>=2.0.43",
-    "svcs>=25.1.0",
     "rfc8785>=0.1.4",
-    "structlog>=25.5.0",
-    "aiosqlite>=0.21.0",
-    "aiofiles>=24.1.0",
-    "alembic>=1.16.5",
-    "argon2-cffi>=25.1.0",
-    "uvicorn-worker>=0.3.0",
-    "anyio>=4.0.0",
-    "psutil>=7.2.2",
-    "prometheus-client>=0.21.0",
     "shortuuid>=1.0.13",
-    "httpx-sse>=0.4.3",
-    "openai>=1.100.2",
+    "sqlalchemy>=2.0.43",
+    "structlog>=25.5.0",
+    "svcs>=25.1.0",
+    "uvicorn-worker>=0.3.0",
+    # keep-sorted end
 ]
 
 [project.scripts]
+# keep-sorted start
 check-skvaider = "skvaider.check:main"
 check-skvaider-config = "skvaider.cli:check_skvaider_config"
 check-skvaider-inference-config = "skvaider.cli:check_inference_config"
@@ -39,6 +42,7 @@ skvaider-generate-embedding-reference = "skvaider.generate_embedding_reference:m
 skvaider-inference = "skvaider.inference:main"
 skvaider-proxy = "skvaider:main"
 skvaider-replay-request = "skvaider.replay:main"
+# keep-sorted end
 
 [build-system]
 requires = ["uv_build>=0.8.2,<0.9.0"]
@@ -78,7 +82,9 @@ reportPrivateUsage = "none"
 [dependency-groups]
 dev = [
     "pytest>=8.4.1",
+    # keep-sorted start
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=6.2.1",
     "pytest-timeout>=2.4.0",
+    # keep-sorted end
 ]
