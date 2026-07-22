@@ -204,7 +204,8 @@ class ReplicationManager:
             self.process_update_message,
             collection=self.collection.collection,
         )
-
+        # Trigger catchup on every (re-)connection to the directory.
+        self.aramaki.on_connect_callbacks.append(self.request_catchup)
         for t in [
             self.request_catchup,
             self.process_update_buffer,
@@ -232,6 +233,12 @@ class ReplicationManager:
     async def process_update_buffer(self) -> None:
         while True:
             update_version, msg = await self.update_buffer.get()
+            if msg is PUSHBACK_TIMEOUT_SENTINEL:
+                log.info("pushback-timeout-catchup", action="catchup")
+                self.update_buffer.drain()
+                utils.create_task(self.request_catchup())
+                self.update_buffer.task_done()
+                continue
             # XXX consider switching to pydantic models here
             log.debug(
                 "collection-process-update-message",
@@ -572,6 +579,10 @@ class ReplicationManager:
             self.catchup_buffer.task_done()
 
 
+# version gap stalled — caller should drain the queue and request catchup
+PUSHBACK_TIMEOUT_SENTINEL = object()
+
+
 class PriorityPushbackQueue:
     """A priority queue that allows putting items back.
 
@@ -585,6 +596,7 @@ class PriorityPushbackQueue:
 
     """
 
+    PUSHBACK_TIMEOUT: float = 30
     metric_put_back: int = 0
     items: dict[int, list[Any]]
     queue: asyncio.PriorityQueue[int]
@@ -596,29 +608,39 @@ class PriorityPushbackQueue:
         self.new_item = asyncio.Event()
 
     def put(self, priority: int, item: Any) -> None:
+        assert priority >= 0
         self.items.setdefault(priority, []).append(item)
         self.queue.put_nowait(priority)
-        # Only signal new items if we haven't put anything back
-        # or got a higher priority since the last putback
         if self.last_put_back and priority >= self.last_put_back:
             return
         self.last_put_back = None
         self.new_item.set()
 
     def put_back(self, priority: int, item: Any) -> None:
+        assert priority >= 0
         self.metric_put_back += 1
         self.items.setdefault(priority, []).append(item)
         if self.queue.empty() or self.queue._queue[0] >= priority:  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
-            # If other items can in they must be of higher priority
-            # to allow immediately passing through without waiting
-            # for new items. There is a bit of further optimization
-            # possible if we'd keep track of the last priority that was
-            # put back and then not setting
             self.new_item.clear()
             self.last_put_back = priority
         self.queue.put_nowait(priority)
-        # The client should not mark this as "task done", we do that for it.
         self.queue.task_done()
+        utils.create_task(self._pushback_wait())
+
+    async def _pushback_wait(self) -> None:
+        try:
+            await asyncio.wait_for(
+                self.new_item.wait(),
+                timeout=self.PUSHBACK_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "pushback timeout, queueing sentinel",
+                timeout_sec=self.PUSHBACK_TIMEOUT,
+            )
+            self.items.setdefault(-1, []).append(PUSHBACK_TIMEOUT_SENTINEL)
+            self.queue.put_nowait(-1)
+            self.new_item.set()
 
     async def get(self) -> tuple[int, Any]:
         await self.new_item.wait()
@@ -626,6 +648,13 @@ class PriorityPushbackQueue:
         if self.queue.empty():
             self.new_item.clear()
         return priority, self.items[priority].pop(0)
+
+    def drain(self) -> None:
+        """Drop all pending items and start fresh."""
+        self.queue = asyncio.PriorityQueue()
+        self.items.clear()
+        self.last_put_back = None
+        self.new_item.clear()
 
     async def join(self) -> None:
         await self.queue.join()

@@ -10,7 +10,7 @@ import uuid
 from asyncio import CancelledError
 from collections import deque
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Coroutine
 
 import rfc8785
 import structlog.stdlib
@@ -76,6 +76,7 @@ class Manager:
     collections: dict[type[Collection], ReplicationManager]
     subscriptions: dict[str, dict[str, str]]
     callbacks: dict[str, Callable[[dict[str, Any]], Awaitable[Any]]]
+    on_connect_callbacks: list[Callable[[], Coroutine[Any, Any, None]]]
     tasks: set[asyncio.Task[Any]]
 
     def __init__(
@@ -96,6 +97,7 @@ class Manager:
 
         self.subscriptions = {}
         self.callbacks = {}
+        self.on_connect_callbacks = []
         self.tasks = set()
         self.websocket_ready = asyncio.Event()
 
@@ -150,6 +152,8 @@ class Manager:
                     await websocket.send(self.prepare_message(subscription))
                     log.info("subscriptions", status="sent")
                     self.websocket_ready.set()
+                    for cb in list(self.on_connect_callbacks):
+                        utils.create_task(cb())
 
                     log.info("Waiting for messages ...")
                     async for message in websocket:
