@@ -10,8 +10,7 @@ from skvaider.utils import TaskManager, slugify
 async def test_wait_for_condition_assertion_timeout():
     @wait_for_condition(interval=0.1, timeout=0.5)
     async def retry_until_ready():
-        assert 2 == 3
-        return True
+        assert False
 
     with pytest.raises(AssertionError):
         await retry_until_ready()

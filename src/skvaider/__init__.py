@@ -179,11 +179,11 @@ def app_factory(config: Config, lifespan: Any) -> FastAPI:
             model = "n/a"
             try:
                 backend = request.state.backend.url
-            except Exception:
+            except AttributeError:
                 pass
             try:
                 model = request.state.model
-            except Exception:
+            except AttributeError:
                 pass
 
             log.error(

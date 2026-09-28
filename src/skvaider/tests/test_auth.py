@@ -1,6 +1,6 @@
 import base64
 import json
-from typing import Callable
+from collections.abc import Callable
 
 import fastapi.exceptions
 import pytest

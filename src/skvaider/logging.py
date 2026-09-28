@@ -28,7 +28,7 @@ class LoggingMiddleware:
     ):
         self.app = app
         self._logger = logger
-        self.trust_remote_request_id
+        self.trust_remote_request_id = trust_remote_request_id
         self.has_debugger = has_debugger
         self.skip_paths = skip_paths
 

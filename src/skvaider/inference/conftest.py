@@ -3,9 +3,9 @@ import http.server
 import json
 import shutil
 import threading
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
-from typing import Any, Generator, Literal
+from typing import Any, Literal
 
 import httpx
 import pytest
@@ -117,7 +117,7 @@ def get_port() -> int:
     return next
 
 
-class OpenAIServerMock(object):
+class OpenAIServerMock:
     response_status: int = 200
     response: dict[str, Any] | None = None
     last_request_json: dict[str, Any]
@@ -146,7 +146,7 @@ class OpenAIServerMockHandler(http.server.BaseHTTPRequestHandler):
                     self.mock.last_request_json = json.loads(
                         self.rfile.read(length)
                     )
-                except Exception:
+                except Exception:  # noqa: S110
                     pass
             self.send_response(self.mock.response_status)
             self.end_headers()

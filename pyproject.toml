@@ -51,6 +51,8 @@ build-backend = "uv_build"
 [tool.ruff]
 line-length = 80
 
+[tool.ruff.lint]
+ignore = ["BLE001", "PYI036", "TRY002"]
 [tool.isort]
 profile = "black"
 line_length = 80
@@ -86,5 +88,6 @@ dev = [
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=6.2.1",
     "pytest-timeout>=2.4.0",
+    "types-aiofiles",
     # keep-sorted end
 ]

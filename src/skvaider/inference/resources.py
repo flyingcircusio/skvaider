@@ -4,10 +4,10 @@ import io
 import json
 import subprocess
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import psutil
 import structlog
-from typing_extensions import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .manager import Manager
@@ -131,7 +131,7 @@ class ROCmMemoryMonitor(MemoryMonitor):
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=5
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.wait()
             raise
@@ -195,7 +195,7 @@ class ROCmMemoryMonitor(MemoryMonitor):
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=5
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.wait()
             return
@@ -255,7 +255,7 @@ class NvidiaMemoryMonitor(MemoryMonitor):
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=5
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.wait()
             raise
@@ -319,7 +319,7 @@ class NvidiaMemoryMonitor(MemoryMonitor):
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=5
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.wait()
             return

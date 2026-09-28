@@ -9,8 +9,9 @@ import time
 import uuid
 from asyncio import CancelledError
 from collections import deque
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import rfc8785
 import structlog.stdlib

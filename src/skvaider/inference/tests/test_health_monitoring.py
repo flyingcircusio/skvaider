@@ -53,17 +53,17 @@ async def test_monitor_health_updates_model_status_completion():
     model.process_status = "running"
     model.endpoint = "http://"  # expose a dummy endpoint to trigger the check
     await has_health_status(model, "healthy")
-    assert model.status == set(["running", "healthy", "active"])
+    assert model.status == {"running", "healthy", "active"}
 
     # Phase 3: model fails, becomes unhealthy and inactive
     model._check_health = health_not_ok
     await has_health_status(model, "unhealthy")
-    assert model.status == set(["running", "unhealthy", "inactive"])
+    assert model.status == {"running", "unhealthy", "inactive"}
 
     # Phase 4: model recovers, becomes healthy and active again
     model._check_health = health_ok
     await has_health_status(model, "healthy")
-    assert model.status == set(["running", "healthy", "active"])
+    assert model.status == {"running", "healthy", "active"}
 
     # Phase 5: model check fails with an exception
     async def health_exception():
@@ -71,12 +71,12 @@ async def test_monitor_health_updates_model_status_completion():
 
     model._check_health = health_exception
     await has_health_status(model, "unhealthy")
-    assert model.status == set(["running", "unhealthy", "inactive"])
+    assert model.status == {"running", "unhealthy", "inactive"}
 
     # Phase 6: recover again
     model._check_health = health_ok
     await has_health_status(model, "healthy")
-    assert model.status == set(["running", "healthy", "active"])
+    assert model.status == {"running", "healthy", "active"}
 
 
 async def test_health_check_embeddings(openai_server: OpenAIServerMock):

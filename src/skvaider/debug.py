@@ -1,7 +1,7 @@
 import json
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -232,14 +232,14 @@ class DebugRecorder:
             self.request_body_json = json.loads(
                 self.captured_request_body.decode("utf-8")
             )
-        except Exception:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self.request_body_json = None
 
         try:
             self.response_body_json = json.loads(
                 self.captured_response_body.decode("utf-8")
             )
-        except Exception:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self.response_body_json = None
 
         state = self.request.state
@@ -264,9 +264,7 @@ class DebugRecorder:
         request_data: dict[str, Any] = {
             "request_id": request_id,
             "debug_id": self.debug_id,
-            "timestamp": datetime.now(timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%S.000Z"
-            ),
+            "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
             "triggers": self.triggers,
             "method": self.request.method,
             "proxy_url": str(self.request.url),

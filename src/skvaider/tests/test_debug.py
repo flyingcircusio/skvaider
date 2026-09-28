@@ -116,7 +116,7 @@ async def test_recorder_request_body_captured(recorder: DebugRecorder):
     data = b"the request body"
     recorder._orig_receive = AsyncMock(
         return_value={"type": "http.request", "body": data}
-    )  #
+    )
     await recorder.capture_request()
     assert recorder.captured_request_body == data
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Simple test script to verify the OpenAI-compatible endpoints work correctly.
 """

@@ -27,7 +27,7 @@ async def test_embeddinggemma_output_stability(embeddinggemma: Model):
         # with open(pathlib.Path(__file__).parent / "fixtures" / "embeddinggemma_stability_output.json", "w") as f:
         #     f.write(response.text)
 
-        with open(
+        with open(  # noqa: ASYNC230
             pathlib.Path(__file__).parent
             / "fixtures"
             / "embeddinggemma_stability_output.json",

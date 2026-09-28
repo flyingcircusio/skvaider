@@ -4,7 +4,7 @@ import json
 import time
 from collections.abc import AsyncGenerator
 from contextlib import AbstractAsyncContextManager
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 import structlog
 import svcs
@@ -20,7 +20,7 @@ from skvaider.proxy.pool import Pool
 T = TypeVar("T")
 
 
-class ListResponse(BaseModel, Generic[T]):
+class ListResponse[T](BaseModel):
     object: str = "list"
     data: list[T]
 
@@ -44,7 +44,7 @@ def _parse_sse_usage(chunk: str) -> dict[str, Any] | None:
         return None
     try:
         event = json.loads(chunk[6:].strip())
-    except Exception:
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     return event.get("usage") or None
 

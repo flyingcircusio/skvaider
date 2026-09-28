@@ -1,6 +1,6 @@
 """Verify that the gateway forwards X-Skvaider-Request-ID to the inference backend."""
 
-from typing import Callable
+from collections.abc import Callable
 from unittest.mock import AsyncMock, patch
 
 import httpx

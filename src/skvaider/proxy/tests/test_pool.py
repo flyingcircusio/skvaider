@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
 import datetime
+from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable
+from typing import Any
 from unittest.mock import patch
 
 import aiofiles

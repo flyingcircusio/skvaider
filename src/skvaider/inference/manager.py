@@ -57,7 +57,7 @@ class UserManagerLock:
         self._manager_lock.release()
 
 
-def locked(
+def locked[SelfT: HasModelLock, **P, R](
     func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
     """Decorator that acquires self.model_lock before executing an async method."""
@@ -127,9 +127,9 @@ class Manager:
 
     @manifest.setter
     def manifest(self, value: set[str]) -> None:
-        self._manifest = set(
-            [model_id for model_id in value if model_id in self.models]
-        )
+        self._manifest = {
+            model_id for model_id in value if model_id in self.models
+        }
         self.manifest_changed.set()
 
     def update_manifest(self, model_ids: set[str], serial: Serial) -> None:
@@ -219,7 +219,7 @@ class Manager:
             if "running" not in model.status:
                 try:
                     await asyncio.wait_for(model.start(), timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     log.error("Timeout starting model", model=model_name)
                     await model.terminate()
                     raise

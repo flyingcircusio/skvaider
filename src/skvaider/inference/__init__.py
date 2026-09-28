@@ -2,10 +2,10 @@ import argparse
 import asyncio
 import os
 import tomllib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable
 from logging import getLogger
 from logging.config import dictConfig
-from typing import Any, Awaitable
+from typing import Any
 
 import structlog
 import structlog.dev
@@ -58,7 +58,7 @@ async def lifespan(
 
     verification_data = {}
     if config.embedding_verification_file:
-        with open(config.embedding_verification_file, "rb") as f:
+        with open(config.embedding_verification_file, "rb") as f:  # noqa: ASYNC230
             if config.embedding_verification_file.suffix == ".json":
                 import json
 
@@ -101,7 +101,7 @@ async def lifespan(
         elif isinstance(model_config, SystemdModelConfig):  # pyright: ignore[reportUnnecessaryIsInstance]
             model = SystemdModel(model_config, on_crash)
         else:
-            raise ValueError(f"Unhandled model config: {model_config}")
+            raise TypeError(f"Unhandled model config: {model_config}")
 
         if model_config.id and model_config.id in verification_data:
             model.verification_data = verification_data[model_config.id]

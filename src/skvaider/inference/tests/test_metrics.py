@@ -9,10 +9,8 @@ from skvaider.inference import metrics
 from skvaider.inference.manager import Manager
 from skvaider.inference.model import Model
 from skvaider.inference.routers.models import (
-    _extract_token_usage as _extract_token_usage,  # pyright: ignore[reportPrivateUsage]
-)
-from skvaider.inference.routers.models import (
-    _record_usage as _record_usage,  # pyright: ignore[reportPrivateUsage]
+    _extract_token_usage,  # pyright: ignore[reportPrivateUsage]
+    _record_usage,  # pyright: ignore[reportPrivateUsage]
 )
 
 

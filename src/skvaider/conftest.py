@@ -2,10 +2,10 @@ import asyncio
 import base64
 import itertools
 import json
-from collections.abc import AsyncGenerator, Callable, Coroutine
+from collections.abc import AsyncGenerator, Callable, Coroutine, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -115,7 +115,7 @@ def wait_for_condition(
                         result = await async_condition(*args, **kwargs)
                     except AssertionError as e:
                         assertion = e
-                    except Exception:
+                    except Exception:  # noqa: S110
                         pass
 
                     if result:
@@ -125,10 +125,10 @@ def wait_for_condition(
 
             try:
                 await asyncio.wait_for(loop(), timeout=timeout)
-            except asyncio.TimeoutError as e:
+            except TimeoutError as e:
                 if assertion:
                     raise assertion
-                raise asyncio.TimeoutError(async_condition.__name__) from e
+                raise TimeoutError(async_condition.__name__) from e
 
         return wrapped
 
@@ -192,7 +192,7 @@ async def test_lifespan(
         # Wait for at least one instance of each model to be active
         loaded = {
             model_id: pool.count_loaded_instances(model_id)
-            for model_id in pool.model_configs.keys()
+            for model_id in pool.model_configs
         }
         if not all(loaded.values()):
             # Dump backend health for debugging flaky CI

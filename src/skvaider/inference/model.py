@@ -40,7 +40,7 @@ from skvaider.inference.config import (
     SystemdModelConfigBase,
     VllmModelConfig,
 )
-from skvaider.utils import TaskManager, slugify
+from skvaider.utils import DownloadProgress, TaskManager, slugify
 
 log = structlog.get_logger()
 
@@ -119,7 +119,7 @@ class UserManagerLock:
         self._manager_lock.release()
 
 
-def locked(
+def locked[SelfT: HasLock, **P, R](
     func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
     """Decorator that acquires self._lock before executing an async method."""
@@ -151,7 +151,7 @@ class Model(ABC):
     status_changed: asyncio.Event
 
     health_status: Literal["healthy", "unhealthy", ""] = ""
-    health_checks: dict[str, str] = {}  # check name -> "" ok, or failure reason
+    health_checks: dict[str, str]
     health_check_interval: float = 300  # every 5 minutes
     health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
     _health_checks: int = 0  # support testing
@@ -181,6 +181,7 @@ class Model(ABC):
     def __init__(
         self, config: ModelConfig, on_unexpected_exit: Callable[[], None]
     ):
+        self.health_checks = {}
         self.config = config
         self.on_unexpected_exit = on_unexpected_exit
         self.lock = UserManagerLock()
@@ -211,13 +212,13 @@ class Model(ABC):
         result.add(self.process_status)
         result.add(self.health_status)
 
-        if set(["running", "healthy"]) <= result:
+        if {"running", "healthy"} <= result:
             result.add("active")
         else:
             result.add("inactive")
 
         # Some status might be an empty string. Filter that out.
-        result = result - set([""])
+        result = result - {""}
 
         return result
 
@@ -284,7 +285,7 @@ class Model(ABC):
                     if resp.status_code == 200:
                         self.endpoint = expected_endpoint
                         return
-                except Exception:
+                except Exception:  # noqa: S110
                     pass
                 await asyncio.sleep(0.5)
 
@@ -546,7 +547,7 @@ class Model(ABC):
                 log.exception("error terminating process", pid=pid)
             try:
                 await asyncio.wait_for(self.process.wait(), timeout=5)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.info(
                     "Killing unresponsive model process",
                     model=self.config.id,
@@ -582,18 +583,18 @@ class Model(ABC):
             model=self.config.id,
             log_path=str(log_path),
         )
-        log_file = open(log_path, "a")
-        process_env = {**os.environ, **(extra_env or {})}
-        self.process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=log_file,
-            stderr=log_file,
-            env=process_env,
-            # XXX we may need to consider improving our termination *if* the cleanup
-            # of a new session should be unreliable.
-            start_new_session=True,
-        )
-        log_file.close()  # child inherited the FD; we no longer need our copy
+        with open(log_path, "a") as log_file:  # noqa: ASYNC230
+            # the child will inherit the FD; we no longer need our copy
+            process_env = {**os.environ, **(extra_env or {})}
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=log_file,
+                stderr=log_file,
+                env=process_env,
+                # XXX we may need to consider improving our termination *if* the cleanup
+                # of a new session should be unreliable.
+                start_new_session=True,
+            )
         try:
             self._tasks.create(self._monitor_process)
             startup_task = self._tasks.create(self._wait_for_startup)
@@ -660,38 +661,32 @@ class LlamaModel(Model):
             if (model_file := self.url_to_filename(url)).exists():
                 model_file.unlink()
             got_hash_ = hashlib.sha256()
-            async with httpx.AsyncClient(timeout=30) as client:
-                async with client.stream(
-                    "GET", url, follow_redirects=True
-                ) as response:
-                    download_size = int(
-                        response.headers.get("content-length", 0)
-                    )
-                    download_status = 0
-                    response.raise_for_status()
+            async with (
+                httpx.AsyncClient(timeout=30) as client,
+                client.stream("GET", url, follow_redirects=True) as response,
+            ):
+                download = DownloadProgress(response)
+                response.raise_for_status()
 
-                    async def log_progress():
-                        while True:
-                            await asyncio.sleep(5)
-                            if download_size:
-                                progress = int(
-                                    (download_status / download_size) * 100
-                                )
-                                log.info(f"{self.slug}: {progress}%")
-                            else:
-                                log.info(
-                                    f"{self.slug}: {download_status:,d} (unknown size)"
-                                )
+                async def log_progress(download: DownloadProgress):
+                    while True:
+                        await asyncio.sleep(5)
+                        if download.size:
+                            log.info(f"{self.slug}: {download.progress}%")
+                        else:
+                            log.info(
+                                f"{self.slug}: {download.status:,d} (unknown size)"
+                            )
 
-                    task = self._tasks.create(log_progress)
-                    try:
-                        async with await anyio.open_file(model_file, "ab") as f:
-                            async for chunk in response.aiter_bytes():
-                                download_status += len(chunk)
-                                got_hash_.update(chunk)
-                                await f.write(chunk)
-                    finally:
-                        task.cancel()
+                task = self._tasks.create(log_progress, (download,))
+                try:
+                    async with await anyio.open_file(model_file, "ab") as f:
+                        async for chunk in response.aiter_bytes():
+                            download.status += len(chunk)
+                            got_hash_.update(chunk)
+                            await f.write(chunk)
+                finally:
+                    task.cancel()
 
             got_hash = got_hash_.hexdigest()
             verify_got_hashes.append(got_hash)

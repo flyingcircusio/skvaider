@@ -4,8 +4,9 @@ import json
 import time
 import unittest.mock
 import uuid
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
-from typing import Any, AsyncGenerator, Generator
+from typing import Any
 
 import pytest
 import websockets
@@ -139,22 +140,22 @@ async def test_manager_authenticate(now: unittest.mock.Mock, tmp_path: Path):
     # 3. An unknown ID
     message["@id"] = "unknown message"
     # 3. And a proper signature
-    message["@signature"] = dict(signature="asdf")
+    message["@signature"] = {"signature": "asdf"}
     with pytest.raises(InvalidSignatureError):
         manager.authenticate(message)
 
-    message["@signature"] = dict(
-        alg="HS256",
-        signature="4e864a961345d3080666c434ff466e7394280f64ba53d6e2ae52da47d836c4c5",
-    )
+    message["@signature"] = {
+        "alg": "HS256",
+        "signature": "4e864a961345d3080666c434ff466e7394280f64ba53d6e2ae52da47d836c4c5",
+    }
     manager.authenticate(message)
 
     del message["@signature"]
     manager.sign_message(message)
-    assert message["@signature"] == dict(
-        alg="HS256",
-        signature="4e864a961345d3080666c434ff466e7394280f64ba53d6e2ae52da47d836c4c5",
-    )
+    assert message["@signature"] == {
+        "alg": "HS256",
+        "signature": "4e864a961345d3080666c434ff466e7394280f64ba53d6e2ae52da47d836c4c5",
+    }
 
 
 async def test_manager_stop_start(tmp_path: Path):
@@ -293,7 +294,6 @@ class AsyncContextManagerMock:
         tb: Any,
     ) -> None:
         """Exit async context manager."""
-        pass
 
 
 async def test_manager_run_loop(

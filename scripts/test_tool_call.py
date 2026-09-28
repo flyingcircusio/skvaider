@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """One-off script to test tool calling via an OpenAI-compatible API."""
 
 import json

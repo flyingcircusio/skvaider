@@ -22,7 +22,7 @@ def log_task_exception(task: asyncio.Task[Any]) -> None:
         log.exception("Exception raised by task = %r", task)
 
 
-def create_task(aw: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
+def create_task[T](aw: Coroutine[Any, Any, T]) -> asyncio.Task[T]:
     t = asyncio.create_task(aw)
     t.add_done_callback(log_task_exception)
     return t

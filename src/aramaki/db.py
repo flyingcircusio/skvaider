@@ -1,6 +1,7 @@
 import contextlib
+from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any, AsyncIterator, Self
+from typing import Any, Self
 
 import structlog.stdlib
 from alembic import command
@@ -36,9 +37,7 @@ class DBSessionManager:
 
     def __init__(self, state_directory: Path):
         self.state_directory = state_directory
-        db_url = (
-            f"sqlite+aiosqlite:///{str(self.state_directory)}/aramaki.sqlite3"
-        )
+        db_url = f"sqlite+aiosqlite:///{self.state_directory!s}/aramaki.sqlite3"
         self._engine = create_async_engine(db_url)
         self._sessionmaker = async_sessionmaker(
             autocommit=False, bind=self._engine, expire_on_commit=False
@@ -47,7 +46,7 @@ class DBSessionManager:
     def upgrade(self) -> None:
         log.info("Upgrading aramaki database")
         config = Config()
-        db_url = f"sqlite:///{str(self.state_directory)}/aramaki.sqlite3"
+        db_url = f"sqlite:///{self.state_directory!s}/aramaki.sqlite3"
         from sqlalchemy import create_engine
 
         config.set_main_option("script_location", "aramaki:alembic")
@@ -66,7 +65,7 @@ class DBSessionManager:
         self._sessionmaker = None
 
     @contextlib.asynccontextmanager
-    async def session(self) -> AsyncIterator[AsyncSession]:
+    async def session(self) -> AsyncGenerator[AsyncSession]:
         if self._sessionmaker is None:
             raise SessionManagerClosed()
 

@@ -1,11 +1,10 @@
 import asyncio
 import datetime
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
 from typing import (
     TYPE_CHECKING,
     Any,
-    AsyncGenerator,
-    Generic,
     Literal,
     LiteralString,
     TypeVar,
@@ -49,7 +48,7 @@ class ModelConfig:
 T = TypeVar("T", bound=LiteralString)
 
 
-class StateFlag(Generic[T]):
+class StateFlag[T: LiteralString]:
     last_change = datetime.datetime.now(datetime.UTC)
 
     def __init__(self, initial_state: T):
@@ -237,24 +236,24 @@ class SkvaiderBackend(Backend):
         headers = {"X-Skvaider-Request-ID": request_id} if request_id else {}
 
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                async with client.stream(
+            async with (
+                httpx.AsyncClient(follow_redirects=True) as client,
+                client.stream(
                     "POST", url, json=data, headers=headers, timeout=120
-                ) as response:
-                    if response.status_code == 540:
-                        raise HTTPException(
-                            status_code=540, detail="Backend unavailable"
-                        )
-                    if response.status_code >= 400:
-                        body = await response.aread()
-                        raise HTTPException(
-                            status_code=response.status_code,
-                            detail=body.decode(errors="replace"),
-                        )
-                    async for event in httpx_sse.EventSource(
-                        response
-                    ).aiter_sse():
-                        yield f"data: {event.data}\n\n"
+                ) as response,
+            ):
+                if response.status_code == 540:
+                    raise HTTPException(
+                        status_code=540, detail="Backend unavailable"
+                    )
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=body.decode(errors="replace"),
+                    )
+                async for event in httpx_sse.EventSource(response).aiter_sse():
+                    yield f"data: {event.data}\n\n"
         except httpx.TimeoutException as e:
             raise HTTPException(
                 status_code=504, detail="Backend timeout"
@@ -303,7 +302,7 @@ class SkvaiderBackend(Backend):
                     self.request_health_update.wait(),
                     timeout=self.health_interval,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     async def _monitor_health_and_update_models(self):

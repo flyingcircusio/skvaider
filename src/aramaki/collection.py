@@ -482,7 +482,7 @@ class ReplicationManager:
                 await asyncio.wait_for(
                     self.catchup_finished.wait(), timeout=self.CATCHUP_TIMEOUT
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.error(
                     "collection-catchup-timeout",
                     partition=partition,

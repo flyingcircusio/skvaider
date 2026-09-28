@@ -3,7 +3,7 @@ import datetime
 import re
 import unicodedata
 from collections.abc import Callable, Coroutine
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal, TypeVar, TypeVarTuple
 
 import httpx
 import structlog.stdlib
@@ -70,6 +70,9 @@ def slugify(text: str, max_length: int = 255) -> str:
     return text
 
 
+TaskArgs = TypeVarTuple("TaskArgs")
+
+
 class TaskManager:
     """Keep track of tasks.
 
@@ -90,7 +93,7 @@ class TaskManager:
 
     def __init__(self):
         self._tasks = []
-        self.unique_task_map = dict()
+        self.unique_task_map = {}
 
     @property
     def count(self):
@@ -117,13 +120,12 @@ class TaskManager:
 
     def create(
         self,
-        func: Callable[..., Coroutine[Any, Any, Any]],
-        args: Any = (),
+        func: Callable[[*TaskArgs], Coroutine[Any, Any, Any]],
+        args: tuple[*TaskArgs] = (),
         id: str = "",
     ) -> asyncio.Task[Any]:
-        if id:
-            if id in self.unique_task_map:
-                return self.unique_task_map[id]
+        if id and id in self.unique_task_map:
+            return self.unique_task_map[id]
 
         task = asyncio.create_task(func(*args))
         task.add_done_callback(log_task_exception)
@@ -167,14 +169,7 @@ def now():
 datetime_min = datetime.datetime.min.replace(tzinfo=datetime.UTC)
 
 
-type RequestMethod = (
-    Literal["get"]
-    | Literal["post"]
-    | Literal["patch"]
-    | Literal["head"]
-    | Literal["delete"]
-    | Literal["put"]
-)
+type RequestMethod = Literal["get", "post", "patch", "head", "delete", "put"]
 
 
 class ResponseModel(BaseModel):
@@ -185,7 +180,7 @@ T = TypeVar("T")
 ResponseModelT = TypeVar("ResponseModelT", bound=ResponseModel)
 
 
-class RequestModel(BaseModel, Generic[ResponseModelT]):
+class RequestModel[ResponseModelT: ResponseModel](BaseModel):
     request_method: RequestMethod = Field(default="get", exclude=True)
     request_path: str = Field(exclude=True)
     response_model: type[ResponseModelT] = Field(exclude=True)
@@ -216,3 +211,17 @@ class ModelAPI:
         )
         r.raise_for_status()
         return request.response_model.model_validate(r.json())
+
+
+class DownloadProgress:
+    response: httpx.Response
+    size: int = 0
+    status: int = 0
+
+    def __init__(self, response: httpx.Response):
+        self.response = response
+        self.size = int(self.response.headers.get("content-length", 0))
+
+    @property
+    def progress(self):
+        return int(self.status / self.size) * 100

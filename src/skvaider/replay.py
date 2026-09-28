@@ -104,14 +104,18 @@ def main() -> None:
         model = metadata.get("model", "")
         backend_endpoint = metadata.get("backend_endpoint", "")
         url = f"{backend}/models/{model}/proxy{backend_endpoint}"
-        with httpx.Client(timeout=120) as client:
-            with client.stream(method, url, json=body) as r:
-                _print_response_headers(r)
-                _print_body(r)
+        with (
+            httpx.Client(timeout=120) as client,
+            client.stream(method, url, json=body) as r,
+        ):
+            _print_response_headers(r)
+            _print_body(r)
     else:
-        with httpx.Client(timeout=120) as client:
-            with client.stream(
+        with (
+            httpx.Client(timeout=120) as client,
+            client.stream(
                 method, proxy_url, json=body, headers=safe_headers
-            ) as r:
-                _print_response_headers(r)
-                _print_body(r)
+            ) as r,
+        ):
+            _print_response_headers(r)
+            _print_body(r)

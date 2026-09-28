@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
 import datetime
+from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import aiofiles
 import structlog
@@ -96,7 +97,7 @@ class ModelSemaphore:
                         )
                         self.released.clear()
                         log.debug("request released, checking backends again")
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         log.debug("timed out waiting for limit")
                         return
                     continue
