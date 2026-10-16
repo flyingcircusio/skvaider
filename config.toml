@@ -4,6 +4,7 @@ admin_tokens = [ "developer" ]
 
 [debug]
 slow_threshold = 5
+asyncio = true
 
 [server]
 host = "127.0.0.1"

@@ -1,6 +1,6 @@
 import pytest
 
-from skvaider.config import ModelInstanceConfig, parse_size
+from skvaider.config import DebugConfig, ModelInstanceConfig, parse_size
 
 
 @pytest.mark.parametrize(
@@ -41,3 +41,7 @@ def test_model_instance_config_total_size() -> None:
         task="chat",
     )
     assert cfg.total_size() == 3 * 1024**3
+
+
+def test_debug_config_asyncio_off_by_default() -> None:
+    assert DebugConfig().asyncio is False
