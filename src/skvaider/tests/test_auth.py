@@ -28,6 +28,13 @@ class FakeClock:
         self.now += seconds
 
 
+@pytest.fixture(autouse=True)
+def fresh_cache(monkeypatch: pytest.MonkeyPatch) -> Cache:
+    cache = Cache()
+    monkeypatch.setattr(skvaider.auth, "cache", cache)
+    return cache
+
+
 @pytest.fixture
 def fake_clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
     clock = FakeClock()
@@ -185,6 +192,26 @@ async def test_verify_token_broken_pool_returns_503(
     with pytest.raises(fastapi.exceptions.HTTPException) as e:
         await verify_token(request, credentials, services)
     assert e.value.status_code == 503
+
+
+async def test_verify_token_cache_hit_skips_verification(
+    services: svcs.Container,
+    mock_request_factory: Callable[..., Request],
+    monkeypatch: pytest.MonkeyPatch,
+    fresh_cache: Cache,
+):
+    # A pool that fails on use proves the cached path never verifies again.
+    monkeypatch.setattr(skvaider.auth, "verify_pool", BrokenPool())
+    request = mock_request_factory()
+    auth_token = base64.b64encode(
+        json.dumps({"id": "user", "secret": "asdf"}).encode("utf-8")
+    ).decode("ascii")
+    fresh_cache.add(auth_token, "user")
+    credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer", credentials=auth_token
+    )
+    await verify_token(request, credentials, services)
+    assert request.state.token_id == "user"
 
 
 def test_verify_pool_survives_shutdown_signals(verify_pool: None):
