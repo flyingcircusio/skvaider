@@ -527,6 +527,14 @@ class Model(ABC):
             }
         return {"completion_with_image_input": ""}
 
+    async def detach(self) -> None:
+        """Called when shutting down.
+
+        The specific model may decide whether to shut down (e.g. processes
+        we manage directly) or whether to stay up.
+
+        """
+
     async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model", model=self.config.id)
@@ -600,7 +608,9 @@ class Model(ABC):
             startup_task = self._tasks.create(self._wait_for_startup)
             await startup_task
             self._tasks.create(self._monitor_health)
-        except (Exception, asyncio.CancelledError):
+        except asyncio.CancelledError:
+            await self.detach()  # we're likely shutting down, maybe for restart, don't abort the launch
+        except Exception:
             await self.terminate()
             raise
 
@@ -753,6 +763,9 @@ class LlamaModel(Model):
         ).observe(duration)
         metrics.inference_model_status.labels(model=self.config.id).set(1)
 
+    async def detach(self) -> None:
+        await self.terminate()
+
 
 class VllmModel(Model):
     _engine = "vllm"
@@ -859,6 +872,9 @@ class VllmModel(Model):
         # )
         # self.integrity_marker_file.touch()
         # log.info(f"{self.slug}: success")
+
+    async def detach(self) -> None:
+        await self.terminate()
 
 
 class SystemdModel(Model):
