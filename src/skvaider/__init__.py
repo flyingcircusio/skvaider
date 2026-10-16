@@ -86,7 +86,7 @@ async def lifespan(
 
     loop = asyncio.get_running_loop()
 
-    loop.set_debug(True)
+    loop.set_debug(config.debug.asyncio)
     import logging
 
     logging.getLogger("asyncio").setLevel(logging.WARNING)
