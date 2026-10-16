@@ -193,6 +193,9 @@ class Model(ABC):
 
     def _notify_status_changed(self) -> None:
         """Notify watchers that status changed. Set and immediately clear."""
+        log.exception(
+            "status changed", status=self.status, model=self.config.id
+        )
         self.status_changed.set()
         self.status_changed.clear()
 
@@ -241,7 +244,7 @@ class Model(ABC):
     async def _monitor_health(self) -> None:
         """Periodically check if the model is responsive."""
         new_status = ""
-        interval = 0
+        next_full_check = time.time()
         while True:
             self._health_checks += 1
             # This is a bit complicated to handle varying intervals during warmup
@@ -251,25 +254,41 @@ class Model(ABC):
             self.health_status = new_status
             if changed:
                 self._notify_status_changed()
-            await asyncio.sleep(interval)
+            await asyncio.sleep(1)
 
             # 2. Fast loop without an actual health check to wait until we see the
             #    model starting or running and the endpoint exposed.
             if not self.endpoint:
                 new_status = ""
-                interval = 0.1
                 continue
 
-            # 3. Real health check immediately afterwards and switching to a slower interval.
+            # 3. Fast health check
+            new_checks = {"quick-health-check": ""}
             try:
-                new_checks = await self._check_health()
-            except Exception as e:
-                log.exception("Health check error", model=self.config.id)
-                new_checks = {"health": str(e) or type(e).__name__}
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(f"{self.endpoint}/health")
+                    if resp.status_code == 200:
+                        new_checks["quick-health-check"] = ""
+                    else:
+                        new_checks["quick-health-check"] = (
+                            f"{resp.status_code}: {resp.content[:100]}"
+                        )
+            except httpx.RequestError as e:
+                new_checks["quick-health-check"] = str(e) or type(e).__name__
 
-            self.health_checks = new_checks
+            # 4. In-depth health check immediately afterwards and switching to a slower interval
+            if time.time() < next_full_check:
+                try:
+                    new_checks = await self._check_health()
+                    next_full_check = time.time() + self.health_check_interval
+                except Exception as e:
+                    log.exception("Health check error", model=self.config.id)
+                    new_checks.update(
+                        {"deep-check-failure": str(e) or type(e).__name__}
+                    )
+
             new_status = "unhealthy" if any(new_checks.values()) else "healthy"
-            interval = self.health_check_interval
+            self.health_checks.update(new_checks)
 
     async def _wait_for_startup(self) -> None:
         expected_endpoint = f"http://{self._host}:{self.config.port}"
@@ -320,12 +339,16 @@ class Model(ABC):
                 else None
             )
 
-            resp = await client.post(
-                f"{self.endpoint}/v1/embeddings",
-                json={"input": input_texts, "model": self.config.id},
-            )
-            if resp.status_code != 200:
-                checks["embedding"] = f"HTTP {resp.status_code}"
+            try:
+                resp = await client.post(
+                    f"{self.endpoint}/v1/embeddings",
+                    json={"input": input_texts, "model": self.config.id},
+                )
+                if resp.status_code != 200:
+                    checks["embedding"] = f"HTTP {resp.status_code}"
+                    return checks
+            except httpx.RequestError as e:
+                checks["embedding"] = str(e)
                 return checks
 
             checks["embedding"] = ""
@@ -359,15 +382,18 @@ class Model(ABC):
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
-            resp = await client.post(
-                f"{self.endpoint}/v1/completions",
-                json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
-            )
-            return {
-                "completion": ""
-                if resp.status_code == 200
-                else f"HTTP {resp.status_code}"
-            }
+            try:
+                resp = await client.post(
+                    f"{self.endpoint}/v1/completions",
+                    json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
+                )
+                return {
+                    "completion": ""
+                    if resp.status_code == 200
+                    else f"HTTP {resp.status_code}"
+                }
+            except httpx.RequestError as e:
+                return {"completion": str(e)}
 
     async def _check_completion_streaming_tool_call_health(
         self,
