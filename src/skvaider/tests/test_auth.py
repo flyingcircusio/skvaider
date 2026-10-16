@@ -1,6 +1,10 @@
 import base64
+import concurrent.futures
 import json
-from collections.abc import Callable
+import os
+import signal
+from collections.abc import Callable, Iterator
+from typing import Any
 
 import fastapi.exceptions
 import pytest
@@ -9,6 +13,7 @@ from argon2 import PasswordHasher
 from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials
 
+import skvaider.auth
 from skvaider.auth import Cache, verify_token
 from skvaider.conftest import DummyTokens
 
@@ -148,3 +153,53 @@ async def test_verify_token_correct_user_and_password(
     )
     await verify_token(request, credentials, services)
     assert request.state.token_id == "user"
+
+
+class BrokenPool(concurrent.futures.ThreadPoolExecutor):
+    def submit(self, *args: Any, **kwargs: Any) -> Any:
+        raise concurrent.futures.process.BrokenProcessPool("worker died")
+
+
+@pytest.fixture
+def verify_pool() -> Iterator[None]:
+    skvaider.auth.start_verify_pool()
+    yield
+    skvaider.auth.stop_verify_pool()
+
+
+async def test_verify_token_broken_pool_returns_503(
+    services: svcs.Container,
+    token_db: DummyTokens,
+    mock_request_factory: Callable[..., Request],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(skvaider.auth, "verify_pool", BrokenPool())
+    request = mock_request_factory()
+    token_db.data["user"] = {"secret_hash": hasher.hash("asdf")}
+    auth_token = base64.b64encode(
+        json.dumps({"id": "user", "secret": "asdf"}).encode("utf-8")
+    ).decode("ascii")
+    credentials = HTTPAuthorizationCredentials(
+        scheme="Bearer", credentials=auth_token
+    )
+    with pytest.raises(fastapi.exceptions.HTTPException) as e:
+        await verify_token(request, credentials, services)
+    assert e.value.status_code == 503
+
+
+def test_verify_pool_survives_shutdown_signals(verify_pool: None):
+    pool = skvaider.auth.verify_pool
+    assert pool is not None
+    secret_hash = hasher.hash("asdf")
+    assert pool.submit(
+        skvaider.auth.verify_password, secret_hash, "asdf"
+    ).result()
+
+    # Mimic systemd signalling the whole cgroup on stop.
+    for pid in list(pool._processes):  # pyright: ignore[reportPrivateUsage]
+        os.kill(pid, signal.SIGTERM)
+        os.kill(pid, signal.SIGINT)
+
+    assert pool.submit(
+        skvaider.auth.verify_password, secret_hash, "asdf"
+    ).result()
