@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import aiofiles
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from skvaider import utils
 from skvaider.config import ModelInstanceConfig
@@ -180,7 +180,16 @@ class Pool:
     def _load_state(self) -> None:
         if not self.state_file or not self.state_file.exists():
             return
-        state = ClusterState.model_validate_json(self.state_file.read_text())
+        try:
+            state = ClusterState.model_validate_json(
+                self.state_file.read_text()
+            )
+        except ValidationError:
+            log.exception(
+                "Failed loading cluster state, starting with fresh cluster state."
+            )
+            self.state_file.rename(self.state_file.with_suffix(".bak"))
+            return
         for backend in self.backends:
             record = state.backends.get(backend.url)
             if not record:
