@@ -115,6 +115,7 @@ async def verify_token(
         pass
     else:
         request.state.token_id = token_id
+        return
 
     try:
         admin_tokens = services.get(AdminTokens)
