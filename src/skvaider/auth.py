@@ -4,6 +4,7 @@ import binascii
 import concurrent.futures
 import json
 import multiprocessing
+import signal
 import time
 from json import JSONDecodeError
 from typing import Annotated, Any, cast
@@ -28,11 +29,21 @@ VERIFY_POOL_WORKERS = 10
 verify_pool: concurrent.futures.ProcessPoolExecutor | None = None
 
 
+def ignore_shutdown_signals() -> None:
+    # systemd signals the whole cgroup (and Ctrl-C the whole process group) at
+    # once. If the workers died right away, requests still being drained by
+    # uvicorn would hit a broken pool. Let the lifespan teardown shut the pool
+    # down instead.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
 def start_verify_pool() -> None:
     global verify_pool
     verify_pool = concurrent.futures.ProcessPoolExecutor(
         max_workers=VERIFY_POOL_WORKERS,
         mp_context=multiprocessing.get_context("spawn"),
+        initializer=ignore_shutdown_signals,
     )
 
 
@@ -104,6 +115,7 @@ async def verify_token(
         pass
     else:
         request.state.token_id = token_id
+        return
 
     try:
         admin_tokens = services.get(AdminTokens)
@@ -139,12 +151,17 @@ async def verify_token(
         loop = asyncio.get_running_loop()
         # verify_pool is None outside a running app (e.g. tests); run_in_executor
         # then falls back to the loop's default thread executor.
-        valid = await loop.run_in_executor(
-            verify_pool,
-            verify_password,
-            db_token["secret_hash"],
-            client_token["secret"],
-        )
+        try:
+            valid = await loop.run_in_executor(
+                verify_pool,
+                verify_password,
+                db_token["secret_hash"],
+                client_token["secret"],
+            )
+        except concurrent.futures.BrokenExecutor:
+            raise HTTPException(
+                503, detail="Authentication temporarily unavailable"
+            )
         if not valid:
             raise HTTPException(401, detail="Bad authentication")
         request.state.token_id = client_token["id"]

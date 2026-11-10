@@ -49,6 +49,22 @@ def _parse_sse_usage(chunk: str) -> dict[str, Any] | None:
     return event.get("usage") or None
 
 
+async def time_backend_chunks(
+    request: Request, stream_aws: AsyncGenerator[str]
+) -> AsyncGenerator[str]:
+    # Only count time spent waiting on the backend, so that total minus queue
+    # and server time in the access log is what the proxy and client cost us.
+    while True:
+        t_server = time.perf_counter()
+        try:
+            chunk = await anext(stream_aws)
+        except StopAsyncIteration:
+            return
+        finally:
+            request.state.time_server += time.perf_counter() - t_server
+        yield chunk
+
+
 class OpenAIProxy:
     """Intermediate the proxy logic between FastAPI and the OpenAI API-compatible backends."""
 
@@ -230,7 +246,7 @@ class OpenAIProxy:
             ) -> AsyncGenerator[str]:
                 try:
                     yield first
-                    async for chunk in stream_aws:
+                    async for chunk in time_backend_chunks(request, stream_aws):
                         usage = _parse_sse_usage(chunk)
                         if usage:
                             _extract_usage(request, usage)
