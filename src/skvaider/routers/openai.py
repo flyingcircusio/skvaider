@@ -9,11 +9,12 @@ from typing import Any, TypeVar
 import structlog
 import svcs
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from skvaider import metrics
-from skvaider.proxy.backends import Backend
+from skvaider.multipart import text_fields
+from skvaider.proxy.backends import Backend, RawResponse
 from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
 
@@ -344,6 +345,258 @@ class OpenAIProxy:
                 streaming=request.state.stream,
             ).inc()
 
+    async def _execute_multipart_stream_with_retry(
+        self,
+        request: Request,
+        endpoint: str,
+        body: bytes,
+        content_type: str,
+    ) -> StreamingResponse:
+        """Relay a streaming multipart response, retrying on 540.
+
+        A retry is only possible before the first chunk has been sent:
+        once the client is receiving chunks, the request is not
+        restarted.
+        """
+        excluded_backends: set[str] = set()
+        semaphore = self.pool.semaphores[request.state.model]
+        model_id = request.state.model
+
+        for attempt in range(self.max_retries):
+            if attempt > 0:
+                request.state.retries += 1
+            t_queue = time.perf_counter()
+            context = semaphore.use(excluded_backends=excluded_backends)
+            backend = await context.__aenter__()
+            request.state.time_queue += time.perf_counter() - t_queue
+            if backend is None:
+                break
+            request.state.backend = backend
+            excluded_backends.add(backend.url)
+            try:
+                stream_aws = backend.post_multipart_stream(
+                    model_id,
+                    endpoint,
+                    body,
+                    content_type,
+                    request.state.request_id,
+                )
+                t_server = time.perf_counter()
+                raw, first_chunk = await anext(stream_aws)
+                request.state.time_server += time.perf_counter() - t_server
+                metrics.gateway_backend_requests_total.labels(
+                    backend=backend.url,
+                    endpoint=endpoint,
+                    model=model_id,
+                    status="success",
+                    streaming=True,
+                ).inc()
+            except StopAsyncIteration:
+                await context.__aexit__(None, None, None)
+                if backend:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url,
+                        endpoint=endpoint,
+                        model=model_id,
+                        status="error",
+                        streaming=True,
+                    ).inc()
+                # The backend sent no data at all.
+                return StreamingResponse(
+                    iter([]),
+                    status_code=200,
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    },
+                )
+            except HTTPException as e:
+                await context.__aexit__(None, None, None)
+                if backend:
+                    metrics.gateway_backend_requests_total.labels(
+                        backend=backend.url,
+                        endpoint=endpoint,
+                        model=model_id,
+                        status="error",
+                        streaming=True,
+                    ).inc()
+                if e.status_code != 540:
+                    raise
+                metrics.gateway_backend_retry_total.labels(
+                    backend=backend.url,
+                    endpoint=endpoint,
+                    model=model_id,
+                    reason="backend_unavailable",
+                    streaming=True,
+                ).inc()
+                log.warning(
+                    "Backend unavailable, retrying",
+                    model=model_id,
+                    attempt=attempt + 1,
+                    excluded_backends=excluded_backends,
+                )
+                continue
+
+            # Success: relay the remaining chunks, keeping the semaphore
+            # slot (and the model lock on the backend) until the stream
+            # is done.
+            async def relay(
+                first: bytes,
+                stream_aws: AsyncGenerator[tuple[RawResponse, bytes], None],
+                context: AbstractAsyncContextManager[Backend | None],
+            ) -> AsyncGenerator[bytes, None]:
+                try:
+                    yield first
+                    async for _metadata, chunk in stream_aws:
+                        yield chunk
+                finally:
+                    await context.__aexit__(None, None, None)
+
+            return StreamingResponse(
+                relay(first_chunk, stream_aws, context),
+                status_code=raw.status_code,
+                media_type=raw.content_type,
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                },
+            )
+
+        raise HTTPException(status_code=503, detail="Service unavailable")
+
+    async def proxy_multipart(
+        self, request: Request, endpoint: str
+    ) -> Response | StreamingResponse:
+        """Route a multipart request, e.g. an audio transcription.
+
+        The body is passed through unmodified: parsing the upload is the
+        backend's job. Only the routing fields (``model`` and ``stream``)
+        are inspected here. ``stream=true`` is forwarded to the backend,
+        and its response is relayed to the client chunk by chunk;
+        otherwise the full response is buffered and passed through.
+        """
+        body = await request.body()
+        content_type = request.headers.get("content-type", "")
+        fields = text_fields(body, content_type)
+        model_id = fields.get("model", "").strip().lower()
+
+        if not model_id:
+            raise HTTPException(
+                400, "The model must be specified in the form data."
+            )
+        if model_id not in self.pool.model_configs:
+            raise HTTPException(
+                400,
+                f"The model `{model_id}` is not known.",
+            )
+        if self.pool.model_configs[model_id].task != "transcription":
+            raise HTTPException(
+                400,
+                f"The model `{model_id}` is not a transcription model.",
+            )
+
+        request.state.model = model_id
+        request.state.stream = fields.get("stream", "").lower() == "true"
+        request.state.backend_endpoint = endpoint
+
+        metrics.gateway_active_requests.labels(
+            model=model_id,
+            endpoint=endpoint,
+            streaming=request.state.stream,
+        ).inc()
+        start_time = time.time()
+        status = "success"
+
+        semaphore = self.pool.semaphores[model_id]
+        excluded_backends: set[str] = set()
+        try:
+            if request.state.stream:
+                return await self._execute_multipart_stream_with_retry(
+                    request, endpoint, body, content_type
+                )
+            for attempt in range(self.max_retries):
+                if attempt > 0:
+                    request.state.retries += 1
+                t_queue = time.perf_counter()
+                async with semaphore.use(
+                    excluded_backends=excluded_backends
+                ) as backend:
+                    request.state.time_queue += time.perf_counter() - t_queue
+                    if not backend:
+                        break
+                    request.state.backend = backend
+                    excluded_backends.add(backend.url)
+                    try:
+                        t_server = time.perf_counter()
+                        raw = await backend.post_multipart(
+                            model_id,
+                            endpoint,
+                            body,
+                            content_type,
+                            request.state.request_id,
+                        )
+                        request.state.time_server += (
+                            time.perf_counter() - t_server
+                        )
+                        metrics.gateway_backend_requests_total.labels(
+                            model=model_id,
+                            backend=backend.url,
+                            status="success",
+                            endpoint=endpoint,
+                            streaming=request.state.stream,
+                        ).inc()
+                        return Response(
+                            content=raw.body,
+                            status_code=raw.status_code,
+                            media_type=raw.content_type,
+                        )
+                    except HTTPException as e:
+                        metrics.gateway_backend_requests_total.labels(
+                            model=model_id,
+                            backend=backend.url,
+                            status="error",
+                            endpoint=endpoint,
+                            streaming=request.state.stream,
+                        ).inc()
+                        if e.status_code == 540:
+                            metrics.gateway_backend_retry_total.labels(
+                                model=model_id,
+                                backend=backend.url,
+                                endpoint=endpoint,
+                                streaming=request.state.stream,
+                                reason="backend_unavailable",
+                            ).inc()
+                            log.warning(
+                                "Backend unavailable, retrying",
+                                model=model_id,
+                                attempt=attempt + 1,
+                                excluded_backends=excluded_backends,
+                            )
+                            continue
+                        raise
+            raise HTTPException(status_code=503, detail="Service unavailable")
+        except HTTPException:
+            status = "error"
+            raise
+        finally:
+            metrics.gateway_active_requests.labels(
+                model=request.state.model,
+                endpoint=endpoint,
+                streaming=request.state.stream,
+            ).dec()
+            metrics.gateway_request_duration_seconds.labels(
+                model=request.state.model,
+                endpoint=endpoint,
+                streaming=request.state.stream,
+            ).observe(time.time() - start_time)
+            metrics.gateway_requests_total.labels(
+                model=request.state.model,
+                endpoint=endpoint,
+                status=status,
+                streaming=request.state.stream,
+            ).inc()
+
 
 @router.get("/v1/models")
 async def list_models(
@@ -387,6 +640,14 @@ async def chat_completions(
 async def completions(r: Request, services: svcs.fastapi.DepContainer) -> Any:
     proxy = OpenAIProxy(services)
     return await proxy.proxy(r, "/v1/completions")
+
+
+@router.post("/v1/audio/transcriptions")
+async def transcriptions(
+    r: Request, services: svcs.fastapi.DepContainer
+) -> Any:
+    proxy = OpenAIProxy(services)
+    return await proxy.proxy_multipart(r, "/v1/audio/transcriptions")
 
 
 @router.post("/v1/embeddings")

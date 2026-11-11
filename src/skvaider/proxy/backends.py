@@ -2,6 +2,7 @@ import asyncio
 import datetime
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -69,6 +70,15 @@ class StateFlag[T: LiteralString]:
         return other == self.state
 
 
+@dataclass
+class RawResponse:
+    """A backend response that the proxy passes through uninterpreted."""
+
+    status_code: int
+    body: bytes
+    content_type: str
+
+
 class Backend(ABC):
     """Connection to a single backend."""
 
@@ -112,6 +122,26 @@ class Backend(ABC):
     ) -> Any: ...
 
     @abstractmethod
+    async def post_multipart(
+        self,
+        model_id: str,
+        path: str,
+        body: bytes,
+        content_type: str,
+        request_id: str = "",
+    ) -> RawResponse: ...
+
+    @abstractmethod
+    def post_multipart_stream(
+        self,
+        model_id: str,
+        path: str,
+        body: bytes,
+        content_type: str,
+        request_id: str = "",
+    ) -> AsyncGenerator[tuple[RawResponse, bytes], None]: ...
+
+    @abstractmethod
     def post_stream(
         self, path: str, data: JSONObject, request_id: str = ""
     ) -> AsyncGenerator[str, None]: ...
@@ -135,6 +165,9 @@ class DummyBackend(Backend):
         self.fail_count = fail_count
         self.call_count = 0
         self.last_request_id: str = ""
+        self.last_multipart_body: bytes = b""
+        self.last_multipart_content_type: str = ""
+        self.last_multipart_model: str = ""
 
     async def post(
         self, path: str, data: dict[str, Any], request_id: str = ""
@@ -153,6 +186,51 @@ class DummyBackend(Backend):
         if self.call_count <= self.fail_count:
             raise HTTPException(status_code=540, detail="Backend unavailable")
         yield f"data: chunk from {self.url}\n\n"
+
+    async def post_multipart(
+        self,
+        model_id: str,
+        path: str,
+        body: bytes,
+        content_type: str,
+        request_id: str = "",
+    ) -> RawResponse:
+        self.call_count += 1
+        self.last_request_id = request_id
+        self.last_multipart_model = model_id
+        self.last_multipart_body = body
+        self.last_multipart_content_type = content_type
+        if self.call_count <= self.fail_count:
+            raise HTTPException(status_code=540, detail="Backend unavailable")
+        return RawResponse(
+            status_code=200,
+            body=b'{"text": "dummy transcription"}',
+            content_type="application/json",
+        )
+
+    async def post_multipart_stream(
+        self,
+        model_id: str,
+        path: str,
+        body: bytes,
+        content_type: str,
+        request_id: str = "",
+    ) -> AsyncGenerator[tuple[RawResponse, bytes], None]:
+        """Stream a multipart response, one SSE chunk at a time."""
+        self.call_count += 1
+        self.last_request_id = request_id
+        self.last_multipart_model = model_id
+        self.last_multipart_body = body
+        self.last_multipart_content_type = content_type
+        if self.call_count <= self.fail_count:
+            raise HTTPException(status_code=540, detail="Backend unavailable")
+        response = RawResponse(
+            status_code=200,
+            body=b"",
+            content_type="text/event-stream",
+        )
+        yield response, b'data: {"text": "dummy"}\n\n'
+        yield response, b"data: [DONE]\n\n"
 
     async def update_manifest(self) -> None:
         if not self.healthy:
@@ -218,6 +296,93 @@ class SkvaiderBackend(Backend):
                     status_code=540, detail="Backend unavailable"
                 )
             return r.json()
+
+    async def post_multipart(
+        self,
+        model_id: str,
+        path: str,
+        body: bytes,
+        content_type: str,
+        request_id: str = "",
+    ) -> RawResponse:
+        url = f"{self.url}/models/{model_id}/proxy{path}"
+        headers = {"Content-Type": content_type}
+        if request_id:
+            headers["X-Skvaider-Request-ID"] = request_id
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            try:
+                r = await client.post(
+                    url, content=body, headers=headers, timeout=300
+                )
+            except httpx.TimeoutException as e:
+                raise HTTPException(
+                    status_code=504, detail="Backend timeout"
+                ) from e
+            except httpx.ConnectError as e:
+                raise HTTPException(
+                    status_code=540, detail="Backend unavailable"
+                ) from e
+        if r.status_code == 540:
+            raise HTTPException(status_code=540, detail="Backend unavailable")
+        return RawResponse(
+            status_code=r.status_code,
+            body=r.content,
+            content_type=r.headers.get(
+                "content-type", "application/octet-stream"
+            ),
+        )
+
+    async def post_multipart_stream(
+        self,
+        model_id: str,
+        path: str,
+        body: bytes,
+        content_type: str,
+        request_id: str = "",
+    ) -> AsyncGenerator[tuple[RawResponse, bytes], None]:
+        """Stream the response of a multipart request chunk by chunk.
+
+        Yields the response metadata (status, content type) once, before
+        the first body chunk, and one body chunk per received block. The
+        request is retried only while no chunk has been sent; once the
+        stream started, it is not restarted.
+        """
+        url = f"{self.url}/models/{model_id}/proxy{path}"
+        headers = {"Content-Type": content_type}
+        if request_id:
+            headers["X-Skvaider-Request-ID"] = request_id
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            try:
+                async with client.stream(
+                    "POST",
+                    url,
+                    content=body,
+                    headers=headers,
+                    timeout=300,
+                ) as response:
+                    if response.status_code == 540:
+                        raise HTTPException(
+                            status_code=540, detail="Backend unavailable"
+                        )
+                    metadata = RawResponse(
+                        status_code=response.status_code,
+                        body=b"",
+                        content_type=response.headers.get(
+                            "content-type", "application/octet-stream"
+                        ),
+                    )
+                    async for chunk in response.aiter_bytes():
+                        yield metadata, chunk
+            except httpx.TimeoutException as e:
+                raise HTTPException(
+                    status_code=504, detail="Backend timeout"
+                ) from e
+            except httpx.ConnectError as e:
+                raise HTTPException(
+                    status_code=540, detail="Backend unavailable"
+                ) from e
 
     async def post_stream(
         self, path: str, data: JSONObject, request_id: str = ""
