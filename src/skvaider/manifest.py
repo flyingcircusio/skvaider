@@ -1,10 +1,39 @@
+import datetime
 import time
 from typing import Any, Literal
 
-from pydantic import GetCoreSchemaHandler, field_validator
+from pydantic import BaseModel, GetCoreSchemaHandler, field_validator
 from pydantic_core import core_schema
 
 from skvaider.utils import RequestMethod, RequestModel, ResponseModel
+
+type MaintenancePhase = Literal["none", "requested", "draining", "drained"]
+
+
+class MaintenanceEnterRequest(BaseModel):
+    """Request to enter maintenance. Only accepted from the local machine."""
+
+    reason: str | None = None
+
+
+class MaintenanceStatus(ResponseModel):
+    """Maintenance state of an inference server."""
+
+    phase: MaintenancePhase
+    since: datetime.datetime | None = None
+    reason: str | None = None
+    # Models the proxy still asks us to run.
+    manifest: list[str]
+    # Models that are not fully stopped and thus block the drain.
+    pending_models: list[str]
+
+
+class MaintenanceStatusRequest(RequestModel[MaintenanceStatus]):
+    """Wire format for polling the maintenance state of an inference server."""
+
+    request_method: RequestMethod = "get"
+    request_path: str = "/manager/maintenance"
+    response_model: type[MaintenanceStatus] = MaintenanceStatus
 
 
 class Serial:

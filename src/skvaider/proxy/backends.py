@@ -25,7 +25,12 @@ if TYPE_CHECKING:
     from .models import AIModel
     from .pool import Pool
 
-from skvaider.manifest import ManifestRequest, Serial
+from skvaider.manifest import (
+    MaintenancePhase,
+    MaintenanceStatusRequest,
+    ManifestRequest,
+    Serial,
+)
 
 
 class ModelConfig:
@@ -94,6 +99,9 @@ class Backend(ABC):
     map_in: StateFlag[
         Literal["in", "out"]
     ]  # should the backend be used when placing models?
+    # See Pool.enter_maintenance.
+    maintenance: StateFlag[MaintenancePhase]
+    maintenance_blocked = False
     last_updown_change = datetime.datetime.now(datetime.UTC)
 
     def __init__(self, url: str):
@@ -105,6 +113,26 @@ class Backend(ABC):
 
         self.map_up = StateFlag("down")
         self.map_in = StateFlag("in")
+        self.maintenance = StateFlag("none")
+
+    async def observe_maintenance(self, phase: MaintenancePhase) -> None:
+        """React to the maintenance phase reported by the backend."""
+        if phase == self.maintenance.state:
+            return
+        self.maintenance.mark(phase)
+        if phase == "none":
+            self.log.info("backend left maintenance mode")
+            self.maintenance_blocked = False
+            if self.healthy and self.map_up == "up":
+                self.map_in.mark("in")
+            await self.pool.save_state()
+            await self.pool.tasks.create(self.pool.rebalance)
+            return
+        self.log.warning(
+            "backend entered maintenance mode",
+            phase=phase,
+        )
+        await self.pool.enter_maintenance(self)
 
     @abstractmethod
     async def post(
@@ -278,12 +306,26 @@ class SkvaiderBackend(Backend):
             return
         model_ids = self.pool.last_map[self.url]
         serial = self.pool.map_serial
+        if self.maintenance != "none":
+            # Do not unload a model before its replacement is loaded elsewhere.
+            pending = self.pool.replacements_pending(self, model_ids)
+            if pending:
+                self.log.info(
+                    "deferring manifest until replacements are loaded",
+                    models=sorted(pending),
+                )
+                return
         self.log.info(
             "backend has stale manifest, reconciling",
             backend_serial=str(self.current_serial),
             pool_serial=str(self.pool.map_serial),
         )
         await self.backend_api(ManifestRequest(models=model_ids, serial=serial))
+
+    async def poll_maintenance(self) -> None:
+        """Poll maintenance state even while busy; health checks are skipped during in-flight requests."""
+        status = await self.backend_api(MaintenanceStatusRequest())
+        await self.observe_maintenance(status.phase)
 
     async def monitor_health_and_update_models(self) -> None:
         self.log.debug("starting monitor")
@@ -311,10 +353,13 @@ class SkvaiderBackend(Backend):
         in_progress = sum([x.in_progress for x in self.models.values()])
         try:
             if in_progress:
-                # XXX skip health check as we can't communicate out of band at the moment
-                # otherwise we mark busy backends as dead too fast and cause superfluous
-                # unloading of healthy models.
-                pass
+                # Skip the expensive health check while busy: it may mark
+                # backends as dead and unload healthy models. Maintenance
+                # state is cheap to poll, and a busy server must drain too.
+                try:
+                    await self.poll_maintenance()
+                except Exception:
+                    self.log.debug("could not poll maintenance state")
             else:
                 await self._update_health()
                 self.healthy = True
@@ -338,7 +383,8 @@ class SkvaiderBackend(Backend):
                 backend=self.url,
             )
             self.map_up.mark("up")
-            self.map_in.mark("in")
+            if self.maintenance == "none":
+                self.map_in.mark("in")
             await self.pool.save_state()
             await self.pool.tasks.create(self.pool.rebalance)
         elif not self.healthy:
@@ -365,6 +411,12 @@ class SkvaiderBackend(Backend):
         in an idempotent/convergent fashion while the backend is in healthy state.
 
         """
+        if self.maintenance != "none":
+            # Whether the backend may leave the map is decided by the
+            # maintenance logic (models must run elsewhere first).
+            if self.maintenance_blocked:
+                await self.pool.enter_maintenance(self)
+            return
         self.map_in.mark("in")
 
     async def ensure_unhealthy(self):
@@ -389,6 +441,7 @@ class SkvaiderBackend(Backend):
         self.memory = health.usage
         await self.pool.save_state()
         self.current_serial = health.current_serial
+        await self.observe_maintenance(health.maintenance)
 
         from .models import AIModel
 
@@ -458,6 +511,10 @@ class BackendHealthResponse(ResponseModel):
 
     current_serial: Serial
     usage: dict[str, dict[str, int]]
+
+    # Let the proxy react to maintenance without an out-of-band channel;
+    # "none" keeps older inference servers compatible.
+    maintenance: MaintenancePhase = "none"
 
     models: list[BackendModelInfo]
 
