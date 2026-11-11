@@ -239,24 +239,99 @@ class Pool:
                 await f.flush()
             tmp.rename(self.state_file)
 
+    def _specs(self) -> list[placement.ModelSpec]:
+        return [
+            placement.ModelSpec(id=m.id, size=m.memory, instances=m.instances)
+            for m in self.model_configs.values()
+        ]
+
+    def _slots(
+        self, out: "Backend | None" = None
+    ) -> list[placement.BackendSlot]:
+        return [
+            placement.BackendSlot(
+                id=b.url,
+                capacity={r: p["total"] for r, p in b.memory.items()},
+                map_in="out" if b is out else b.map_in.state,
+            )
+            for b in self.backends
+        ]
+
     def placement_map(self) -> ModelMap:
         return placement.placement_map(
-            [
-                placement.BackendSlot(
-                    id=b.url,
-                    capacity={r: p["total"] for r, p in b.memory.items()},
-                    map_in=b.map_in.state,
-                )
-                for b in self.backends
-            ],
-            [
-                placement.ModelSpec(
-                    id=m.id, size=m.memory, instances=m.instances
-                )
-                for m in self.model_configs.values()
-            ],
-            self.last_map,
+            self._slots(), self._specs(), self.last_map
         )
+
+    @staticmethod
+    def _counts(model_map: ModelMap) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for models in model_map.values():
+            for model_id in models:
+                counts[model_id] = counts.get(model_id, 0) + 1
+        return counts
+
+    def can_move_away(self, backend: "Backend") -> bool:
+        """Whether all models can still run if `backend` is taken out."""
+        candidate = self._counts(
+            placement.placement_map(
+                self._slots(out=backend), self._specs(), self.last_map
+            )
+        )
+        current = self._counts(self.last_map)
+        return all(
+            candidate.get(model_id, 0) >= count
+            for model_id, count in current.items()
+        )
+
+    def replacements_pending(
+        self, backend: "Backend", model_ids: set[str]
+    ) -> set[str]:
+        """Models that `backend` would unload before a replacement runs elsewhere."""
+        planned_elsewhere = {
+            model_id
+            for url, models in self.last_map.items()
+            if url != backend.url
+            for model_id in models
+        }
+        pending: set[str] = set()
+        for model_id, model in backend.models.items():
+            if model_id in model_ids or not model.is_loaded:
+                continue
+            if model_id not in planned_elsewhere:
+                # Nothing is planned to take over: waiting would never end.
+                continue
+            replaced = any(
+                other is not backend
+                and other.map_up == "up"
+                and other.map_in == "in"
+                and (model := other.models.get(model_id)) is not None
+                and model.is_loaded
+                for other in self.backends
+            )
+            if not replaced:
+                pending.add(model_id)
+        return pending
+
+    async def enter_maintenance(self, backend: "Backend") -> None:
+        """Take a backend out of the placement map on its own request."""
+        if not self.can_move_away(backend):
+            if not backend.maintenance_blocked:
+                backend.maintenance_blocked = True
+                log.warning(
+                    "cannot take backend out of the map for maintenance: "
+                    "models cannot be placed elsewhere",
+                    backend=backend.url,
+                )
+            return
+        backend.maintenance_blocked = False
+        if backend.map_in == "in":
+            backend.map_in.mark("out")
+            await self.save_state()
+            log.warning(
+                "backend taken out of the map for maintenance",
+                backend=backend.url,
+            )
+        await self.rebalance()
 
     async def rebalance(self) -> None:
         """Rebalance model instances across backends to match desired state."""

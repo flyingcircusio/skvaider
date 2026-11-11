@@ -8,9 +8,10 @@ from typing import Any, Concatenate, ParamSpec, Protocol, TypeVar
 import structlog
 
 from skvaider.inference.model import Model
-from skvaider.manifest import Serial
+from skvaider.manifest import MaintenanceStatus, Serial
 from skvaider.utils import TaskManager
 
+from .maintenance import Maintenance
 from .resources import (
     MemoryMonitor,
     NvidiaMemoryMonitor,
@@ -98,6 +99,8 @@ class Manager:
         self.manifest_serial = Serial.floor()
         self.manifest_changed = asyncio.Event()
 
+        self.maintenance = Maintenance()
+
         self.monitors = {"ram": RAMMonitor(self)}
         # if shutil.which("rocm-smi"):
         #     self.monitors["rocm"] = ROCmMemoryMonitor(self)
@@ -120,6 +123,26 @@ class Manager:
 
     def list_models(self) -> list[Model]:
         return list(self.models.values())
+
+    def maintenance_status(self) -> MaintenanceStatus:
+        return self.maintenance.status(
+            manifest=self._manifest,
+            manifest_serial=self.manifest_serial,
+            models=self.models.values(),
+        )
+
+    def request_maintenance(
+        self, reason: str | None = None
+    ) -> MaintenanceStatus:
+        """Ask the proxy to move our models away; we keep serving until the proxy removes us from the placement map."""
+        self.maintenance.request(reason)
+        log.warning("maintenance requested", reason=reason)
+        return self.maintenance_status()
+
+    def leave_maintenance(self) -> MaintenanceStatus:
+        self.maintenance.leave()
+        log.info("maintenance request withdrawn")
+        return self.maintenance_status()
 
     @property
     def manifest(self) -> set[str]:

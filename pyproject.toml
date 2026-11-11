@@ -40,6 +40,7 @@ check-skvaider-config = "skvaider.cli:check_skvaider_config"
 check-skvaider-inference-config = "skvaider.cli:check_inference_config"
 skvaider-generate-embedding-reference = "skvaider.generate_embedding_reference:main"
 skvaider-inference = "skvaider.inference:main"
+skvaider-maintenance = "skvaider.maintenance_cli:main"
 skvaider-proxy = "skvaider:main"
 skvaider-replay-request = "skvaider.replay:main"
 # keep-sorted end
