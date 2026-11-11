@@ -184,3 +184,29 @@ def test_transcription_forwards_multipart_body_unchanged(tmp_path: Path):
     assert audio in backend.last_multipart_body
     assert b'name="language"' in backend.last_multipart_body
     assert b"de" in backend.last_multipart_body
+
+
+def test_transcription_relayed_streaming(tmp_path: Path):
+    audio = b"RIFF\x00\x01\x02\x03-not-really-a-wav"
+    with (
+        transcription_client(tmp_path) as (client, backend),
+        client.stream(
+            "POST",
+            "/openai/v1/audio/transcriptions",
+            files={"file": ("meeting.wav", audio, "audio/wav")},
+            data={"model": "qwen3-asr", "stream": "true"},
+            headers=auth_header(),
+        ) as response,
+    ):
+        chunks = list(response.iter_bytes(chunk_size=16))
+
+    # The streaming path was taken: the backend's SSE events are relayed
+    # verbatim, not buffered into a JSON body.
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert b"".join(chunks) == b'data: {"text": "dummy"}\n\ndata: [DONE]\n\n'
+
+    # Routing still worked: the model was normalized and the upload
+    # reached the backend.
+    assert backend.last_multipart_model == "qwen3-asr"
+    assert audio in backend.last_multipart_body
