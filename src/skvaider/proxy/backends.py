@@ -1,13 +1,10 @@
 import asyncio
-import datetime
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
-    LiteralString,
-    TypeVar,
 )
 
 import httpx
@@ -25,7 +22,14 @@ if TYPE_CHECKING:
     from .models import AIModel
     from .pool import Pool
 
-from skvaider.manifest import ManifestRequest, Serial
+from skvaider.manifest import (
+    MaintenancePhase,
+    MaintenanceStatusRequest,
+    ManifestRequest,
+    Serial,
+)
+
+from .map import BackendMap, Up
 
 
 class ModelConfig:
@@ -45,30 +49,6 @@ class ModelConfig:
         return {}
 
 
-T = TypeVar("T", bound=LiteralString)
-
-
-class StateFlag[T: LiteralString]:
-    last_change = datetime.datetime.now(datetime.UTC)
-
-    def __init__(self, initial_state: T):
-        self.state = initial_state
-
-    def mark(self, state: T):
-        if state == self.state:
-            return
-        self.state = state
-        self.last_change = datetime.datetime.now(datetime.UTC)
-
-    @property
-    def age(self):
-        return datetime.datetime.now(datetime.UTC) - self.last_change
-
-    def __eq__(self, other: object):
-        assert isinstance(other, str)
-        return other == self.state
-
-
 class Backend(ABC):
     """Connection to a single backend."""
 
@@ -78,23 +58,14 @@ class Backend(ABC):
     current_serial = Serial.floor()
 
     health_interval: int = 1
-    healthy: bool = False
-    unhealthy_reason: str = ""
+    down_reason: str = ""
     models: dict[str, "AIModel"]
 
     memory: dict[str, dict[str, int]]
 
-    # Map state management. The lifecycle is inspired by Ceph, but we don't
-    # have persistency, yet, so a bit of improvisation. This lifecycle is intended
-    # to handle the "gravity" of instances being up/down and allow skvaider
-    # proxy restarts and inference server restarts without immediately triggering
-    # redistribution.
-    DOWN_OUT_INTERVAL = datetime.timedelta(minutes=15)
-    map_up: StateFlag[Literal["up", "down"]]  # is the backend reachable?
-    map_in: StateFlag[
-        Literal["in", "out"]
-    ]  # should the backend be used when placing models?
-    last_updown_change = datetime.datetime.now(datetime.UTC)
+    # Up/down and in/out live in BackendMap: the probe result and the
+    # maintenance phase are its inputs, placement eligibility is derived.
+    map: BackendMap
 
     def __init__(self, url: str):
         self.url = url
@@ -103,8 +74,18 @@ class Backend(ABC):
         self.log = structlog.stdlib.get_logger().bind(backend=self.url)
         self.request_health_update = asyncio.Event()
 
-        self.map_up = StateFlag("down")
-        self.map_in = StateFlag("in")
+        self.map = BackendMap()
+        self.map.subscribe(self._map_changed)
+        self.map.maintenance.subscribe(self._log_maintenance)
+
+    def _map_changed(self) -> None:
+        self.pool.tasks.create(self.pool.map_changed)
+
+    def _log_maintenance(self, phase: MaintenancePhase) -> None:
+        if phase == "none":
+            self.log.info("backend left maintenance mode")
+        else:
+            self.log.warning("backend entered maintenance mode", phase=phase)
 
     @abstractmethod
     async def post(
@@ -155,7 +136,7 @@ class DummyBackend(Backend):
         yield f"data: chunk from {self.url}\n\n"
 
     async def update_manifest(self) -> None:
-        if not self.healthy:
+        if not self.map.is_up:
             return
         self.current_serial = self.pool.map_serial
         model_ids = self.pool.last_map[self.url]
@@ -269,7 +250,7 @@ class SkvaiderBackend(Backend):
         if self.current_serial == self.pool.map_serial:
             # The backend is up to date.
             return
-        if not self.healthy:
+        if not self.map.is_up:
             return
         if self.url not in self.pool.last_map:
             # There is no data for this backend, yet. Leave it be
@@ -278,12 +259,26 @@ class SkvaiderBackend(Backend):
             return
         model_ids = self.pool.last_map[self.url]
         serial = self.pool.map_serial
+        pending = self.pool.not_yet_replaceable(self, model_ids)
+        if pending:
+            # Keep serving the last instance of a model until a replacement
+            # runs somewhere else.
+            self.log.info(
+                "deferring manifest until replacements run",
+                models=sorted(pending),
+            )
+            return
         self.log.info(
             "backend has stale manifest, reconciling",
             backend_serial=str(self.current_serial),
             pool_serial=str(self.pool.map_serial),
         )
         await self.backend_api(ManifestRequest(models=model_ids, serial=serial))
+
+    async def poll_maintenance(self) -> None:
+        """Poll maintenance state even while busy; health checks are skipped during in-flight requests."""
+        status = await self.backend_api(MaintenanceStatusRequest())
+        self.map.maintenance.mark(status.phase)
 
     async def monitor_health_and_update_models(self) -> None:
         self.log.debug("starting monitor")
@@ -306,81 +301,38 @@ class SkvaiderBackend(Backend):
                 pass
 
     async def _monitor_health_and_update_models(self):
-        was_healthy = self.healthy
-
+        up: Up = "up"
         in_progress = sum([x.in_progress for x in self.models.values()])
         try:
             if in_progress:
-                # XXX skip health check as we can't communicate out of band at the moment
-                # otherwise we mark busy backends as dead too fast and cause superfluous
-                # unloading of healthy models.
-                pass
+                # Skip the expensive health check while busy: it may mark
+                # backends as DOWN and unload healthy models. Maintenance
+                # state is cheap to poll, and a busy server must drain too.
+                try:
+                    await self.poll_maintenance()
+                except Exception:
+                    self.log.debug("could not poll maintenance state")
             else:
                 await self._update_health()
-                self.healthy = True
         except httpx.ConnectError as e:
-            self.healthy = False
-            self.unhealthy_reason = str(e)
+            up = "down"
+            self.down_reason = str(e)
         except Exception as e:
-            self.healthy = False
-            self.unhealthy_reason = repr(e)
+            up = "down"
+            self.down_reason = repr(e)
         else:
-            self.unhealthy_reason = ""
+            self.down_reason = ""
 
-        # Handle state changes
-        if was_healthy == self.healthy:
-            # nothing happened
-            pass
-        elif self.healthy:
-            # we just became healthy
-            self.log.info(
-                "backend became HEALTHY, marking UP and IN",
-                backend=self.url,
-            )
-            self.map_up.mark("up")
-            self.map_in.mark("in")
-            await self.pool.save_state()
-            await self.pool.tasks.create(self.pool.rebalance)
-        elif not self.healthy:
-            self.log.warning(
-                "backend became UNHEALTHY, marking DOWN",
-                backend=self.url,
-                reason=self.unhealthy_reason,
-            )
-            self.map_up.mark("down")
+        if up == "down" and self.map.is_up:
+            # Force a manifest resend when the backend comes back.
             self.current_serial = Serial.floor()
-            await self.pool.save_state()
-            await self.pool.tasks.create(self.pool.rebalance)
-
-        # Handle steady states
-        if self.healthy:
-            await self.ensure_healthy()
-        else:
-            await self.ensure_unhealthy()
-
-    async def ensure_healthy(self):
-        """Perform actions to keep a healthy backend updated and consistent.
-
-        This can be called gratuitously and with relatively high frequency
-        in an idempotent/convergent fashion while the backend is in healthy state.
-
-        """
-        self.map_in.mark("in")
-
-    async def ensure_unhealthy(self):
-        """Perform actions for ensuring consistency in unhealthy state.
-
-        This can be called gratuitously and with relatively high frequency
-        in an idempotent/convergent fashion.
-
-        """
-        # Only mark out after a grace period.
-        if self.map_in == "in" and self.map_up.age > self.DOWN_OUT_INTERVAL:
-            self.log.warning(
-                f"backend was DOWN for {self.DOWN_OUT_INTERVAL} - marking OUT"
-            )
-            self.map_in.mark("out")
-            await self.pool.save_state()
+        if self.map.up.mark(up):
+            if up == "up":
+                self.log.info("backend became UP")
+            else:
+                self.log.warning("backend became DOWN", reason=self.down_reason)
+        # Catch the grace expiry; a no-op when nothing changed.
+        self.map.tick()
 
     async def _update_health(self) -> None:
         health = await self.backend_api(BackendHealthRequest())
@@ -389,6 +341,7 @@ class SkvaiderBackend(Backend):
         self.memory = health.usage
         await self.pool.save_state()
         self.current_serial = health.current_serial
+        self.map.maintenance.mark(health.maintenance)
 
         from .models import AIModel
 
@@ -458,6 +411,10 @@ class BackendHealthResponse(ResponseModel):
 
     current_serial: Serial
     usage: dict[str, dict[str, int]]
+
+    # Let the proxy react to maintenance without an out-of-band channel;
+    # "none" keeps older inference servers compatible.
+    maintenance: MaintenancePhase = "none"
 
     models: list[BackendModelInfo]
 

@@ -3,7 +3,7 @@ import contextlib
 import datetime
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import structlog
@@ -15,6 +15,7 @@ from skvaider.manifest import Serial
 from skvaider.utils import TaskManager
 
 from . import placement
+from .map import MapRecord
 from .models import AIModel
 
 if TYPE_CHECKING:
@@ -30,12 +31,8 @@ class ModelStateRecord(BaseModel):
 
 class BackendStateRecord(BaseModel):
     url: str
-    healthy: bool = False
     memory: dict[str, dict[str, int]]
-    map_up: Literal["up", "down"]
-    map_up_last_change: datetime.datetime
-    map_in: Literal["in", "out"]
-    map_in_last_change: datetime.datetime = datetime.datetime.now(datetime.UTC)
+    map: MapRecord
     models: dict[str, ModelStateRecord]
 
 
@@ -69,9 +66,8 @@ class ModelSemaphore:
             b.models[self.model_id]
             for b in self.pool.backends
             if self.model_id in b.models
-            and b.healthy
-            and b.map_in == "in"
-            and b.map_up == "up"
+            and b.map.is_in
+            and b.map.is_up
             and b.models[self.model_id].is_loaded
             and b.url not in excluded_backends
         ]
@@ -180,17 +176,22 @@ class Pool:
     def _load_state(self) -> None:
         if not self.state_file or not self.state_file.exists():
             return
-        state = ClusterState.model_validate_json(self.state_file.read_text())
+        try:
+            state = ClusterState.model_validate_json(
+                self.state_file.read_text()
+            )
+        except ValueError:
+            # The state file belongs to an incompatible proxy version.
+            log.warning(
+                "ignoring unreadable cluster state", path=str(self.state_file)
+            )
+            return
         for backend in self.backends:
             record = state.backends.get(backend.url)
             if not record:
                 continue
             backend.memory = record.memory
-            backend.map_up.state = record.map_up
-            backend.map_up.last_change = record.map_up_last_change
-            backend.map_in.state = record.map_in
-            backend.map_in.last_change = record.map_in_last_change
-            backend.healthy = record.healthy
+            backend.map.restore(record.map)
             for model_id, model_record in record.models.items():
                 if model_id not in self.model_configs:
                     continue
@@ -214,12 +215,8 @@ class Pool:
             records = {
                 backend.url: BackendStateRecord(
                     url=backend.url,
-                    healthy=backend.healthy,
                     memory=backend.memory,
-                    map_up=backend.map_up.state,
-                    map_up_last_change=backend.map_up.last_change,
-                    map_in=backend.map_in.state,
-                    map_in_last_change=backend.map_in.last_change,
+                    map=backend.map.to_record(),
                     models={
                         model_id: ModelStateRecord(
                             id=model_id,
@@ -239,24 +236,61 @@ class Pool:
                 await f.flush()
             tmp.rename(self.state_file)
 
+    def _specs(self) -> list[placement.ModelSpec]:
+        return [
+            placement.ModelSpec(id=m.id, size=m.memory, instances=m.instances)
+            for m in self.model_configs.values()
+        ]
+
+    def _slots(self) -> list[placement.BackendSlot]:
+        return [
+            placement.BackendSlot(
+                id=b.url,
+                capacity={r: p["total"] for r, p in b.memory.items()},
+                map_in=b.map.in_,
+            )
+            for b in self.backends
+        ]
+
     def placement_map(self) -> ModelMap:
         return placement.placement_map(
-            [
-                placement.BackendSlot(
-                    id=b.url,
-                    capacity={r: p["total"] for r, p in b.memory.items()},
-                    map_in=b.map_in.state,
-                )
-                for b in self.backends
-            ],
-            [
-                placement.ModelSpec(
-                    id=m.id, size=m.memory, instances=m.instances
-                )
-                for m in self.model_configs.values()
-            ],
-            self.last_map,
+            self._slots(), self._specs(), self.last_map
         )
+
+    def _running_elsewhere(self, backend: "Backend", model_id: str) -> bool:
+        return any(
+            other is not backend
+            and other.map.is_up
+            and (model := other.models.get(model_id)) is not None
+            and model.is_loaded
+            for other in self.backends
+        )
+
+    def not_yet_replaceable(
+        self, backend: "Backend", keep: set[str]
+    ) -> set[str]:
+        """Loaded models to keep on a backend that is leaving the map.
+
+        A model that still runs on another reachable backend may be unloaded
+        here. The last running instance of a still-configured model keeps
+        serving until a replacement runs elsewhere: maintenance may reduce
+        redundancy below the configured instance count, but not to zero.
+        """
+        if backend.map.is_in:
+            return set()
+        return {
+            model_id
+            for model_id, model in backend.models.items()
+            if model_id not in keep
+            and model.is_loaded
+            and model_id in self.model_configs
+            and not self._running_elsewhere(backend, model_id)
+        }
+
+    async def map_changed(self) -> None:
+        """Persist the map state and recompute placements after a change."""
+        await self.save_state()
+        await self.rebalance()
 
     async def rebalance(self) -> None:
         """Rebalance model instances across backends to match desired state."""

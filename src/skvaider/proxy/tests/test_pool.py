@@ -12,10 +12,22 @@ from skvaider.config import ModelInstanceConfig, parse_size
 from skvaider.conftest import registered_model_factory
 from skvaider.manifest import Serial
 from skvaider.proxy.backends import DummyBackend
+from skvaider.proxy.map import DOWN_OUT_GRACE
 from skvaider.proxy.models import AIModel
 from skvaider.utils import TaskManager
 
 from ..pool import ClusterState, Pool
+
+
+def mark_down(backend: DummyBackend, *, past_grace: bool = False) -> None:
+    """Mark a backend down, optionally past the placement grace period."""
+    if past_grace:
+        backend.map.up.restore(
+            "down", datetime.datetime.now(datetime.UTC) - 2 * DOWN_OUT_GRACE
+        )
+    else:
+        backend.map.up.mark("down")
+    backend.map.tick()
 
 
 async def test_maps_only_includes_desired_models(
@@ -146,7 +158,7 @@ async def test_rebalance_handles_unhealthy_backend(
 ):
     backend1 = dummy_backend_factory(ram=parse_size("500K"))
     backend2 = dummy_backend_factory(ram=parse_size("500K"))
-    backend2.healthy = False
+    mark_down(backend2)
     model1_b1 = registered_model_factory("m1", backend1, ram=parse_size("100K"))
     model1_b2 = registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
@@ -169,8 +181,7 @@ async def test_rebalance_after_backend_becomes_healthy(
 ):
     backend1 = dummy_backend_factory(ram=parse_size("200K"))
     backend2 = dummy_backend_factory(ram=parse_size("200K"))
-    backend2.healthy = False
-    backend2.map_in.mark("out")
+    mark_down(backend2, past_grace=True)
     model1_b1 = registered_model_factory("m1", backend1, ram=parse_size("100K"))
     model1_b2 = registered_model_factory("m1", backend2, ram=parse_size("100K"))
 
@@ -183,8 +194,7 @@ async def test_rebalance_after_backend_becomes_healthy(
     await pool.rebalance()
     assert pool.count_loaded_instances("m1") == 1
 
-    backend2.healthy = True
-    backend2.map_in.mark("in")
+    backend2.map.up.mark("up")
     await pool.rebalance()
     assert pool.count_loaded_instances("m1") == 2
     assert model1_b1.is_loaded
@@ -213,8 +223,7 @@ async def test_rebalance_after_backend_becomes_unhealthy(
         "http://backend-2": {"m1"},
     }
 
-    backend2.healthy = False
-    backend2.map_in.mark("out")
+    mark_down(backend2, past_grace=True)
 
     await pool.rebalance()
 
@@ -264,8 +273,7 @@ async def test_complex_rebalance_multiple_models(
         "http://backend-3": {"m1"},
     }
 
-    backend2.healthy = False
-    backend2.map_in.mark("out")
+    mark_down(backend2, past_grace=True)
     await pool.rebalance()
 
     # m1 was never on backend2, so its count stays at 2.
@@ -505,7 +513,7 @@ async def test_save_state_writes_state_file(
     tmp_path: Path,
 ):
     """save_state() writes cluster state to disk asynchronously via aiofiles."""
-    dummy_backend.healthy = True
+    dummy_backend.map.up.mark("up")
     dummy_backend.memory = {"ram": {"free": 924, "total": 1024}}
     registered_model_factory("m1", dummy_backend, ram=100)
 
@@ -536,7 +544,7 @@ async def test_save_state_serializes_concurrent_calls(
     serialization they share one temp file and the second rename() fails with
     FileNotFoundError once the first has moved the temp file into place.
     """
-    dummy_backend.healthy = True
+    dummy_backend.map.up.mark("up")
     dummy_backend.memory = {"ram": {"free": 924, "total": 1024}}
     registered_model_factory("m1", dummy_backend, ram=100)
 

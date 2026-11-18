@@ -1,14 +1,30 @@
 import structlog
 import svcs
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from skvaider.inference.manager import Manager
-from skvaider.manifest import ManifestRequest
+from skvaider.manifest import (
+    MaintenanceEnterRequest,
+    MaintenanceStatus,
+    ManifestRequest,
+)
 from skvaider.proxy.backends import BackendHealthResponse, BackendModelInfo
 
 router = APIRouter()
 log = structlog.get_logger()
+
+LOCAL_HOSTS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+
+
+def require_local(request: Request) -> None:
+    """Maintenance control is for the local machine; the proxy only reads the state."""
+    host = request.client.host if request.client else None
+    if host not in LOCAL_HOSTS:
+        raise HTTPException(
+            status_code=403,
+            detail="maintenance control is only allowed from localhost",
+        )
 
 
 @router.get("/manager/health")
@@ -30,6 +46,7 @@ async def health(  # pyright: ignore[reportUnusedFunction]
     response = BackendHealthResponse(
         status="ok",
         current_serial=manager.manifest_serial,
+        maintenance=manager.maintenance_status().phase,
         usage={
             monitor.id: {
                 "total": monitor.total,
@@ -79,3 +96,28 @@ async def update_manifest(
             content={"status": "unknown models", "unknown": sorted(unknown)},
         )
     return JSONResponse(status_code=202, content={"status": "ok"})
+
+
+@router.get("/manager/maintenance")
+async def maintenance_status(
+    services: svcs.fastapi.DepContainer,
+) -> MaintenanceStatus:
+    """Report whether this server is in maintenance and how far the drain is."""
+    return services.get(Manager).maintenance_status()
+
+
+@router.post("/manager/maintenance", dependencies=[Depends(require_local)])
+async def enter_maintenance(
+    body: MaintenanceEnterRequest,
+    services: svcs.fastapi.DepContainer,
+) -> MaintenanceStatus:
+    """Ask the proxy to move our models away; safe to stop once the phase is ``drained``."""
+    return services.get(Manager).request_maintenance(body.reason)
+
+
+@router.delete("/manager/maintenance", dependencies=[Depends(require_local)])
+async def leave_maintenance(
+    services: svcs.fastapi.DepContainer,
+) -> MaintenanceStatus:
+    """Withdraw the maintenance request; the proxy may place models here again."""
+    return services.get(Manager).leave_maintenance()
