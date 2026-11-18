@@ -16,7 +16,13 @@ import structlog
 from fastapi import HTTPException
 from pydantic import BaseModel
 
-from skvaider.utils import ModelAPI, RequestMethod, RequestModel, ResponseModel
+from skvaider.utils import (
+    ModelAPI,
+    ModelHealth,
+    RequestMethod,
+    RequestModel,
+    ResponseModel,
+)
 
 from ..typing import ConfigDict, ConfigValue, JSONObject
 
@@ -438,12 +444,15 @@ class SkvaiderBackend(Backend):
                 )
 
             if model_obj.is_loaded:
-                for name, message in model.health_checks.items():
+                for name, result in model.health.present_checks():
                     checks.append(
                         CheckResult(
                             name=name,
-                            status="ok" if not message else "critical",
-                            message=message or "ok",
+                            status="ok" if result.ok else "critical",
+                            message=result.message or "ok",
+                            checked_at=result.checked_at,
+                            failed_at=result.failed_at,
+                            consecutive_failures=result.consecutive_failures,
                         )
                     )
             model_obj.checks = checks
@@ -458,7 +467,7 @@ class BackendModelInfo(BaseModel):
     status: set[str]
     max_requests: int
     memory_usage: dict[str, int]
-    health_checks: dict[str, str]  # name -> message, "" is OK
+    health: ModelHealth
 
 
 class BackendHealthResponse(ResponseModel):

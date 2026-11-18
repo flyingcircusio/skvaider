@@ -47,7 +47,7 @@ async def health(  # pyright: ignore[reportUnusedFunction]
                     monitor.id: monitor.model_usage(m)
                     for monitor in manager.monitors.values()
                 },
-                health_checks=m.health_checks,
+                health=m.health,
             )
             for m in manager.list_models()
         ],
