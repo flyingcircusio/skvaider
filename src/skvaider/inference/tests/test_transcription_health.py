@@ -4,6 +4,7 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from skvaider.inference.config import VllmModelConfig
 from skvaider.inference.model import VllmModel
@@ -104,12 +105,14 @@ async def test_transcription_health_check_reports_http_error(
     assert checks == {"transcription": "HTTP 500"}
 
 
-async def test_transcription_health_check_reports_missing_text(
+async def test_transcription_health_check_bubbles_validation_error(
     transcription_server: TranscriptionServer,
 ):
+    # A body that is valid JSON but lacks the required "text" field must
+    # bubble the pydantic validation error, not a hand-crafted string.
     transcription_server.body = b"{}"
     model = transcription_model(transcription_server)
 
-    checks = await model._check_health()  # pyright: ignore[reportPrivateUsage]
-
-    assert checks == {"transcription": "response has no text"}
+    with pytest.raises(ValidationError) as excinfo:
+        await model._check_health()  # pyright: ignore[reportPrivateUsage]
+    assert "text" in str(excinfo.value)

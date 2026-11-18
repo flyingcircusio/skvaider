@@ -33,6 +33,7 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 from openai.types.shared_params import FunctionDefinition
+from pydantic import BaseModel
 
 from skvaider.inference import metrics
 from skvaider.inference.config import (
@@ -143,6 +144,12 @@ def silence_wav(seconds: float = 1.0, sample_rate: int = 16000) -> bytes:
         wav.setframerate(sample_rate)
         wav.writeframes(b"\x00\x00" * int(sample_rate * seconds))
     return buffer.getvalue()
+
+
+class TranscriptionResponse(BaseModel):
+    """JSON response of the /v1/audio/transcriptions endpoint."""
+
+    text: str
 
 
 class Model(ABC):
@@ -347,7 +354,6 @@ class Model(ABC):
         self.on_unexpected_exit()
 
     async def _check_transcription_health(self) -> dict[str, str]:
-        checks: dict[str, str] = {}
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
@@ -366,17 +372,11 @@ class Model(ABC):
                 },
             )
         if resp.status_code != 200:
-            checks["transcription"] = f"HTTP {resp.status_code}"
-            return checks
-        try:
-            body = resp.json()
-        except ValueError:
-            checks["transcription"] = "invalid JSON response"
-            return checks
-        checks["transcription"] = (
-            "" if "text" in body else "response has no text"
-        )
-        return checks
+            return {"transcription": f"HTTP {resp.status_code}"}
+        # Raises ValidationError if the body is not valid JSON or lacks the
+        # required fields; _monitor_health records the error message.
+        TranscriptionResponse.model_validate_json(resp.content)
+        return {"transcription": ""}
 
     async def _check_embedding_health(self) -> dict[str, str]:
         checks: dict[str, str] = {}
