@@ -9,11 +9,12 @@ from skvaider.conftest import wait_for_condition
 from skvaider.inference.config import ModelConfig
 from skvaider.inference.conftest import OpenAIServerMock
 from skvaider.inference.model import Model
+from skvaider.utils import HealthCheckResult, ModelHealth
 
 
 @wait_for_condition()
 async def has_health_status(model: Model, expected: str) -> bool:
-    return model.health_status == expected
+    return model.health.status == expected
 
 
 async def test_monitor_health_updates_model_status_completion(
@@ -31,11 +32,11 @@ async def test_monitor_health_updates_model_status_completion(
     model.health_check_interval = 0.01
     model.health_check_timeout = 0.01
 
-    async def health_ok() -> dict[str, str]:
-        return {}
+    async def health_ok(health: ModelHealth) -> None:
+        health.completion = HealthCheckResult.passed()
 
-    async def health_not_ok() -> dict[str, str]:
-        return {"health": "not ok"}
+    async def health_not_ok(health: ModelHealth) -> None:
+        health.completion = HealthCheckResult.failed("not ok")
 
     # Phase 1: startup, no process, no health info
     model._check_health = health_ok
@@ -49,7 +50,7 @@ async def test_monitor_health_updates_model_status_completion(
     await loop_ran_more_than_once()
 
     # The model isn't starting yet. That means we don't set a health status
-    assert model.health_status == ""
+    assert model.health.status == ""
     assert "inactive" in model.status
 
     # Phase 2: expose an endpoint so that the health check starts running
@@ -69,7 +70,7 @@ async def test_monitor_health_updates_model_status_completion(
     assert model.status == {"running", "healthy", "active"}
 
     # Phase 5: model check fails with an exception
-    async def health_exception():
+    async def health_exception(health: ModelHealth) -> None:
         raise Exception()
 
     model._check_health = health_exception
@@ -105,19 +106,24 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
     }
 
     # 1. No verification data -> embedding ok, numerical warns
-    result = await model._check_embedding_health()
-    assert result["embedding"] == ""
-    assert result["numerical"] == "no reference data"
+    health = ModelHealth()
+    await model._check_embedding_health(health)
+    assert health.embedding is not None and health.embedding.ok
+    assert health.numerical is not None
+    assert health.numerical.message == "no reference data"
 
     # 2. With verification data, correct embedding -> all ok
     model.verification_data = {"test input": expected_embedding}
-    result = await model._check_embedding_health()
-    assert not any(result.values())
+    health = ModelHealth()
+    await model._check_embedding_health(health)
+    assert not health.has_failures()
     assert openai_server.last_request_json["input"] == ["test input"]
 
     # 3. Wrong embedding -> numerical fails
     openai_server.response["data"][0]["embedding"] = [0.9, 0.9, 0.9]
-    assert any((await model._check_embedding_health()).values())
+    health = ModelHealth()
+    await model._check_embedding_health(health)
+    assert health.has_failures()
 
 
 async def test_health_check_completions(openai_server: OpenAIServerMock):
@@ -134,20 +140,18 @@ async def test_health_check_completions(openai_server: OpenAIServerMock):
 
     # 2. Simulate correct response -> healthy
     openai_server.response = {}
-    assert not any((await model._check_completion_health()).values())
+    assert (await model._check_completion_health()).ok
     assert openai_server.last_request_json["prompt"] == "2+2="
 
     # 2. Simulate wrong response -> unhealthy
     openai_server.response_status = 500
-    assert any((await model._check_completion_health()).values())
+    assert not (await model._check_completion_health()).ok
     assert openai_server.last_request_json["prompt"] == "2+2="
 
 
 async def test_health_check_streaming_tool_call_check_live(gemma: Model):
     await gemma.start()
-    assert not any(
-        (await gemma._check_completion_streaming_tool_call_health()).values()
-    )
+    assert (await gemma._check_completion_streaming_tool_call_health()).ok
 
 
 async def test_health_check_streaming_tool_call_check_offline():
@@ -161,9 +165,8 @@ async def test_health_check_streaming_tool_call_check_offline():
         lambda: None,
     )
     model.endpoint = "http://localhost:9000"
-    assert {
-        "completion_tool_call": "Error connecting: Connection error."
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert check.message == "Error connecting: Connection error."
 
 
 async def test_health_check_streaming_tool_call_check_mocked(
@@ -203,32 +206,31 @@ async def test_health_check_streaming_tool_call_check_mocked(
     choice.message.tool_calls = []
     final.choices = [choice]
     # no tool calls returned
-    assert {
-        "completion_tool_call": "No tool calls found",
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert check.message == "No tool calls found"
 
     # tool call without id returned
     call = Mock()
     call.id = None
     choice.message.tool_calls = [call]
-    assert {
-        "completion_tool_call": "Missing tool call ID in tool call #0: None",
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert check.message == "Missing tool call ID in tool call #0: None"
 
     # no function name
     call.id = "1234"
     call.function.name = None
-    assert {
-        "completion_tool_call": "Missing tool function name in tool call #0: None",
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert check.message == "Missing tool function name in tool call #0: None"
 
     # incorrect json args
     call.id = "1234"
     call.function.name = "Asdf"
     call.function.arguments = r'{"object": 123'
-    assert {
-        "completion_tool_call": "Invalid argument JSON in tool call #0: '{\"object\": 123'",
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert (
+        check.message
+        == "Invalid argument JSON in tool call #0: '{\"object\": 123'"
+    )
 
 
 def make_mock_process(returncode: int = -9) -> Mock:

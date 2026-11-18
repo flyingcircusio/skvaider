@@ -133,7 +133,7 @@ async def test_manager_start_model(gemma: LlamaModel, manager: Manager):
 
     assert "active" in model.status
     assert model.process_status == "running"
-    assert model.health_status == "healthy"
+    assert model.health.status == "healthy"
 
     assert await manager.use_model("gemma") is model
 
@@ -141,7 +141,7 @@ async def test_manager_start_model(gemma: LlamaModel, manager: Manager):
 
     assert "active" not in model.status
     assert model.process_status == "stopped"
-    assert model.health_status == ""
+    assert model.health.status == ""
 
 
 async def test_download_split_model(tmp_path: Path, gguf_http_server: str):

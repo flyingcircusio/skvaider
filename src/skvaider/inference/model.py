@@ -40,7 +40,13 @@ from skvaider.inference.config import (
     SystemdModelConfigBase,
     VllmModelConfig,
 )
-from skvaider.utils import DownloadProgress, TaskManager, slugify
+from skvaider.utils import (
+    DownloadProgress,
+    HealthCheckResult,
+    ModelHealth,
+    TaskManager,
+    slugify,
+)
 
 log = structlog.get_logger()
 
@@ -150,8 +156,7 @@ class Model(ABC):
     )
     status_changed: asyncio.Event
 
-    health_status: Literal["healthy", "unhealthy", ""] = ""
-    health_checks: dict[str, str]
+    health: ModelHealth
     health_check_interval: float = 300  # every 5 minutes
     health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
     _health_checks: int = 0  # support testing
@@ -181,7 +186,7 @@ class Model(ABC):
     def __init__(
         self, config: ModelConfig, on_unexpected_exit: Callable[[], None]
     ):
-        self.health_checks = {}
+        self.health = ModelHealth()
         self.config = config
         self.on_unexpected_exit = on_unexpected_exit
         self.lock = UserManagerLock()
@@ -213,7 +218,7 @@ class Model(ABC):
         """
         result: set[str] = set()
         result.add(self.process_status)
-        result.add(self.health_status)
+        result.add(self.health.status)
 
         if {"running", "healthy"} <= result:
             result.add("active")
@@ -225,70 +230,64 @@ class Model(ABC):
 
         return result
 
-    async def _check_health(self) -> dict[str, str]:
+    async def _check_health(self, health: ModelHealth) -> None:
+        """Run the model-specific checks, storing their results on ``health``."""
         if self.is_embedding():
-            checks = [self._check_embedding_health]
-        else:
-            checks = [self._check_completion_health]
-            if self.config.supports_tools:
-                checks.append(self._check_completion_streaming_tool_call_health)
-            if self.config.supports_images:
-                checks.append(self._check_completion_with_image_input_health)
+            await self._check_embedding_health(health)
+            return
 
-        result: dict[str, str] = {}
-        for check in checks:
-            result.update(await check())
-
-        return result
+        health.completion = await self._check_completion_health()
+        if self.config.supports_tools:
+            health.completion_tool_call = (
+                await self._check_completion_streaming_tool_call_health()
+            )
+        if self.config.supports_images:
+            health.completion_with_image_input = (
+                await self._check_completion_with_image_input_health()
+            )
 
     async def _monitor_health(self) -> None:
         """Periodically check if the model is responsive."""
-        new_status = ""
         next_full_check = time.time()
         interval = 0.1  # poll quickly while waiting for the model to come up
         while True:
             self._health_checks += 1
-            # This is a bit complicated to handle varying intervals during warmup
-            # and manage the event trigger
-            # 1. Status update and sleep
-            changed = new_status != self.health_status
-            self.health_status = new_status
-            if changed:
-                self._notify_status_changed()
             await asyncio.sleep(interval)
 
             # 2. Fast loop without an actual health check to wait until we see the
             #    model starting or running and the endpoint exposed.
             if not self.endpoint:
-                new_status = ""
                 interval = 0.1
                 continue
 
             # 3. Fast health check
-            new_checks = {"quick-health-check": ""}
+            fresh = ModelHealth(quick_health_check=HealthCheckResult.passed())
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(f"{self.endpoint}/health")
                     if resp.status_code != 200:
-                        new_checks["quick-health-check"] = (
+                        fresh.quick_health_check = HealthCheckResult.failed(
                             f"{resp.status_code}: {resp.content[:100]}"
                         )
             except httpx.RequestError as e:
-                new_checks["quick-health-check"] = str(e) or type(e).__name__
+                fresh.quick_health_check = HealthCheckResult.failed(
+                    str(e) or type(e).__name__
+                )
 
             # 4. In-depth health check on its own slower interval
             if time.time() >= next_full_check:
+                fresh.deep_check_failure = None  # a passing round clears it
                 try:
-                    new_checks.update(await self._check_health())
+                    await self._check_health(fresh)
                     next_full_check = time.time() + self.health_check_interval
                 except Exception as e:
                     log.exception("Health check error", model=self.config.id)
-                    new_checks["deep-check-failure"] = (
+                    fresh.deep_check_failure = HealthCheckResult.failed(
                         str(e) or type(e).__name__
                     )
 
-            new_status = "unhealthy" if any(new_checks.values()) else "healthy"
-            self.health_checks.update(new_checks)
+            if self.health.merge(fresh):
+                self._notify_status_changed()
             interval = 1  # quick checks run once per second
 
     async def _wait_for_startup(self) -> None:
@@ -324,8 +323,7 @@ class Model(ABC):
         await self.terminate()
         self.on_unexpected_exit()
 
-    async def _check_embedding_health(self) -> dict[str, str]:
-        checks: dict[str, str] = {}
+    async def _check_embedding_health(self, health: ModelHealth) -> None:
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
@@ -346,40 +344,43 @@ class Model(ABC):
                     json={"input": input_texts, "model": self.config.id},
                 )
                 if resp.status_code != 200:
-                    checks["embedding"] = f"HTTP {resp.status_code}"
-                    return checks
+                    health.embedding = HealthCheckResult.failed(
+                        f"HTTP {resp.status_code}"
+                    )
+                    return
             except httpx.RequestError as e:
-                checks["embedding"] = str(e)
-                return checks
+                health.embedding = HealthCheckResult.failed(str(e))
+                return
 
-            checks["embedding"] = ""
+            health.embedding = HealthCheckResult.passed()
 
             if expected_embeddings is None:
-                checks["numerical"] = "no reference data"
-                return checks
+                health.numerical = HealthCheckResult.failed("no reference data")
+                return
 
             data = resp.json()
             for i, item in enumerate(data.get("data", [])):
                 embedding = item.get("embedding", [])
                 if not embedding:
-                    checks["numerical"] = "missing embedding"
-                    return checks
+                    health.numerical = HealthCheckResult.failed(
+                        "missing embedding"
+                    )
+                    return
                 expected = expected_embeddings[i]
                 if len(embedding) != len(expected):
-                    checks["numerical"] = (
+                    health.numerical = HealthCheckResult.failed(
                         f"size mismatch: got {len(embedding)}, expected {len(expected)}"
                     )
-                    return checks
+                    return
                 for j, (a, b) in enumerate(zip(embedding, expected)):
                     if abs(a - b) > 1e-2:
-                        checks["numerical"] = (
+                        health.numerical = HealthCheckResult.failed(
                             f"value mismatch at dim {j} for {input_texts[i]!r}: got {a:.6f}, expected {b:.6f}"
                         )
-                        return checks
-            checks["numerical"] = ""
-        return checks
+                        return
+            health.numerical = HealthCheckResult.passed()
 
-    async def _check_completion_health(self) -> dict[str, str]:
+    async def _check_completion_health(self) -> HealthCheckResult:
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
@@ -388,18 +389,15 @@ class Model(ABC):
                     f"{self.endpoint}/v1/completions",
                     json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
                 )
-                return {
-                    "completion": ""
-                    if resp.status_code == 200
-                    else f"HTTP {resp.status_code}"
-                }
             except httpx.RequestError as e:
-                return {"completion": str(e)}
+                return HealthCheckResult.failed(str(e))
+            if resp.status_code == 200:
+                return HealthCheckResult.passed()
+            return HealthCheckResult.failed(f"HTTP {resp.status_code}")
 
     async def _check_completion_streaming_tool_call_health(
         self,
-    ) -> dict[str, str]:
-        result = {"completion_tool_call": ""}
+    ) -> HealthCheckResult:
         tools: list[ChatCompletionToolParam] = [
             ChatCompletionToolParam(
                 type="function",
@@ -447,38 +445,33 @@ class Model(ABC):
                     pass
                 final = await stream.get_final_completion()
         except openai.APIConnectionError as e:
-            result["completion_tool_call"] = f"Error connecting: {e}"
-            return result
+            return HealthCheckResult.failed(f"Error connecting: {e}")
 
         choice = final.choices[0]
         if not choice.message.tool_calls:
-            result["completion_tool_call"] = "No tool calls found"
-            return result
+            return HealthCheckResult.failed("No tool calls found")
 
         for i, call in enumerate(choice.message.tool_calls):
             if not call.id:
-                result["completion_tool_call"] = (
+                return HealthCheckResult.failed(
                     f"Missing tool call ID in tool call #{i}: {call.id!r}"
                 )
-                break
             if call.function.name is None:  # pyright: ignore[reportUnnecessaryComparison]
-                result["completion_tool_call"] = (
+                return HealthCheckResult.failed(
                     f"Missing tool function name in tool call #{i}: {call.function.name!r}"
                 )
-                break
             try:
                 json.loads(call.function.arguments)
             except JSONDecodeError:
-                result["completion_tool_call"] = (
+                return HealthCheckResult.failed(
                     f"Invalid argument JSON in tool call #{i}: {call.function.arguments!r}"
                 )
-                break
 
-        return result
+        return HealthCheckResult.passed()
 
     async def _check_completion_with_image_input_health_flower(
         self,
-    ) -> dict[str, str]:
+    ) -> HealthCheckResult:
         messages = [
             ChatCompletionUserMessageParam(
                 role="user",
@@ -505,18 +498,20 @@ class Model(ABC):
                 messages=messages,
             )
         except openai.APIConnectionError as e:
-            return {"completion_with_image_input": f"Error connecting: {e}"}
+            return HealthCheckResult.failed(f"Error connecting: {e}")
         content = resp.choices[0].message.content
         strings = ["flower", "plant", "blossom", "petal"]
         if not content:
-            return {"completion_with_image_input": "Response content is empty"}
+            return HealthCheckResult.failed("Response content is empty")
         if not any(s in content.lower() for s in strings):
-            return {
-                "completion_with_image_input": "Response does not contain expected terms"
-            }
-        return {"completion_with_image_input": ""}
+            return HealthCheckResult.failed(
+                "Response does not contain expected terms"
+            )
+        return HealthCheckResult.passed()
 
-    async def _check_completion_with_image_input_health(self) -> dict[str, str]:
+    async def _check_completion_with_image_input_health(
+        self,
+    ) -> HealthCheckResult:
         messages = [
             ChatCompletionUserMessageParam(
                 role="user",
@@ -543,16 +538,16 @@ class Model(ABC):
                 messages=messages,
             )
         except openai.APIConnectionError as e:
-            return {"completion_with_image_input": f"Error connecting: {e}"}
+            return HealthCheckResult.failed(f"Error connecting: {e}")
         content = resp.choices[0].message.content
         expected = "This is a test image"
         if not content:
-            return {"completion_with_image_input": "Response content is empty"}
+            return HealthCheckResult.failed("Response content is empty")
         if expected not in content:
-            return {
-                "completion_with_image_input": f"Response does not contain expected text: {expected!r} not in {content!r}"
-            }
-        return {"completion_with_image_input": ""}
+            return HealthCheckResult.failed(
+                f"Response does not contain expected text: {expected!r} not in {content!r}"
+            )
+        return HealthCheckResult.passed()
 
     async def detach(self) -> None:
         """Called when shutting down.
@@ -600,7 +595,7 @@ class Model(ABC):
 
         # Update metrics
         metrics.inference_model_status.labels(model=self.config.id).set(0)
-        self.health_status = ""
+        self.health.reset()
         self._notify_status_changed()
 
     async def _launch_process(

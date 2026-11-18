@@ -2,7 +2,7 @@ import asyncio
 import datetime
 import re
 import unicodedata
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterator
 from typing import Any, Literal, TypeVar, TypeVarTuple
 
 import httpx
@@ -184,6 +184,168 @@ class RequestModel[ResponseModelT: ResponseModel](BaseModel):
     request_method: RequestMethod = Field(default="get", exclude=True)
     request_path: str = Field(exclude=True)
     response_model: type[ResponseModelT] = Field(exclude=True)
+
+
+class HealthCheckResult(BaseModel):
+    """Outcome of a single health check.
+
+    ``ok`` is the pass/fail verdict and ``message`` describes the failure
+    (empty while the check passes). ``checked_at`` is when this result was
+    last recorded, ``failed_at`` when the current failure streak started
+    and ``consecutive_failures`` how many checks in a row have failed. The
+    streak fields are maintained by :meth:`merge`, which the health
+    monitor calls when folding a fresh result into the stored state.
+    """
+
+    ok: bool = True
+    message: str = ""
+    checked_at: datetime.datetime | None = None
+    failed_at: datetime.datetime | None = None
+    consecutive_failures: int = 0
+
+    @classmethod
+    def passed(cls) -> "HealthCheckResult":
+        return cls()
+
+    @classmethod
+    def failed(cls, message: str) -> "HealthCheckResult":
+        return cls(ok=False, message=message)
+
+    @classmethod
+    def merge(
+        cls,
+        previous: "HealthCheckResult | None",
+        fresh: "HealthCheckResult",
+        now: datetime.datetime | None = None,
+    ) -> "HealthCheckResult":
+        """Fold a fresh result into its previous state, keeping streak info."""
+        now = now or datetime.datetime.now(tz=datetime.UTC)
+        result = fresh.model_copy(update={"checked_at": now})
+        if result.ok:
+            result.failed_at = None
+            result.consecutive_failures = 0
+        elif previous is not None and not previous.ok:
+            result.failed_at = previous.failed_at or now
+            result.consecutive_failures = previous.consecutive_failures + 1
+        else:
+            result.failed_at = now
+            result.consecutive_failures = 1
+        return result
+
+
+class ModelHealth(BaseModel):
+    """Health state of an inference model.
+
+    Every check is a typed attribute; ``None`` means the check did not run
+    yet or does not apply to the model's task. The overall ``status`` is
+    derived from the checks that are present. The health monitor folds
+    each round's results in via :meth:`merge`, which preserves checks that
+    were not re-run and keeps their failure streaks.
+    """
+
+    status: Literal["healthy", "unhealthy", ""] = ""
+    status_changed_at: datetime.datetime | None = None
+
+    quick_health_check: HealthCheckResult | None = None
+    deep_check_failure: HealthCheckResult | None = None
+    completion: HealthCheckResult | None = None
+    completion_tool_call: HealthCheckResult | None = None
+    completion_with_image_input: HealthCheckResult | None = None
+    embedding: HealthCheckResult | None = None
+    numerical: HealthCheckResult | None = None
+
+    def present_checks(self) -> Iterator[tuple[str, HealthCheckResult]]:
+        """Yield the name and result of every check that has run."""
+        if self.quick_health_check is not None:
+            yield "quick_health_check", self.quick_health_check
+        if self.deep_check_failure is not None:
+            yield "deep_check_failure", self.deep_check_failure
+        if self.completion is not None:
+            yield "completion", self.completion
+        if self.completion_tool_call is not None:
+            yield "completion_tool_call", self.completion_tool_call
+        if self.completion_with_image_input is not None:
+            yield (
+                "completion_with_image_input",
+                self.completion_with_image_input,
+            )
+        if self.embedding is not None:
+            yield "embedding", self.embedding
+        if self.numerical is not None:
+            yield "numerical", self.numerical
+
+    def has_failures(self) -> bool:
+        return any(not check.ok for _, check in self.present_checks())
+
+    @staticmethod
+    def _merged(
+        previous: HealthCheckResult | None,
+        fresh: HealthCheckResult | None,
+        now: datetime.datetime,
+    ) -> HealthCheckResult | None:
+        if fresh is None:
+            return None
+        return HealthCheckResult.merge(previous, fresh, now)
+
+    def merge(
+        self, fresh: "ModelHealth", now: datetime.datetime | None = None
+    ) -> bool:
+        """Fold the checks set on ``fresh`` into this state.
+
+        Checks that ``fresh`` does not set keep their last result. Returns
+        True when the derived status changed.
+        """
+        now = now or datetime.datetime.now(tz=datetime.UTC)
+        if "quick_health_check" in fresh.model_fields_set:
+            self.quick_health_check = self._merged(
+                self.quick_health_check, fresh.quick_health_check, now
+            )
+        if "deep_check_failure" in fresh.model_fields_set:
+            self.deep_check_failure = self._merged(
+                self.deep_check_failure, fresh.deep_check_failure, now
+            )
+        if "completion" in fresh.model_fields_set:
+            self.completion = self._merged(
+                self.completion, fresh.completion, now
+            )
+        if "completion_tool_call" in fresh.model_fields_set:
+            self.completion_tool_call = self._merged(
+                self.completion_tool_call, fresh.completion_tool_call, now
+            )
+        if "completion_with_image_input" in fresh.model_fields_set:
+            self.completion_with_image_input = self._merged(
+                self.completion_with_image_input,
+                fresh.completion_with_image_input,
+                now,
+            )
+        if "embedding" in fresh.model_fields_set:
+            self.embedding = self._merged(self.embedding, fresh.embedding, now)
+        if "numerical" in fresh.model_fields_set:
+            self.numerical = self._merged(self.numerical, fresh.numerical, now)
+
+        if not any(True for _ in self.present_checks()):
+            new_status: Literal["healthy", "unhealthy", ""] = ""
+        elif self.has_failures():
+            new_status = "unhealthy"
+        else:
+            new_status = "healthy"
+        changed = new_status != self.status
+        self.status = new_status
+        if changed:
+            self.status_changed_at = now
+        return changed
+
+    def reset(self, now: datetime.datetime | None = None) -> None:
+        """Drop all checks and the status, e.g. when the process stops."""
+        self.quick_health_check = None
+        self.deep_check_failure = None
+        self.completion = None
+        self.completion_tool_call = None
+        self.completion_with_image_input = None
+        self.embedding = None
+        self.numerical = None
+        self.status = ""
+        self.status_changed_at = now or datetime.datetime.now(tz=datetime.UTC)
 
 
 class ModelAPI:
