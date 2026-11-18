@@ -238,9 +238,9 @@ class ModelHealth(BaseModel):
 
     Every check is a typed attribute; ``None`` means the check did not run
     yet or does not apply to the model's task. The overall ``status`` is
-    derived from the checks that are present. The health monitor folds
-    each round's results in via :meth:`merge`, which preserves checks that
-    were not re-run and keeps their failure streaks.
+    derived from the checks that are present. Checks record their result
+    through :meth:`HealthCheckResult.merge`, which keeps the failure
+    streak of the check it replaces.
     """
 
     status: Literal["healthy", "unhealthy", ""] = ""
@@ -277,55 +277,22 @@ class ModelHealth(BaseModel):
     def has_failures(self) -> bool:
         return any(not check.ok for _, check in self.present_checks())
 
-    @staticmethod
-    def _merged(
-        previous: HealthCheckResult | None,
-        fresh: HealthCheckResult | None,
-        now: datetime.datetime,
-    ) -> HealthCheckResult | None:
-        if fresh is None:
-            return None
-        return HealthCheckResult.merge(previous, fresh, now)
+    def update_status(self, now: datetime.datetime | None = None) -> bool:
+        """Re-derive the status from the present checks.
 
-    def merge(
-        self, fresh: "ModelHealth", now: datetime.datetime | None = None
-    ) -> bool:
-        """Fold the checks set on ``fresh`` into this state.
-
-        Checks that ``fresh`` does not set keep their last result. Returns
-        True when the derived status changed.
+        Returns True when the status changed (``status_changed_at`` is
+        updated in that case).
         """
         now = now or datetime.datetime.now(tz=datetime.UTC)
-        if "quick_health_check" in fresh.model_fields_set:
-            self.quick_health_check = self._merged(
-                self.quick_health_check, fresh.quick_health_check, now
-            )
-        if "deep_check_failure" in fresh.model_fields_set:
-            self.deep_check_failure = self._merged(
-                self.deep_check_failure, fresh.deep_check_failure, now
-            )
-        if "completion" in fresh.model_fields_set:
-            self.completion = self._merged(
-                self.completion, fresh.completion, now
-            )
-        if "completion_tool_call" in fresh.model_fields_set:
-            self.completion_tool_call = self._merged(
-                self.completion_tool_call, fresh.completion_tool_call, now
-            )
-        if "completion_with_image_input" in fresh.model_fields_set:
-            self.completion_with_image_input = self._merged(
-                self.completion_with_image_input,
-                fresh.completion_with_image_input,
-                now,
-            )
-        if "embedding" in fresh.model_fields_set:
-            self.embedding = self._merged(self.embedding, fresh.embedding, now)
-        if "numerical" in fresh.model_fields_set:
-            self.numerical = self._merged(self.numerical, fresh.numerical, now)
-
-        if not any(True for _ in self.present_checks()):
+        present = False
+        failures = False
+        for _, check in self.present_checks():
+            present = True
+            if not check.ok:
+                failures = True
+        if not present:
             new_status: Literal["healthy", "unhealthy", ""] = ""
-        elif self.has_failures():
+        elif failures:
             new_status = "unhealthy"
         else:
             new_status = "healthy"

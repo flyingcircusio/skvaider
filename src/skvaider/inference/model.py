@@ -229,20 +229,24 @@ class Model(ABC):
 
         return result
 
-    async def _check_health(self, health: ModelHealth) -> None:
-        """Run the model-specific checks, storing their results on ``health``."""
+    async def _check_health(self) -> None:
+        """Run the model-specific checks, recording their results."""
         if self.is_embedding():
-            await self._check_embedding_health(health)
+            await self._check_embedding_health()
             return
 
-        health.completion = await self._check_completion_health()
+        self.health.completion = HealthCheckResult.merge(
+            self.health.completion, await self._check_completion_health()
+        )
         if self.config.supports_tools:
-            health.completion_tool_call = (
-                await self._check_completion_streaming_tool_call_health()
+            self.health.completion_tool_call = HealthCheckResult.merge(
+                self.health.completion_tool_call,
+                await self._check_completion_streaming_tool_call_health(),
             )
         if self.config.supports_images:
-            health.completion_with_image_input = (
-                await self._check_completion_with_image_input_health()
+            self.health.completion_with_image_input = HealthCheckResult.merge(
+                self.health.completion_with_image_input,
+                await self._check_completion_with_image_input_health(),
             )
 
     async def _check_quick_health(self) -> HealthCheckResult:
@@ -280,27 +284,29 @@ class Model(ABC):
                 await asyncio.sleep(self.quick_check_interval)
                 continue
 
-            fresh = ModelHealth(
-                quick_health_check=await self._check_quick_health()
+            # Fast health check
+            self.health.quick_health_check = HealthCheckResult.merge(
+                self.health.quick_health_check,
+                await self._check_quick_health(),
             )
 
-            # In-depth health check on its own slower interval.
+            # In-depth health check on its own slower interval
             if time.time() >= next_full_check:
-                fresh.deep_check_failure = None  # a passing round clears it
                 try:
-                    await self._check_health(fresh)
+                    await self._check_health()
+                    # A successful in-depth round clears a previous failure.
+                    self.health.deep_check_failure = None
                 except Exception as e:
                     # Retry with the next quick check.
                     log.exception("Health check error", model=self.config.id)
-                    fresh.deep_check_failure = HealthCheckResult.failed(
-                        str(e) or type(e).__name__
+                    self.health.deep_check_failure = HealthCheckResult.merge(
+                        self.health.deep_check_failure,
+                        HealthCheckResult.failed(str(e) or type(e).__name__),
                     )
                 finally:
-                    next_full_check = (
-                        time.time() + self.health_check_interval
-                    )
+                    next_full_check = time.time() + self.health_check_interval
 
-            if self.health.merge(fresh):
+            if self.health.update_status():
                 self._notify_status_changed()
             await asyncio.sleep(self.quick_check_interval)
 
@@ -337,7 +343,7 @@ class Model(ABC):
         await self.terminate()
         self.on_unexpected_exit()
 
-    async def _check_embedding_health(self, health: ModelHealth) -> None:
+    async def _check_embedding_health(self) -> None:
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
@@ -358,41 +364,58 @@ class Model(ABC):
                     json={"input": input_texts, "model": self.config.id},
                 )
                 if resp.status_code != 200:
-                    health.embedding = HealthCheckResult.failed(
-                        f"HTTP {resp.status_code}"
+                    self.health.embedding = HealthCheckResult.merge(
+                        self.health.embedding,
+                        HealthCheckResult.failed(f"HTTP {resp.status_code}"),
                     )
                     return
             except httpx.RequestError as e:
-                health.embedding = HealthCheckResult.failed(str(e))
+                self.health.embedding = HealthCheckResult.merge(
+                    self.health.embedding, HealthCheckResult.failed(str(e))
+                )
                 return
 
-            health.embedding = HealthCheckResult.passed()
+            self.health.embedding = HealthCheckResult.merge(
+                self.health.embedding, HealthCheckResult.passed()
+            )
 
             if expected_embeddings is None:
-                health.numerical = HealthCheckResult.failed("no reference data")
+                self.health.numerical = HealthCheckResult.merge(
+                    self.health.numerical,
+                    HealthCheckResult.failed("no reference data"),
+                )
                 return
 
             data = resp.json()
             for i, item in enumerate(data.get("data", [])):
                 embedding = item.get("embedding", [])
                 if not embedding:
-                    health.numerical = HealthCheckResult.failed(
-                        "missing embedding"
+                    self.health.numerical = HealthCheckResult.merge(
+                        self.health.numerical,
+                        HealthCheckResult.failed("missing embedding"),
                     )
                     return
                 expected = expected_embeddings[i]
                 if len(embedding) != len(expected):
-                    health.numerical = HealthCheckResult.failed(
-                        f"size mismatch: got {len(embedding)}, expected {len(expected)}"
+                    self.health.numerical = HealthCheckResult.merge(
+                        self.health.numerical,
+                        HealthCheckResult.failed(
+                            f"size mismatch: got {len(embedding)}, expected {len(expected)}"
+                        ),
                     )
                     return
                 for j, (a, b) in enumerate(zip(embedding, expected)):
                     if abs(a - b) > 1e-2:
-                        health.numerical = HealthCheckResult.failed(
-                            f"value mismatch at dim {j} for {input_texts[i]!r}: got {a:.6f}, expected {b:.6f}"
+                        self.health.numerical = HealthCheckResult.merge(
+                            self.health.numerical,
+                            HealthCheckResult.failed(
+                                f"value mismatch at dim {j} for {input_texts[i]!r}: got {a:.6f}, expected {b:.6f}"
+                            ),
                         )
                         return
-            health.numerical = HealthCheckResult.passed()
+            self.health.numerical = HealthCheckResult.merge(
+                self.health.numerical, HealthCheckResult.passed()
+            )
 
     async def _check_completion_health(self) -> HealthCheckResult:
         async with httpx.AsyncClient(

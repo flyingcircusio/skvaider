@@ -11,7 +11,7 @@ from skvaider.conftest import wait_for_condition
 from skvaider.inference.config import ModelConfig
 from skvaider.inference.conftest import OpenAIServerMock
 from skvaider.inference.model import Model
-from skvaider.utils import HealthCheckResult, ModelHealth
+from skvaider.utils import HealthCheckResult
 
 
 @wait_for_condition()
@@ -40,11 +40,11 @@ async def test_monitor_health_updates_model_status_completion(
 
     model._check_quick_health = quick_health_ok
 
-    async def health_ok(health: ModelHealth) -> None:
-        health.completion = HealthCheckResult.passed()
+    async def health_ok() -> None:
+        model.health.completion = HealthCheckResult.passed()
 
-    async def health_not_ok(health: ModelHealth) -> None:
-        health.completion = HealthCheckResult.failed("not ok")
+    async def health_not_ok() -> None:
+        model.health.completion = HealthCheckResult.failed("not ok")
 
     # Phase 1: startup, no process, no health info
     model._check_health = health_ok
@@ -78,7 +78,7 @@ async def test_monitor_health_updates_model_status_completion(
     assert model.status == {"running", "healthy", "active"}
 
     # Phase 5: model check fails with an exception
-    async def health_exception(health: ModelHealth) -> None:
+    async def health_exception() -> None:
         raise Exception()
 
     model._check_health = health_exception
@@ -240,24 +240,21 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
     }
 
     # 1. No verification data -> embedding ok, numerical warns
-    health = ModelHealth()
-    await model._check_embedding_health(health)
-    assert health.embedding is not None and health.embedding.ok
-    assert health.numerical is not None
-    assert health.numerical.message == "no reference data"
+    await model._check_embedding_health()
+    assert model.health.embedding is not None and model.health.embedding.ok
+    assert model.health.numerical is not None
+    assert model.health.numerical.message == "no reference data"
 
     # 2. With verification data, correct embedding -> all ok
     model.verification_data = {"test input": expected_embedding}
-    health = ModelHealth()
-    await model._check_embedding_health(health)
-    assert not health.has_failures()
+    await model._check_embedding_health()
+    assert not model.health.has_failures()
     assert openai_server.last_request_json["input"] == ["test input"]
 
     # 3. Wrong embedding -> numerical fails
     openai_server.response["data"][0]["embedding"] = [0.9, 0.9, 0.9]
-    health = ModelHealth()
-    await model._check_embedding_health(health)
-    assert health.has_failures()
+    await model._check_embedding_health()
+    assert model.health.has_failures()
 
 
 async def test_health_check_completions(openai_server: OpenAIServerMock):
