@@ -183,7 +183,7 @@ async def test_lifespan(
 
     @wait_for_condition()
     async def wait_for_healthy_backends() -> bool:
-        return all(b.healthy for b in pool.backends)
+        return all(b.map.is_up for b in pool.backends)
 
     await wait_for_healthy_backends()
 
@@ -255,8 +255,7 @@ def dummy_backend_factory() -> Callable[..., DummyBackend]:
         b = DummyBackend(
             url or f"http://backend-{next(backend_id)}", fail_count=fail_count
         )
-        b.healthy = True
-        b.map_up.mark("up")
+        b.map.up.mark("up")
         b.memory = {"ram": {"free": ram, "total": ram}}
         return b
 

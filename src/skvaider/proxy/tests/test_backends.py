@@ -35,7 +35,7 @@ async def test_stale_manifest_serial_triggers_reconciliation(
     """After a backend restart its serial is behind the pool's — update_manifest
     must push the current manifest."""
     backend = SkvaiderBackend("http://inference-1")
-    backend.healthy = True
+    backend.map.up.mark("up")
     backend.backend_api = AsyncMock()
 
     pool = _pool_with_backend(backend, task_managers)
@@ -60,7 +60,7 @@ async def test_current_manifest_serial_skips_reconciliation(
 ):
     """If the backend serial already matches the pool, no manifest is sent."""
     backend = SkvaiderBackend("http://inference-1")
-    backend.healthy = True
+    backend.map.up.mark("up")
     backend.backend_api = AsyncMock()
 
     pool = _pool_with_backend(backend, task_managers)
@@ -79,7 +79,7 @@ async def test_stale_manifest_without_map_data_skips_serialization(
 ):
     """If the backend serial is stale but no map data exists for this backend, no manifest is sent."""
     backend = SkvaiderBackend("http://inference-1")
-    backend.healthy = True
+    backend.map.up.mark("up")
     backend.backend_api = AsyncMock()
 
     pool = _pool_with_backend(backend, task_managers)

@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock
 
 from skvaider.config import ModelInstanceConfig
@@ -24,8 +25,7 @@ class RecordingBackend(SkvaiderBackend):
 
 def make_backend(url: str, ram: int = 1024) -> RecordingBackend:
     backend = RecordingBackend(url)
-    backend.healthy = True
-    backend.map_up.mark("up")
+    backend.map.up.mark("up")
     backend.memory = {"ram": {"free": ram, "total": ram}}
     return backend
 
@@ -65,6 +65,15 @@ def manifest_requests(backend: RecordingBackend) -> list[set[str]]:
     return requests
 
 
+async def settle(pool: Pool) -> None:
+    """Let the tasks scheduled by a map change run."""
+    for _ in range(50):
+        if pool.tasks.count == 0:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("map tasks did not settle")
+
+
 async def test_maintenance_takes_backend_out_of_map_and_waits_for_replacement(
     task_managers: list[TaskManager],
 ):
@@ -76,13 +85,14 @@ async def test_maintenance_takes_backend_out_of_map_and_waits_for_replacement(
     pool = make_pool([backend1, backend2], task_managers)
     pool.last_map = {backend1.url: {"m1"}, backend2.url: set()}
 
-    await backend1.observe_maintenance("requested")
+    backend1.map.maintenance.mark("requested")
+    await settle(pool)
 
-    assert backend1.map_in == "out"
+    assert not backend1.map.is_in
     assert pool.last_map == {backend1.url: set(), backend2.url: {"m1"}}
     # The replacement was asked to load...
     assert manifest_requests(backend2) == [{"m1"}]
-    # ...but the old backend is not asked to unload before that happened.
+    # ...but the old backend keeps serving until it runs.
     assert manifest_requests(backend1) == []
 
     # The replacement finished loading and the old backend gets emptied.
@@ -91,7 +101,7 @@ async def test_maintenance_takes_backend_out_of_map_and_waits_for_replacement(
     assert manifest_requests(backend1) == [set()]
 
 
-async def test_maintenance_blocked_without_room_elsewhere(
+async def test_drain_keeps_last_running_instance(
     task_managers: list[TaskManager],
 ):
     backend = make_backend("http://backend-1")
@@ -100,11 +110,13 @@ async def test_maintenance_blocked_without_room_elsewhere(
     pool = make_pool([backend], task_managers)
     pool.last_map = {backend.url: {"m1"}}
 
-    await backend.observe_maintenance("requested")
+    backend.map.maintenance.mark("requested")
+    await settle(pool)
 
-    assert backend.map_in == "in"
-    assert backend.maintenance_blocked
-    assert pool.last_map == {backend.url: {"m1"}}
+    # Placement no longer wants the model here...
+    assert not backend.map.is_in
+    assert pool.last_map == {backend.url: set()}
+    # ...but the last instance keeps serving until it runs elsewhere.
     assert model.is_loaded
     assert manifest_requests(backend) == []
 
@@ -131,7 +143,7 @@ async def test_maintenance_is_polled_while_requests_are_in_flight(
     await backend1._monitor_health_and_update_models()  # pyright: ignore[reportPrivateUsage]
 
     # The health check was skipped, but the maintenance request was seen.
-    assert backend1.map_in == "out"
+    assert not backend1.map.is_in
     requests = [call.args[0] for call in backend1.api.call_args_list]
     assert [type(request).__name__ for request in requests] == [
         "MaintenanceStatusRequest"
@@ -147,9 +159,9 @@ async def test_leaving_maintenance_puts_backend_back_in(
     pool = make_pool([backend], task_managers)
     pool.last_map = {backend.url: set()}
 
-    await backend.observe_maintenance("requested")
-    assert backend.map_in == "out"
+    backend.map.maintenance.mark("requested")
+    assert not backend.map.is_in
 
-    await backend.observe_maintenance("none")
-    assert backend.map_in == "in"
-    assert backend.maintenance == "none"
+    backend.map.maintenance.mark("none")
+    assert backend.map.is_in
+    assert backend.map.maintenance.state == "none"
