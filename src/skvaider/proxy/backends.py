@@ -442,9 +442,10 @@ class SkvaiderBackend(Backend):
                 for name, result in model.health.present_checks():
                     checks[name] = CheckResult(
                         status="ok" if result.ok else "critical",
-                        message=result.message or "ok",
+                        message=result.failure_message or "ok",
                         checked_at=result.checked_at,
                         failed_at=result.failed_at,
+                        recovered_at=result.recovered_at,
                         consecutive_failures=result.consecutive_failures,
                     )
             model_obj.checks = checks

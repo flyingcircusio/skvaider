@@ -20,6 +20,7 @@ class CheckResult(BaseModel):
     # checks have failed.
     checked_at: datetime.datetime | None = None
     failed_at: datetime.datetime | None = None
+    recovered_at: datetime.datetime | None = None
     consecutive_failures: int = 0
 
 
