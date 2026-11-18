@@ -138,6 +138,15 @@ class OpenAIServerMockHandler(http.server.BaseHTTPRequestHandler):
         self.mock = mock
         super().__init__(*args, **kw)
 
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def do_POST(self):
         if self.path in ("/v1/completions", "/v1/embeddings"):
             length = int(self.headers.get("content-length", 0))
