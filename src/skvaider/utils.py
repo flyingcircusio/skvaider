@@ -3,7 +3,7 @@ import datetime
 import re
 import unicodedata
 from collections.abc import Callable, Coroutine, Iterator
-from typing import Any, Literal, TypeVar, TypeVarTuple
+from typing import Any, Literal, TypeVar, TypeVarTuple, cast
 
 import httpx
 import structlog.stdlib
@@ -187,20 +187,23 @@ class RequestModel[ResponseModelT: ResponseModel](BaseModel):
 
 
 class HealthCheckResult(BaseModel):
-    """Outcome of a single health check.
+    """Outcome of a single health check, including its recent history.
 
-    ``ok`` is the pass/fail verdict and ``message`` describes the failure
-    (empty while the check passes). ``checked_at`` is when this result was
-    last recorded, ``failed_at`` when the current failure streak started
-    and ``consecutive_failures`` how many checks in a row have failed. The
-    streak fields are maintained by :meth:`merge`, which the health
-    monitor calls when folding a fresh result into the stored state.
+    ``ok`` is the current verdict. ``checked_at`` is when the check last
+    ran. ``failure_message`` describes the most recent failure,
+    ``failed_at`` when that failure started and ``recovered_at`` when the
+    check recovered from it -- all three are kept after a recovery so the
+    history of a flapping check stays visible. ``consecutive_failures``
+    counts the current streak (0 while the check passes).
+
+    :meth:`merge` carries that history over from the previous result.
     """
 
     ok: bool = True
-    message: str = ""
+    failure_message: str = ""
     checked_at: datetime.datetime | None = None
     failed_at: datetime.datetime | None = None
+    recovered_at: datetime.datetime | None = None
     consecutive_failures: int = 0
 
     @classmethod
@@ -209,7 +212,7 @@ class HealthCheckResult(BaseModel):
 
     @classmethod
     def failed(cls, message: str) -> "HealthCheckResult":
-        return cls(ok=False, message=message)
+        return cls(ok=False, failure_message=message)
 
     @classmethod
     def merge(
@@ -218,13 +221,24 @@ class HealthCheckResult(BaseModel):
         fresh: "HealthCheckResult",
         now: datetime.datetime | None = None,
     ) -> "HealthCheckResult":
-        """Fold a fresh result into its previous state, keeping streak info."""
+        """Record a fresh result, carrying the history over from ``previous``."""
         now = now or datetime.datetime.now(tz=datetime.UTC)
         result = fresh.model_copy(update={"checked_at": now})
+        if previous is None:
+            if not result.ok:
+                result.failed_at = now
+                result.consecutive_failures = 1
+            return result
+
+        was_failing = not previous.ok
+        result.failed_at = previous.failed_at
+        result.recovered_at = previous.recovered_at
         if result.ok:
-            result.failed_at = None
             result.consecutive_failures = 0
-        elif previous is not None and not previous.ok:
+            result.failure_message = previous.failure_message
+            if was_failing:
+                result.recovered_at = now
+        elif was_failing:
             result.failed_at = previous.failed_at or now
             result.consecutive_failures = previous.consecutive_failures + 1
         else:
@@ -239,8 +253,7 @@ class ModelHealth(BaseModel):
     Every check is a typed attribute; ``None`` means the check did not run
     yet or does not apply to the model's task. The overall ``status`` is
     derived from the checks that are present. Checks record their result
-    through :meth:`HealthCheckResult.merge`, which keeps the failure
-    streak of the check it replaces.
+    through :meth:`HealthCheckResult.merge`, which keeps their history.
     """
 
     status: Literal["healthy", "unhealthy", ""] = ""
@@ -254,25 +267,21 @@ class ModelHealth(BaseModel):
     embedding: HealthCheckResult | None = None
     numerical: HealthCheckResult | None = None
 
+    @classmethod
+    def check_names(cls) -> tuple[str, ...]:
+        """Names of the check attributes, derived from the schema."""
+        return tuple(
+            name
+            for name in cls.model_fields
+            if name not in ("status", "status_changed_at")
+        )
+
     def present_checks(self) -> Iterator[tuple[str, HealthCheckResult]]:
         """Yield the name and result of every check that has run."""
-        if self.quick_health_check is not None:
-            yield "quick_health_check", self.quick_health_check
-        if self.deep_check_failure is not None:
-            yield "deep_check_failure", self.deep_check_failure
-        if self.completion is not None:
-            yield "completion", self.completion
-        if self.completion_tool_call is not None:
-            yield "completion_tool_call", self.completion_tool_call
-        if self.completion_with_image_input is not None:
-            yield (
-                "completion_with_image_input",
-                self.completion_with_image_input,
-            )
-        if self.embedding is not None:
-            yield "embedding", self.embedding
-        if self.numerical is not None:
-            yield "numerical", self.numerical
+        for name in self.check_names():
+            check = cast(HealthCheckResult | None, getattr(self, name))
+            if check is not None:
+                yield name, check
 
     def has_failures(self) -> bool:
         return any(not check.ok for _, check in self.present_checks())
@@ -304,13 +313,8 @@ class ModelHealth(BaseModel):
 
     def reset(self, now: datetime.datetime | None = None) -> None:
         """Drop all checks and the status, e.g. when the process stops."""
-        self.quick_health_check = None
-        self.deep_check_failure = None
-        self.completion = None
-        self.completion_tool_call = None
-        self.completion_with_image_input = None
-        self.embedding = None
-        self.numerical = None
+        for name in self.check_names():
+            setattr(self, name, None)
         self.status = ""
         self.status_changed_at = now or datetime.datetime.now(tz=datetime.UTC)
 

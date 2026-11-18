@@ -243,7 +243,7 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
     await model._check_embedding_health()
     assert model.health.embedding is not None and model.health.embedding.ok
     assert model.health.numerical is not None
-    assert model.health.numerical.message == "no reference data"
+    assert model.health.numerical.failure_message == "no reference data"
 
     # 2. With verification data, correct embedding -> all ok
     model.verification_data = {"test input": expected_embedding}
@@ -297,7 +297,7 @@ async def test_health_check_streaming_tool_call_check_offline():
     )
     model.endpoint = "http://localhost:9000"
     check = await model._check_completion_streaming_tool_call_health()
-    assert check.message == "Error connecting: Connection error."
+    assert check.failure_message == "Error connecting: Connection error."
 
 
 async def test_health_check_streaming_tool_call_check_mocked(
@@ -338,20 +338,23 @@ async def test_health_check_streaming_tool_call_check_mocked(
     final.choices = [choice]
     # no tool calls returned
     check = await model._check_completion_streaming_tool_call_health()
-    assert check.message == "No tool calls found"
+    assert check.failure_message == "No tool calls found"
 
     # tool call without id returned
     call = Mock()
     call.id = None
     choice.message.tool_calls = [call]
     check = await model._check_completion_streaming_tool_call_health()
-    assert check.message == "Missing tool call ID in tool call #0: None"
+    assert check.failure_message == "Missing tool call ID in tool call #0: None"
 
     # no function name
     call.id = "1234"
     call.function.name = None
     check = await model._check_completion_streaming_tool_call_health()
-    assert check.message == "Missing tool function name in tool call #0: None"
+    assert (
+        check.failure_message
+        == "Missing tool function name in tool call #0: None"
+    )
 
     # incorrect json args
     call.id = "1234"
@@ -359,7 +362,7 @@ async def test_health_check_streaming_tool_call_check_mocked(
     call.function.arguments = r'{"object": 123'
     check = await model._check_completion_streaming_tool_call_health()
     assert (
-        check.message
+        check.failure_message
         == "Invalid argument JSON in tool call #0: '{\"object\": 123'"
     )
 
