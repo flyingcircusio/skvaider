@@ -245,6 +245,7 @@ class Model(ABC):
         """Periodically check if the model is responsive."""
         new_status = ""
         next_full_check = time.time()
+        interval = 0.1  # poll quickly while waiting for the model to come up
         while True:
             self._health_checks += 1
             # This is a bit complicated to handle varying intervals during warmup
@@ -254,12 +255,13 @@ class Model(ABC):
             self.health_status = new_status
             if changed:
                 self._notify_status_changed()
-            await asyncio.sleep(1)
+            await asyncio.sleep(interval)
 
             # 2. Fast loop without an actual health check to wait until we see the
             #    model starting or running and the endpoint exposed.
             if not self.endpoint:
                 new_status = ""
+                interval = 0.1
                 continue
 
             # 3. Fast health check
@@ -267,28 +269,27 @@ class Model(ABC):
             try:
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(f"{self.endpoint}/health")
-                    if resp.status_code == 200:
-                        new_checks["quick-health-check"] = ""
-                    else:
+                    if resp.status_code != 200:
                         new_checks["quick-health-check"] = (
                             f"{resp.status_code}: {resp.content[:100]}"
                         )
             except httpx.RequestError as e:
                 new_checks["quick-health-check"] = str(e) or type(e).__name__
 
-            # 4. In-depth health check immediately afterwards and switching to a slower interval
-            if time.time() < next_full_check:
+            # 4. In-depth health check on its own slower interval
+            if time.time() >= next_full_check:
                 try:
-                    new_checks = await self._check_health()
+                    new_checks.update(await self._check_health())
                     next_full_check = time.time() + self.health_check_interval
                 except Exception as e:
                     log.exception("Health check error", model=self.config.id)
-                    new_checks.update(
-                        {"deep-check-failure": str(e) or type(e).__name__}
+                    new_checks["deep-check-failure"] = (
+                        str(e) or type(e).__name__
                     )
 
             new_status = "unhealthy" if any(new_checks.values()) else "healthy"
             self.health_checks.update(new_checks)
+            interval = 1  # quick checks run once per second
 
     async def _wait_for_startup(self) -> None:
         expected_endpoint = f"http://{self._host}:{self.config.port}"

@@ -16,7 +16,9 @@ async def has_health_status(model: Model, expected: str) -> bool:
     return model.health_status == expected
 
 
-async def test_monitor_health_updates_model_status_completion():
+async def test_monitor_health_updates_model_status_completion(
+    openai_server: OpenAIServerMock,
+):
     model = Model(
         ModelConfig(
             id="test",
@@ -39,11 +41,12 @@ async def test_monitor_health_updates_model_status_completion():
     model._check_health = health_ok
     asyncio.create_task(model._monitor_health())
 
-    await asyncio.sleep(1)  # let some time pass so the checks can actually run
+    # Wait for the loop to run more than once.
+    @wait_for_condition()
+    async def loop_ran_more_than_once() -> bool:
+        return model._health_checks > 1
 
-    assert (
-        model._health_checks > 1
-    )  # ensure the loop has been run more than once
+    await loop_ran_more_than_once()
 
     # The model isn't starting yet. That means we don't set a health status
     assert model.health_status == ""
@@ -51,7 +54,7 @@ async def test_monitor_health_updates_model_status_completion():
 
     # Phase 2: expose an endpoint so that the health check starts running
     model.process_status = "running"
-    model.endpoint = "http://"  # expose a dummy endpoint to trigger the check
+    model.endpoint = openai_server.endpoint
     await has_health_status(model, "healthy")
     assert model.status == {"running", "healthy", "active"}
 
