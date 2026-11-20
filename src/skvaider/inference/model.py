@@ -153,6 +153,7 @@ class Model(ABC):
     health_status: Literal["healthy", "unhealthy", ""] = ""
     health_checks: dict[str, str]
     health_check_interval: float = 300  # every 5 minutes
+    quick_check_interval: float = 1
     health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
     _health_checks: int = 0  # support testing
 
@@ -193,9 +194,7 @@ class Model(ABC):
 
     def _notify_status_changed(self) -> None:
         """Notify watchers that status changed. Set and immediately clear."""
-        log.exception(
-            "status changed", status=self.status, model=self.config.id
-        )
+        log.info("status changed", status=self.status, model=self.config.id)
         self.status_changed.set()
         self.status_changed.clear()
 
@@ -241,54 +240,63 @@ class Model(ABC):
 
         return result
 
+    async def _check_quick_health(self) -> dict[str, str]:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{self.endpoint}/health")
+        except httpx.RequestError as e:
+            return {"quick-health-check": str(e) or type(e).__name__}
+        if resp.status_code != 200:
+            return {
+                "quick-health-check": f"{resp.status_code}: {resp.content[:100]}"
+            }
+        return {"quick-health-check": ""}
+
     async def _monitor_health(self) -> None:
-        """Periodically check if the model is responsive."""
-        new_status = ""
+        """Periodically check if the model is responsive.
+
+        A cheap /health check runs every `quick_check_interval` so that crashed
+        models are noticed quickly. The expensive semantic checks run every
+        `health_check_interval` and their result is kept until the next run.
+
+        """
         next_full_check = time.time()
+        deep_checks: dict[str, str] = {}
         while True:
             self._health_checks += 1
-            # This is a bit complicated to handle varying intervals during warmup
-            # and manage the event trigger
-            # 1. Status update and sleep
-            changed = new_status != self.health_status
-            self.health_status = new_status
-            if changed:
-                self._notify_status_changed()
-            await asyncio.sleep(1)
 
-            # 2. Fast loop without an actual health check to wait until we see the
-            #    model starting or running and the endpoint exposed.
+            # Wait until the model is starting or running and the endpoint is
+            # exposed.
             if not self.endpoint:
                 new_status = ""
-                continue
-
-            # 3. Fast health check
-            new_checks = {"quick-health-check": ""}
-            try:
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(f"{self.endpoint}/health")
-                    if resp.status_code == 200:
-                        new_checks["quick-health-check"] = ""
-                    else:
-                        new_checks["quick-health-check"] = (
-                            f"{resp.status_code}: {resp.content[:100]}"
+            else:
+                quick_checks = await self._check_quick_health()
+                if time.time() >= next_full_check:
+                    try:
+                        deep_checks = await self._check_health()
+                    except Exception as e:
+                        # Retry with the next quick check.
+                        log.exception(
+                            "Health check error", model=self.config.id
                         )
-            except httpx.RequestError as e:
-                new_checks["quick-health-check"] = str(e) or type(e).__name__
+                        deep_checks = {
+                            "deep-check-failure": str(e) or type(e).__name__
+                        }
+                    finally:
+                        next_full_check = (
+                            time.time() + self.health_check_interval
+                        )
+                self.health_checks = quick_checks | deep_checks
+                new_status = (
+                    "unhealthy"
+                    if any(self.health_checks.values())
+                    else "healthy"
+                )
 
-            # 4. In-depth health check immediately afterwards and switching to a slower interval
-            if time.time() < next_full_check:
-                try:
-                    new_checks = await self._check_health()
-                    next_full_check = time.time() + self.health_check_interval
-                except Exception as e:
-                    log.exception("Health check error", model=self.config.id)
-                    new_checks.update(
-                        {"deep-check-failure": str(e) or type(e).__name__}
-                    )
-
-            new_status = "unhealthy" if any(new_checks.values()) else "healthy"
-            self.health_checks.update(new_checks)
+            if new_status != self.health_status:
+                self.health_status = new_status
+                self._notify_status_changed()
+            await asyncio.sleep(self.quick_check_interval)
 
     async def _wait_for_startup(self) -> None:
         expected_endpoint = f"http://{self._host}:{self.config.port}"
@@ -635,7 +643,11 @@ class Model(ABC):
             await startup_task
             self._tasks.create(self._monitor_health)
         except asyncio.CancelledError:
-            await self.detach()  # we're likely shutting down, maybe for restart, don't abort the launch
+            # We're likely shutting down, maybe for restart: let the model
+            # decide whether it keeps running, but don't pretend the launch
+            # succeeded.
+            await self.detach()
+            raise
         except Exception:
             await self.terminate()
             raise

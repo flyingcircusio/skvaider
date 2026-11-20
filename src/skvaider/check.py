@@ -10,10 +10,21 @@ Nagios/Sensu exit codes:
 import argparse
 import sys
 import tomllib
+from textwrap import indent
 
 import httpx
 
 from skvaider.config import Config
+from skvaider.proxy.models import CheckResult
+
+
+def render_check(check: CheckResult) -> str:
+    line = f"{check.status.upper()} {check.name}"
+    if check.message:
+        line += f": {check.message}"
+    lines = [line]
+    lines.extend(indent(render_check(c), " " * 4) for c in check.children)
+    return "\n".join(lines)
 
 
 def main() -> None:
@@ -53,28 +64,14 @@ def main() -> None:
             timeout=args.request_timeout,
         )
         response.raise_for_status()
-        data = response.json()
+        check = CheckResult.model_validate_json(response.content)
     except Exception as e:
         print(f"CHECKS CRITICAL - could not reach {url}: {e}")
         sys.exit(2)
 
-    status = data.get("status", "critical")
-    checks = data.get("checks", {})
+    print(render_check(check))
 
-    if status == "ok":
-        print("CHECKS OK")
-    elif status == "warning":
-        failing = [n for n, c in checks.items() if c["status"] == "warning"]
-        print(f"CHECKS WARNING - {', '.join(failing)}")
-    else:
-        failing = [n for n, c in checks.items() if c["status"] == "critical"]
-        print(f"CHECKS CRITICAL - {', '.join(failing)}")
-
-    for name, check in checks.items():
-        s = check["status"].upper()
-        print(f"{s} {name}: {check['message']}")
-
-    sys.exit(2 if status == "critical" else 1 if status == "warning" else 0)
+    sys.exit(check.highest_status().status_code())
 
 
 if __name__ == "__main__":

@@ -11,9 +11,28 @@ from .backends import Backend
 log = structlog.stdlib.get_logger()
 
 
+type Status = Literal["ok", "warning", "critical"]
+
+STATUS_CODES: dict[Status, int] = {"ok": 0, "warning": 1, "critical": 2}
+
+
 class CheckResult(BaseModel):
-    status: Literal["ok", "warning", "critical"]
+    name: str
+    status: Status
     message: str
+
+    children: list["CheckResult"] = Field(default_factory=list)
+
+    def highest_status(self) -> "CheckResult":
+        candidate = self
+        for child in self.children:
+            child_highest = child.highest_status()
+            if child_highest.status_code() > candidate.status_code():
+                candidate = child_highest
+        return candidate
+
+    def status_code(self) -> int:
+        return STATUS_CODES[self.status]
 
 
 class AIModel(BaseModel):
@@ -31,7 +50,7 @@ class AIModel(BaseModel):
     backend: Backend = Field(exclude=True)
     is_loaded: bool = Field(default=False, exclude=True)
     memory_usage: dict[str, int] = Field(default_factory=dict, exclude=True)
-    checks: dict[str, CheckResult] = Field(default_factory=dict, exclude=True)
+    checks: list[CheckResult] = Field(default_factory=list, exclude=True)
 
     limit: int = Field(default=1, exclude=True)
     in_progress: int = Field(default=0, exclude=True)

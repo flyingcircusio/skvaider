@@ -67,6 +67,7 @@ class DummyTokens(aramaki.AbstractCollection):
 
 
 DUMMY_TOKENS = DummyTokens()
+ADMIN_TOKEN = "asdf"
 
 
 @pytest.fixture
@@ -179,6 +180,10 @@ async def test_lifespan(
         skvaider.auth.AuthTokens,
         DUMMY_TOKENS.get_collection_with_session,
         enter=False,
+    )
+    registry.register_value(  # pyright: ignore[reportUnknownMemberType]
+        skvaider.auth.AdminTokens,
+        skvaider.auth.AdminTokens([ADMIN_TOKEN]),
     )
 
     @wait_for_condition()
@@ -355,7 +360,7 @@ async def auth_header(
 @pytest.fixture
 def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     config = Config(
-        auth=AuthConfig(admin_tokens=["asdf"]),
+        auth=AuthConfig(admin_tokens=[ADMIN_TOKEN]),
         server=ServerConfig(directory=tmp_path),
         backend=[],
         models=[],

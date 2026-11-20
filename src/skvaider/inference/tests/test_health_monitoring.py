@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -28,6 +30,12 @@ async def test_monitor_health_updates_model_status_completion():
     )
     model.health_check_interval = 0.01
     model.health_check_timeout = 0.01
+    model.quick_check_interval = 0.01
+
+    async def quick_health_ok() -> dict[str, str]:
+        return {"quick-health-check": ""}
+
+    model._check_quick_health = quick_health_ok
 
     async def health_ok() -> dict[str, str]:
         return {}
@@ -77,6 +85,123 @@ async def test_monitor_health_updates_model_status_completion():
     model._check_health = health_ok
     await has_health_status(model, "healthy")
     assert model.status == {"running", "healthy", "active"}
+
+
+@pytest.fixture
+def fast_model() -> Model:
+    """A model with fast check intervals and healthy check mocks."""
+    model = Model(
+        ModelConfig(id="test", max_requests=10, port=1000, task="chat"),
+        lambda: None,
+    )
+    model.quick_check_interval = 0.01
+    model.health_check_timeout = 0.01
+    model._check_quick_health = AsyncMock(
+        return_value={"quick-health-check": ""}
+    )
+    model._check_health = AsyncMock(return_value={"completion": ""})
+    model.process_status = "running"
+    model.endpoint = "http://"
+    return model
+
+
+@contextlib.asynccontextmanager
+async def monitoring(model: Model) -> AsyncGenerator[None, None]:
+    task = asyncio.create_task(model._monitor_health())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+async def test_monitor_health_quick_check_failure_is_unhealthy(
+    fast_model: Model,
+):
+    async with monitoring(fast_model):
+        await has_health_status(fast_model, "healthy")
+
+        fast_model._check_quick_health = AsyncMock(
+            return_value={"quick-health-check": "connection refused"}
+        )
+        await has_health_status(fast_model, "unhealthy")
+        assert fast_model.health_checks == {
+            "quick-health-check": "connection refused",
+            "completion": "",
+        }
+
+
+async def test_monitor_health_runs_deep_check_once_per_interval(
+    fast_model: Model,
+):
+    deep_check = AsyncMock(return_value={"completion": ""})
+    fast_model._check_health = deep_check
+    async with monitoring(fast_model):
+        await has_health_status(fast_model, "healthy")
+        loops = fast_model._health_checks
+        await asyncio.sleep(0.2)
+        assert fast_model._health_checks > loops + 2
+
+    deep_check.assert_awaited_once()
+
+
+async def test_monitor_health_keeps_deep_check_result_between_runs(
+    fast_model: Model,
+):
+    deep_check = AsyncMock(return_value={"completion": "HTTP 500"})
+    fast_model._check_health = deep_check
+    async with monitoring(fast_model):
+        await has_health_status(fast_model, "unhealthy")
+        # Quick checks keep passing, but the failed deep check must keep the
+        # model unhealthy until the next deep check.
+        await asyncio.sleep(0.2)
+        assert fast_model.health_status == "unhealthy"
+        assert fast_model.health_checks["completion"] == "HTTP 500"
+
+    deep_check.assert_awaited_once()
+
+
+async def test_monitor_health_does_not_increase_deep_check_frequency_after_exception(
+    fast_model: Model,
+):
+    deep_check = AsyncMock(side_effect=[Exception("boom"), {"completion": ""}])
+    fast_model._check_health = deep_check
+    async with monitoring(fast_model):
+        await asyncio.sleep(1)
+    assert deep_check.await_count == 1
+    assert fast_model._health_checks > 4
+    # The failure marker is kept
+    assert fast_model.health_checks == {
+        "deep-check-failure": "boom",
+        "quick-health-check": "",
+    }
+
+
+async def test_monitor_health_resets_status_without_endpoint(
+    fast_model: Model,
+):
+    async with monitoring(fast_model):
+        await has_health_status(fast_model, "healthy")
+        fast_model.endpoint = None
+        await has_health_status(fast_model, "")
+
+
+async def test_check_quick_health(openai_server: OpenAIServerMock):
+    model = Model(
+        ModelConfig(
+            id="test", port=openai_server.port, max_requests=10, task="chat"
+        ),
+        lambda: None,
+    )
+    model.endpoint = openai_server.endpoint
+    assert await model._check_quick_health() == {"quick-health-check": ""}
+
+    openai_server.response_status = 503
+    result = await model._check_quick_health()
+    assert result["quick-health-check"].startswith("503: ")
+
+    model.endpoint = "http://127.0.0.1:1"
+    result = await model._check_quick_health()
+    assert result["quick-health-check"]
 
 
 async def test_health_check_embeddings(openai_server: OpenAIServerMock):
