@@ -190,13 +190,15 @@ class HealthCheckResult(BaseModel):
     """Outcome of a single health check, including its recent history.
 
     ``ok`` is the current verdict. ``checked_at`` is when the check last
-    ran. ``failure_message`` describes the most recent failure,
-    ``failed_at`` when that failure started and ``recovered_at`` when the
-    check recovered from it -- all three are kept after a recovery so the
-    history of a flapping check stays visible. ``consecutive_failures``
-    counts the current streak (0 while the check passes).
+    ran (``None`` until it ran once). ``failure_message`` describes the
+    most recent failure, ``failed_at`` when that failure started and
+    ``recovered_at`` when the check recovered from it -- all three are
+    kept after a recovery so the history of a flapping check stays
+    visible. ``consecutive_failures`` counts the current streak (0 while
+    the check passes).
 
-    :meth:`merge` carries that history over from the previous result.
+    :meth:`record` folds a fresh verdict into the result and keeps that
+    history.
     """
 
     ok: bool = True
@@ -206,6 +208,10 @@ class HealthCheckResult(BaseModel):
     recovered_at: datetime.datetime | None = None
     consecutive_failures: int = 0
 
+    @property
+    def has_run(self) -> bool:
+        return self.checked_at is not None
+
     @classmethod
     def passed(cls) -> "HealthCheckResult":
         return cls()
@@ -214,58 +220,65 @@ class HealthCheckResult(BaseModel):
     def failed(cls, message: str) -> "HealthCheckResult":
         return cls(ok=False, failure_message=message)
 
-    @classmethod
-    def merge(
-        cls,
-        previous: "HealthCheckResult | None",
-        fresh: "HealthCheckResult",
-        now: datetime.datetime | None = None,
-    ) -> "HealthCheckResult":
-        """Record a fresh result, carrying the history over from ``previous``."""
+    def record(
+        self, fresh: "HealthCheckResult", now: datetime.datetime | None = None
+    ) -> None:
+        """Fold ``fresh`` into this result, keeping the history."""
         now = now or datetime.datetime.now(tz=datetime.UTC)
-        result = fresh.model_copy(update={"checked_at": now})
-        if previous is None:
-            if not result.ok:
-                result.failed_at = now
-                result.consecutive_failures = 1
-            return result
-
-        was_failing = not previous.ok
-        result.failed_at = previous.failed_at
-        result.recovered_at = previous.recovered_at
-        if result.ok:
-            result.consecutive_failures = 0
-            result.failure_message = previous.failure_message
+        was_failing = self.has_run and not self.ok
+        self.checked_at = now
+        if fresh.ok:
+            self.ok = True
+            self.consecutive_failures = 0
             if was_failing:
-                result.recovered_at = now
-        elif was_failing:
-            result.failed_at = previous.failed_at or now
-            result.consecutive_failures = previous.consecutive_failures + 1
+                self.recovered_at = now
+            return
+        self.ok = False
+        self.failure_message = fresh.failure_message
+        if was_failing:
+            self.consecutive_failures += 1
         else:
-            result.failed_at = now
-            result.consecutive_failures = 1
-        return result
+            self.failed_at = now
+            self.consecutive_failures = 1
+
+    def clear(self) -> None:
+        """Forget the result and its history, as if the check never ran."""
+        self.ok = True
+        self.failure_message = ""
+        self.checked_at = None
+        self.failed_at = None
+        self.recovered_at = None
+        self.consecutive_failures = 0
 
 
 class ModelHealth(BaseModel):
     """Health state of an inference model.
 
-    Every check is a typed attribute; ``None`` means the check did not run
-    yet or does not apply to the model's task. The overall ``status`` is
-    derived from the checks that are present. Checks record their result
-    through :meth:`HealthCheckResult.merge`, which keeps their history.
+    Every check is a typed attribute; a check that has not run yet (see
+    :attr:`HealthCheckResult.has_run`) or does not apply to the model's
+    task does not count. The overall ``status`` is derived from the checks
+    that ran. Checks fold their verdicts in through
+    :meth:`HealthCheckResult.record`, which keeps their history.
     """
 
     status: Literal["healthy", "unhealthy", ""] = ""
     status_changed_at: datetime.datetime | None = None
 
-    quick_health_check: HealthCheckResult | None = None
-    deep_check_failure: HealthCheckResult | None = None
-    completion: HealthCheckResult | None = None
-    completion_tool_call: HealthCheckResult | None = None
-    completion_with_image_input: HealthCheckResult | None = None
-    embedding: HealthCheckResult | None = None
-    numerical: HealthCheckResult | None = None
+    quick_health_check: HealthCheckResult = Field(
+        default_factory=HealthCheckResult
+    )
+    deep_check_failure: HealthCheckResult = Field(
+        default_factory=HealthCheckResult
+    )
+    completion: HealthCheckResult = Field(default_factory=HealthCheckResult)
+    completion_tool_call: HealthCheckResult = Field(
+        default_factory=HealthCheckResult
+    )
+    completion_with_image_input: HealthCheckResult = Field(
+        default_factory=HealthCheckResult
+    )
+    embedding: HealthCheckResult = Field(default_factory=HealthCheckResult)
+    numerical: HealthCheckResult = Field(default_factory=HealthCheckResult)
 
     @classmethod
     def check_names(cls) -> tuple[str, ...]:
@@ -279,8 +292,8 @@ class ModelHealth(BaseModel):
     def present_checks(self) -> Iterator[tuple[str, HealthCheckResult]]:
         """Yield the name and result of every check that has run."""
         for name in self.check_names():
-            check = cast(HealthCheckResult | None, getattr(self, name))
-            if check is not None:
+            check = cast(HealthCheckResult, getattr(self, name))
+            if check.has_run:
                 yield name, check
 
     def has_failures(self) -> bool:
@@ -314,7 +327,7 @@ class ModelHealth(BaseModel):
     def reset(self, now: datetime.datetime | None = None) -> None:
         """Drop all checks and the status, e.g. when the process stops."""
         for name in self.check_names():
-            setattr(self, name, None)
+            cast(HealthCheckResult, getattr(self, name)).clear()
         self.status = ""
         self.status_changed_at = now or datetime.datetime.now(tz=datetime.UTC)
 

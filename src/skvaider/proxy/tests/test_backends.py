@@ -1,3 +1,4 @@
+import datetime
 from collections.abc import Callable
 from unittest.mock import AsyncMock
 
@@ -103,6 +104,12 @@ async def test_stale_manifest_without_map_data_skips_serialization(
     backend.backend_api.assert_not_called()
 
 
+def checked(result: HealthCheckResult) -> HealthCheckResult:
+    """Mark a result as recorded, so the proxy sees the check as present."""
+    now = datetime.datetime.now(tz=datetime.UTC)
+    return result.model_copy(update={"checked_at": now})
+
+
 @pytest.fixture
 def health_response_factory():
     def factory(
@@ -139,8 +146,8 @@ async def test_update_health_records_named_checks(
     backend.backend_api = AsyncMock(
         return_value=health_response_factory(
             health=ModelHealth(
-                embedding=HealthCheckResult.passed(),
-                completion=HealthCheckResult.failed("timeout"),
+                embedding=checked(HealthCheckResult.passed()),
+                completion=checked(HealthCheckResult.failed("timeout")),
             )
         )
     )
@@ -184,7 +191,9 @@ async def test_update_health_skips_functional_checks_when_not_loaded(
     backend.backend_api = AsyncMock(
         return_value=health_response_factory(
             status={"inactive", "stopped"},
-            health=ModelHealth(completion=HealthCheckResult.failed("timeout")),
+            health=ModelHealth(
+                completion=checked(HealthCheckResult.failed("timeout"))
+            ),
         )
     )
 

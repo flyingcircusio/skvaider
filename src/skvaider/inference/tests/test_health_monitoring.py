@@ -41,10 +41,10 @@ async def test_monitor_health_updates_model_status_completion(
     model._check_quick_health = quick_health_ok
 
     async def health_ok() -> None:
-        model.health.completion = HealthCheckResult.passed()
+        model.health.completion.record(HealthCheckResult.passed())
 
     async def health_not_ok() -> None:
-        model.health.completion = HealthCheckResult.failed("not ok")
+        model.health.completion.record(HealthCheckResult.failed("not ok"))
 
     # Phase 1: startup, no process, no health info
     model._check_health = health_ok
@@ -104,8 +104,8 @@ def fast_model() -> Model:
         return_value=HealthCheckResult.passed()
     )
 
-    async def deep_ok(health: ModelHealth) -> None:
-        health.completion = HealthCheckResult.passed()
+    async def deep_ok() -> None:
+        model.health.completion.record(HealthCheckResult.passed())
 
     model._check_health = deep_ok
     model.process_status = "running"
@@ -132,7 +132,7 @@ async def test_monitor_health_quick_check_failure_is_unhealthy(
             return_value=HealthCheckResult.failed("connection refused")
         )
         await has_health_status(fast_model, "unhealthy")
-        assert fast_model.health.quick_health_check.message == (
+        assert fast_model.health.quick_health_check.failure_message == (
             "connection refused"
         )
         assert fast_model.health.completion.ok
@@ -155,8 +155,10 @@ async def test_monitor_health_runs_deep_check_once_per_interval(
 async def test_monitor_health_keeps_deep_check_result_between_runs(
     fast_model: Model,
 ):
-    async def deep_fails(health: ModelHealth) -> None:
-        health.completion = HealthCheckResult.failed("HTTP 500")
+    async def deep_fails() -> None:
+        fast_model.health.completion.record(
+            HealthCheckResult.failed("HTTP 500")
+        )
 
     deep_check = AsyncMock(side_effect=deep_fails)
     fast_model._check_health = deep_check
@@ -166,7 +168,7 @@ async def test_monitor_health_keeps_deep_check_result_between_runs(
         # model unhealthy until the next deep check.
         await asyncio.sleep(0.2)
         assert fast_model.health.status == "unhealthy"
-        assert fast_model.health.completion.message == "HTTP 500"
+        assert fast_model.health.completion.failure_message == "HTTP 500"
 
     deep_check.assert_awaited_once()
 
@@ -181,7 +183,7 @@ async def test_monitor_health_does_not_increase_deep_check_frequency_after_excep
     assert deep_check.await_count == 1
     assert fast_model._health_checks > 4
     # The failure marker is kept
-    assert fast_model.health.deep_check_failure.message == "boom"
+    assert fast_model.health.deep_check_failure.failure_message == "boom"
     assert fast_model.health.quick_health_check.ok
 
 
@@ -204,17 +206,17 @@ async def test_check_quick_health(openai_server: OpenAIServerMock):
     model.endpoint = openai_server.endpoint
     result = await model._check_quick_health()
     assert result.ok
-    assert result.message == ""
+    assert result.failure_message == ""
 
     openai_server.response_status = 503
     result = await model._check_quick_health()
     assert not result.ok
-    assert result.message.startswith("503: ")
+    assert result.failure_message.startswith("503: ")
 
     model.endpoint = "http://127.0.0.1:1"
     result = await model._check_quick_health()
     assert not result.ok
-    assert result.message
+    assert result.failure_message
 
 
 async def test_health_check_embeddings(openai_server: OpenAIServerMock):
@@ -241,8 +243,8 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
 
     # 1. No verification data -> embedding ok, numerical warns
     await model._check_embedding_health()
-    assert model.health.embedding is not None and model.health.embedding.ok
-    assert model.health.numerical is not None
+    assert model.health.embedding.has_run and model.health.embedding.ok
+    assert model.health.numerical.has_run
     assert model.health.numerical.failure_message == "no reference data"
 
     # 2. With verification data, correct embedding -> all ok
