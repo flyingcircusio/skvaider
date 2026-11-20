@@ -158,6 +158,15 @@ class OpenAIServerMockHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(self.mock.response_status)
+            self.end_headers()
+            self.wfile.write(b'{"status": "ok"}')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
     def log_message(self, format: str, *args: Any) -> None:
         pass
 

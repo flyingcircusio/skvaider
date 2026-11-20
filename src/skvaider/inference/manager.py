@@ -256,12 +256,15 @@ class Manager:
 
     async def shutdown(self) -> None:
         self.tasks.terminate()
-        for model in list(self.models.values()):
+
+        async def detach_one(model: Model):
             await model.lock.manager_acquire()
             try:
-                await model.terminate()
+                await model.detach()
             finally:
                 model.lock.manager_release()
+
+        await asyncio.gather(*(detach_one(m) for m in self.models.values()))
 
         # It would be cleaner if we'd use a lock here, but shutdown otherwise
         # can end up locked infinitely it seems.

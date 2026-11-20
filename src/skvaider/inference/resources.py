@@ -90,10 +90,6 @@ class RAMMonitor(MemoryMonitor):
             self.free
         )
 
-        log.info(
-            f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
-        )
-
     async def update_model_usage(self) -> None:
         for model in self._manager.list_models():
             pids = await model.pids()
@@ -169,10 +165,6 @@ class ROCmMemoryMonitor(MemoryMonitor):
         self.free = total - used
 
         self._update_vram_metrics()
-
-        log.info(
-            f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
-        )
 
     async def update_model_usage(self) -> None:
         """Update VRAM usage for all models with a single rocm-smi call."""
@@ -293,10 +285,6 @@ class NvidiaMemoryMonitor(MemoryMonitor):
         self.free = free
 
         self._update_vram_metrics()
-
-        log.info(
-            f"{self.id} memory total={self.total:,} used={self.used:,} free={self.free:,}"
-        )
 
     async def update_model_usage(self) -> None:
         """Update VRAM usage for all models with nvidia-smi."""

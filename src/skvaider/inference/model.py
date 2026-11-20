@@ -153,6 +153,7 @@ class Model(ABC):
     health_status: Literal["healthy", "unhealthy", ""] = ""
     health_checks: dict[str, str]
     health_check_interval: float = 300  # every 5 minutes
+    quick_check_interval: float = 1
     health_check_timeout: float = 600  # ten minutes for now ... XXX we might want to poll /health more frequently and only do this if no requests are coming in, otherwise we get blocked.
     _health_checks: int = 0  # support testing
 
@@ -193,6 +194,7 @@ class Model(ABC):
 
     def _notify_status_changed(self) -> None:
         """Notify watchers that status changed. Set and immediately clear."""
+        log.info("status changed", status=self.status, model=self.config.id)
         self.status_changed.set()
         self.status_changed.clear()
 
@@ -238,38 +240,63 @@ class Model(ABC):
 
         return result
 
+    async def _check_quick_health(self) -> dict[str, str]:
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{self.endpoint}/health")
+        except httpx.RequestError as e:
+            return {"quick-health-check": str(e) or type(e).__name__}
+        if resp.status_code != 200:
+            return {
+                "quick-health-check": f"{resp.status_code}: {resp.content[:100]}"
+            }
+        return {"quick-health-check": ""}
+
     async def _monitor_health(self) -> None:
-        """Periodically check if the model is responsive."""
-        new_status = ""
-        interval = 0
+        """Periodically check if the model is responsive.
+
+        A cheap /health check runs every `quick_check_interval` so that crashed
+        models are noticed quickly. The expensive semantic checks run every
+        `health_check_interval` and their result is kept until the next run.
+
+        """
+        next_full_check = time.time()
+        deep_checks: dict[str, str] = {}
         while True:
             self._health_checks += 1
-            # This is a bit complicated to handle varying intervals during warmup
-            # and manage the event trigger
-            # 1. Status update and sleep
-            changed = new_status != self.health_status
-            self.health_status = new_status
-            if changed:
-                self._notify_status_changed()
-            await asyncio.sleep(interval)
 
-            # 2. Fast loop without an actual health check to wait until we see the
-            #    model starting or running and the endpoint exposed.
+            # Wait until the model is starting or running and the endpoint is
+            # exposed.
             if not self.endpoint:
                 new_status = ""
-                interval = 0.1
-                continue
+            else:
+                quick_checks = await self._check_quick_health()
+                if time.time() >= next_full_check:
+                    try:
+                        deep_checks = await self._check_health()
+                    except Exception as e:
+                        # Retry with the next quick check.
+                        log.exception(
+                            "Health check error", model=self.config.id
+                        )
+                        deep_checks = {
+                            "deep-check-failure": str(e) or type(e).__name__
+                        }
+                    finally:
+                        next_full_check = (
+                            time.time() + self.health_check_interval
+                        )
+                self.health_checks = quick_checks | deep_checks
+                new_status = (
+                    "unhealthy"
+                    if any(self.health_checks.values())
+                    else "healthy"
+                )
 
-            # 3. Real health check immediately afterwards and switching to a slower interval.
-            try:
-                new_checks = await self._check_health()
-            except Exception as e:
-                log.exception("Health check error", model=self.config.id)
-                new_checks = {"health": str(e) or type(e).__name__}
-
-            self.health_checks = new_checks
-            new_status = "unhealthy" if any(new_checks.values()) else "healthy"
-            interval = self.health_check_interval
+            if new_status != self.health_status:
+                self.health_status = new_status
+                self._notify_status_changed()
+            await asyncio.sleep(self.quick_check_interval)
 
     async def _wait_for_startup(self) -> None:
         expected_endpoint = f"http://{self._host}:{self.config.port}"
@@ -320,12 +347,16 @@ class Model(ABC):
                 else None
             )
 
-            resp = await client.post(
-                f"{self.endpoint}/v1/embeddings",
-                json={"input": input_texts, "model": self.config.id},
-            )
-            if resp.status_code != 200:
-                checks["embedding"] = f"HTTP {resp.status_code}"
+            try:
+                resp = await client.post(
+                    f"{self.endpoint}/v1/embeddings",
+                    json={"input": input_texts, "model": self.config.id},
+                )
+                if resp.status_code != 200:
+                    checks["embedding"] = f"HTTP {resp.status_code}"
+                    return checks
+            except httpx.RequestError as e:
+                checks["embedding"] = str(e)
                 return checks
 
             checks["embedding"] = ""
@@ -359,15 +390,18 @@ class Model(ABC):
         async with httpx.AsyncClient(
             timeout=self.health_check_timeout
         ) as client:
-            resp = await client.post(
-                f"{self.endpoint}/v1/completions",
-                json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
-            )
-            return {
-                "completion": ""
-                if resp.status_code == 200
-                else f"HTTP {resp.status_code}"
-            }
+            try:
+                resp = await client.post(
+                    f"{self.endpoint}/v1/completions",
+                    json={"prompt": "2+2=", "max_tokens": 8, "n": 1},
+                )
+                return {
+                    "completion": ""
+                    if resp.status_code == 200
+                    else f"HTTP {resp.status_code}"
+                }
+            except httpx.RequestError as e:
+                return {"completion": str(e)}
 
     async def _check_completion_streaming_tool_call_health(
         self,
@@ -527,6 +561,14 @@ class Model(ABC):
             }
         return {"completion_with_image_input": ""}
 
+    async def detach(self) -> None:
+        """Called when shutting down.
+
+        The specific model may decide whether to shut down (e.g. processes
+        we manage directly) or whether to stay up.
+
+        """
+
     async def terminate(self) -> None:
         """Terminate the process, escalating to kill if necessary."""
         log.info("Terminating model", model=self.config.id)
@@ -600,7 +642,13 @@ class Model(ABC):
             startup_task = self._tasks.create(self._wait_for_startup)
             await startup_task
             self._tasks.create(self._monitor_health)
-        except (Exception, asyncio.CancelledError):
+        except asyncio.CancelledError:
+            # We're likely shutting down, maybe for restart: let the model
+            # decide whether it keeps running, but don't pretend the launch
+            # succeeded.
+            await self.detach()
+            raise
+        except Exception:
             await self.terminate()
             raise
 
@@ -753,6 +801,9 @@ class LlamaModel(Model):
         ).observe(duration)
         metrics.inference_model_status.labels(model=self.config.id).set(1)
 
+    async def detach(self) -> None:
+        await self.terminate()
+
 
 class VllmModel(Model):
     _engine = "vllm"
@@ -859,6 +910,9 @@ class VllmModel(Model):
         # )
         # self.integrity_marker_file.touch()
         # log.info(f"{self.slug}: success")
+
+    async def detach(self) -> None:
+        await self.terminate()
 
 
 class SystemdModel(Model):

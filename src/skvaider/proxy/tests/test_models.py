@@ -3,6 +3,7 @@ import pytest
 from skvaider.config import ModelInstanceConfig, parse_size
 from skvaider.conftest import registered_model_factory
 from skvaider.proxy.backends import DummyBackend
+from skvaider.proxy.models import CheckResult
 from skvaider.utils import TaskManager
 
 from ..pool import Pool
@@ -177,3 +178,86 @@ async def test_fit_score_with_explicit_resources_dict(
     assert model.fit_score(resources={"ram": 500}) == pytest.approx(  # pyright: ignore[reportUnknownMemberType]
         0.6
     )
+
+
+def test_check_result_status_code():
+    assert CheckResult(name="a", status="ok", message="").status_code() == 0
+    assert (
+        CheckResult(name="a", status="warning", message="").status_code() == 1
+    )
+    assert (
+        CheckResult(name="a", status="critical", message="").status_code() == 2
+    )
+
+
+def test_highest_status_of_leaf_is_itself():
+    check = CheckResult(name="a", status="warning", message="")
+    assert check.highest_status() is check
+
+
+def test_highest_status_prefers_self_on_tie():
+    child = CheckResult(name="child", status="ok", message="")
+    check = CheckResult(name="a", status="ok", message="", children=[child])
+    assert check.highest_status() is check
+
+
+def test_highest_status_finds_deeply_nested_critical():
+    critical = CheckResult(name="deep", status="critical", message="broken")
+    check = CheckResult(
+        name="root",
+        status="ok",
+        message="",
+        children=[
+            CheckResult(name="a", status="warning", message=""),
+            CheckResult(
+                name="b",
+                status="ok",
+                message="",
+                children=[
+                    CheckResult(
+                        name="c", status="ok", message="", children=[critical]
+                    )
+                ],
+            ),
+        ],
+    )
+    assert check.highest_status() is critical
+
+
+def test_highest_status_does_not_downgrade():
+    check = CheckResult(
+        name="root",
+        status="critical",
+        message="",
+        children=[
+            CheckResult(name="a", status="ok", message=""),
+            CheckResult(name="b", status="warning", message=""),
+        ],
+    )
+    assert check.highest_status() is check
+
+
+def test_highest_status_keeps_first_of_equal_children():
+    first = CheckResult(name="first", status="warning", message="")
+    second = CheckResult(name="second", status="warning", message="")
+    check = CheckResult(
+        name="root", status="ok", message="", children=[first, second]
+    )
+    assert check.highest_status() is first
+
+
+def test_check_result_json_roundtrip():
+    check = CheckResult(
+        name="root",
+        status="warning",
+        message="",
+        children=[
+            CheckResult(
+                name="a",
+                status="warning",
+                message="meh",
+                children=[CheckResult(name="b", status="ok", message="ok")],
+            )
+        ],
+    )
+    assert CheckResult.model_validate_json(check.model_dump_json()) == check

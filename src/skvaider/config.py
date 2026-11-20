@@ -46,6 +46,9 @@ class ModelInstanceConfig(BaseModel):
 
 class DebugConfig(BaseModel):
     slow_threshold: float = 0
+    # asyncio debug mode adds per-callback overhead that is significant under
+    # production load.
+    asyncio: bool = False
 
 
 default_debug_config = DebugConfig()

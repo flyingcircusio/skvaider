@@ -417,7 +417,7 @@ class SkvaiderBackend(Backend):
 
             from .models import CheckResult
 
-            checks: dict[str, CheckResult] = {}
+            checks: list[CheckResult] = []
 
             exceeding = model_obj.check_memory_usage()
             if exceeding:
@@ -425,18 +425,26 @@ class SkvaiderBackend(Backend):
                     f"{r}: {actual} > {configured}"
                     for r, (actual, configured) in exceeding.items()
                 )
-                checks["memory"] = CheckResult(
-                    status="warning",
-                    message=f"exceeds configured memory: {over}",
+                checks.append(
+                    CheckResult(
+                        name="memory",
+                        status="warning",
+                        message=f"exceeds configured memory: {over}",
+                    )
                 )
             else:
-                checks["memory"] = CheckResult(status="ok", message="ok")
+                checks.append(
+                    CheckResult(name="memory", status="ok", message="ok")
+                )
 
             if model_obj.is_loaded:
                 for name, message in model.health_checks.items():
-                    checks[name] = CheckResult(
-                        status="ok" if not message else "critical",
-                        message=message or "ok",
+                    checks.append(
+                        CheckResult(
+                            name=name,
+                            status="ok" if not message else "critical",
+                            message=message or "ok",
+                        )
                     )
             model_obj.checks = checks
         self.models = updated_models
