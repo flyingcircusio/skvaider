@@ -36,7 +36,7 @@ class ModelConfig(BaseModel):
     """Shared fields for all inference backend model configs."""
 
     id: str
-    task: Literal["chat", "embedding"]
+    task: Literal["chat", "embedding", "transcription"]
     supports_tools: bool = False
     supports_images: bool = False
     max_requests: int

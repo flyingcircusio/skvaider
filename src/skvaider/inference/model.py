@@ -2,10 +2,12 @@ import asyncio
 import base64
 import functools
 import hashlib
+import io
 import json
 import os
 import shutil
 import time
+import wave
 from abc import ABC
 from collections.abc import Callable, Coroutine
 from json import JSONDecodeError
@@ -31,6 +33,7 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
 )
 from openai.types.shared_params import FunctionDefinition
+from pydantic import BaseModel
 
 from skvaider.inference import metrics
 from skvaider.inference.config import (
@@ -132,6 +135,23 @@ def locked[SelfT: HasLock, **P, R](
     return wrapper
 
 
+def silence_wav(seconds: float = 1.0, sample_rate: int = 16000) -> bytes:
+    """Return a small silent WAV file used by the transcription health check."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(b"\x00\x00" * int(sample_rate * seconds))
+    return buffer.getvalue()
+
+
+class TranscriptionResponse(BaseModel):
+    """JSON response of the /v1/audio/transcriptions endpoint."""
+
+    text: str
+
+
 class Model(ABC):
     config: ModelConfig
     datadir: Path
@@ -225,7 +245,9 @@ class Model(ABC):
         return result
 
     async def _check_health(self) -> dict[str, str]:
-        if self.is_embedding():
+        if self.config.task == "transcription":
+            checks = [self._check_transcription_health]
+        elif self.is_embedding():
             checks = [self._check_embedding_health]
         else:
             checks = [self._check_completion_health]
@@ -330,6 +352,31 @@ class Model(ABC):
         )
         await self.terminate()
         self.on_unexpected_exit()
+
+    async def _check_transcription_health(self) -> dict[str, str]:
+        async with httpx.AsyncClient(
+            timeout=self.health_check_timeout
+        ) as client:
+            resp = await client.post(
+                f"{self.endpoint}/v1/audio/transcriptions",
+                files={
+                    "file": (
+                        "health.wav",
+                        silence_wav(),
+                        "audio/wav",
+                    )
+                },
+                data={
+                    "model": self.config.id,
+                    "response_format": "json",
+                },
+            )
+        if resp.status_code != 200:
+            return {"transcription": f"HTTP {resp.status_code}"}
+        # Raises ValidationError if the body is not valid JSON or lacks the
+        # required fields; _monitor_health records the error message.
+        TranscriptionResponse.model_validate_json(resp.content)
+        return {"transcription": ""}
 
     async def _check_embedding_health(self) -> dict[str, str]:
         checks: dict[str, str] = {}
