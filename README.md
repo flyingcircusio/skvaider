@@ -40,6 +40,17 @@ $ devenv shell
 $ run-tests
 ```
 
+## Development and release process
+
+Changes should be accompanied by a changelog entry. Use `./changelog.sh` to
+create one in `CHANGES.d/`.
+
+Releasing bumps the version, collects the changelog fragments, commits the
+result, and creates a tag. Use `./release-this.sh` from a clean `main`
+branch. The package is not uploaded to PyPI.
+
+See [CHANGES.md](./CHANGES.md) for the changelog.
+
 
 ## Authentication
 
