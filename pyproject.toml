@@ -57,6 +57,22 @@ ignore = ["BLE001", "PYI036", "TRY002"]
 profile = "black"
 line_length = 80
 
+[tool.zest-releaser]
+version-levels = 3
+history-file = "CHANGES.md"
+register = false
+release = false
+
+[tool.scriv]
+format = "md"
+fragment_directory = "CHANGES.d"
+output_file = "CHANGES.md"
+version = "unreleased"
+entry_title_template = ""
+new_fragment_template = "- New changelog entry."
+insert_marker = "- Nothing changed yet."
+categories = ""
+
 [tool.coverage.run]
 concurrency = ["thread", "greenlet"]
 
@@ -88,6 +104,10 @@ dev = [
     "pytest-asyncio>=1.1.0",
     "pytest-cov>=6.2.1",
     "pytest-timeout>=2.4.0",
+    "scriv",
     "types-aiofiles",
     # keep-sorted end
+]
+release = [
+    "zest.releaser",
 ]
