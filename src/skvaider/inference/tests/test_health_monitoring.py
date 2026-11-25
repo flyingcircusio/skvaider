@@ -11,14 +11,17 @@ from skvaider.conftest import wait_for_condition
 from skvaider.inference.config import ModelConfig
 from skvaider.inference.conftest import OpenAIServerMock
 from skvaider.inference.model import Model
+from skvaider.utils import HealthCheckResult
 
 
 @wait_for_condition()
 async def has_health_status(model: Model, expected: str) -> bool:
-    return model.health_status == expected
+    return model.health.status == expected
 
 
-async def test_monitor_health_updates_model_status_completion():
+async def test_monitor_health_updates_model_status_completion(
+    openai_server: OpenAIServerMock,
+):
     model = Model(
         ModelConfig(
             id="test",
@@ -32,34 +35,35 @@ async def test_monitor_health_updates_model_status_completion():
     model.health_check_timeout = 0.01
     model.quick_check_interval = 0.01
 
-    async def quick_health_ok() -> dict[str, str]:
-        return {"quick-health-check": ""}
+    async def quick_health_ok() -> HealthCheckResult:
+        return HealthCheckResult.passed()
 
     model._check_quick_health = quick_health_ok
 
-    async def health_ok() -> dict[str, str]:
-        return {}
+    async def health_ok() -> None:
+        model.health.completion.record(HealthCheckResult.passed())
 
-    async def health_not_ok() -> dict[str, str]:
-        return {"health": "not ok"}
+    async def health_not_ok() -> None:
+        model.health.completion.record(HealthCheckResult.failed("not ok"))
 
     # Phase 1: startup, no process, no health info
     model._check_health = health_ok
     asyncio.create_task(model._monitor_health())
 
-    await asyncio.sleep(1)  # let some time pass so the checks can actually run
+    # Wait for the loop to run more than once.
+    @wait_for_condition()
+    async def loop_ran_more_than_once() -> bool:
+        return model._health_checks > 1
 
-    assert (
-        model._health_checks > 1
-    )  # ensure the loop has been run more than once
+    await loop_ran_more_than_once()
 
     # The model isn't starting yet. That means we don't set a health status
-    assert model.health_status == ""
+    assert model.health.status == ""
     assert "inactive" in model.status
 
     # Phase 2: expose an endpoint so that the health check starts running
     model.process_status = "running"
-    model.endpoint = "http://"  # expose a dummy endpoint to trigger the check
+    model.endpoint = openai_server.endpoint
     await has_health_status(model, "healthy")
     assert model.status == {"running", "healthy", "active"}
 
@@ -74,7 +78,7 @@ async def test_monitor_health_updates_model_status_completion():
     assert model.status == {"running", "healthy", "active"}
 
     # Phase 5: model check fails with an exception
-    async def health_exception():
+    async def health_exception() -> None:
         raise Exception()
 
     model._check_health = health_exception
@@ -97,9 +101,13 @@ def fast_model() -> Model:
     model.quick_check_interval = 0.01
     model.health_check_timeout = 0.01
     model._check_quick_health = AsyncMock(
-        return_value={"quick-health-check": ""}
+        return_value=HealthCheckResult.passed()
     )
-    model._check_health = AsyncMock(return_value={"completion": ""})
+
+    async def deep_ok() -> None:
+        model.health.completion.record(HealthCheckResult.passed())
+
+    model._check_health = deep_ok
     model.process_status = "running"
     model.endpoint = "http://"
     return model
@@ -121,19 +129,19 @@ async def test_monitor_health_quick_check_failure_is_unhealthy(
         await has_health_status(fast_model, "healthy")
 
         fast_model._check_quick_health = AsyncMock(
-            return_value={"quick-health-check": "connection refused"}
+            return_value=HealthCheckResult.failed("connection refused")
         )
         await has_health_status(fast_model, "unhealthy")
-        assert fast_model.health_checks == {
-            "quick-health-check": "connection refused",
-            "completion": "",
-        }
+        assert fast_model.health.quick_health_check.failure_message == (
+            "connection refused"
+        )
+        assert fast_model.health.completion.ok
 
 
 async def test_monitor_health_runs_deep_check_once_per_interval(
     fast_model: Model,
 ):
-    deep_check = AsyncMock(return_value={"completion": ""})
+    deep_check = AsyncMock(return_value=None)
     fast_model._check_health = deep_check
     async with monitoring(fast_model):
         await has_health_status(fast_model, "healthy")
@@ -147,15 +155,20 @@ async def test_monitor_health_runs_deep_check_once_per_interval(
 async def test_monitor_health_keeps_deep_check_result_between_runs(
     fast_model: Model,
 ):
-    deep_check = AsyncMock(return_value={"completion": "HTTP 500"})
+    async def deep_fails() -> None:
+        fast_model.health.completion.record(
+            HealthCheckResult.failed("HTTP 500")
+        )
+
+    deep_check = AsyncMock(side_effect=deep_fails)
     fast_model._check_health = deep_check
     async with monitoring(fast_model):
         await has_health_status(fast_model, "unhealthy")
         # Quick checks keep passing, but the failed deep check must keep the
         # model unhealthy until the next deep check.
         await asyncio.sleep(0.2)
-        assert fast_model.health_status == "unhealthy"
-        assert fast_model.health_checks["completion"] == "HTTP 500"
+        assert fast_model.health.status == "unhealthy"
+        assert fast_model.health.completion.failure_message == "HTTP 500"
 
     deep_check.assert_awaited_once()
 
@@ -163,17 +176,15 @@ async def test_monitor_health_keeps_deep_check_result_between_runs(
 async def test_monitor_health_does_not_increase_deep_check_frequency_after_exception(
     fast_model: Model,
 ):
-    deep_check = AsyncMock(side_effect=[Exception("boom"), {"completion": ""}])
+    deep_check = AsyncMock(side_effect=[Exception("boom"), None])
     fast_model._check_health = deep_check
     async with monitoring(fast_model):
         await asyncio.sleep(1)
     assert deep_check.await_count == 1
     assert fast_model._health_checks > 4
     # The failure marker is kept
-    assert fast_model.health_checks == {
-        "deep-check-failure": "boom",
-        "quick-health-check": "",
-    }
+    assert fast_model.health.deep_check_failure.failure_message == "boom"
+    assert fast_model.health.quick_health_check.ok
 
 
 async def test_monitor_health_resets_status_without_endpoint(
@@ -193,15 +204,19 @@ async def test_check_quick_health(openai_server: OpenAIServerMock):
         lambda: None,
     )
     model.endpoint = openai_server.endpoint
-    assert await model._check_quick_health() == {"quick-health-check": ""}
+    result = await model._check_quick_health()
+    assert result.ok
+    assert result.failure_message == ""
 
     openai_server.response_status = 503
     result = await model._check_quick_health()
-    assert result["quick-health-check"].startswith("503: ")
+    assert not result.ok
+    assert result.failure_message.startswith("503: ")
 
     model.endpoint = "http://127.0.0.1:1"
     result = await model._check_quick_health()
-    assert result["quick-health-check"]
+    assert not result.ok
+    assert result.failure_message
 
 
 async def test_health_check_embeddings(openai_server: OpenAIServerMock):
@@ -227,19 +242,21 @@ async def test_health_check_embeddings(openai_server: OpenAIServerMock):
     }
 
     # 1. No verification data -> embedding ok, numerical warns
-    result = await model._check_embedding_health()
-    assert result["embedding"] == ""
-    assert result["numerical"] == "no reference data"
+    await model._check_embedding_health()
+    assert model.health.embedding.has_run and model.health.embedding.ok
+    assert model.health.numerical.has_run
+    assert model.health.numerical.failure_message == "no reference data"
 
     # 2. With verification data, correct embedding -> all ok
     model.verification_data = {"test input": expected_embedding}
-    result = await model._check_embedding_health()
-    assert not any(result.values())
+    await model._check_embedding_health()
+    assert not model.health.has_failures()
     assert openai_server.last_request_json["input"] == ["test input"]
 
     # 3. Wrong embedding -> numerical fails
     openai_server.response["data"][0]["embedding"] = [0.9, 0.9, 0.9]
-    assert any((await model._check_embedding_health()).values())
+    await model._check_embedding_health()
+    assert model.health.has_failures()
 
 
 async def test_health_check_completions(openai_server: OpenAIServerMock):
@@ -256,20 +273,18 @@ async def test_health_check_completions(openai_server: OpenAIServerMock):
 
     # 2. Simulate correct response -> healthy
     openai_server.response = {}
-    assert not any((await model._check_completion_health()).values())
+    assert (await model._check_completion_health()).ok
     assert openai_server.last_request_json["prompt"] == "2+2="
 
     # 2. Simulate wrong response -> unhealthy
     openai_server.response_status = 500
-    assert any((await model._check_completion_health()).values())
+    assert not (await model._check_completion_health()).ok
     assert openai_server.last_request_json["prompt"] == "2+2="
 
 
 async def test_health_check_streaming_tool_call_check_live(gemma: Model):
     await gemma.start()
-    assert not any(
-        (await gemma._check_completion_streaming_tool_call_health()).values()
-    )
+    assert (await gemma._check_completion_streaming_tool_call_health()).ok
 
 
 async def test_health_check_streaming_tool_call_check_offline():
@@ -283,9 +298,8 @@ async def test_health_check_streaming_tool_call_check_offline():
         lambda: None,
     )
     model.endpoint = "http://localhost:9000"
-    assert {
-        "completion_tool_call": "Error connecting: Connection error."
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert check.failure_message == "Error connecting: Connection error."
 
 
 async def test_health_check_streaming_tool_call_check_mocked(
@@ -325,32 +339,34 @@ async def test_health_check_streaming_tool_call_check_mocked(
     choice.message.tool_calls = []
     final.choices = [choice]
     # no tool calls returned
-    assert {
-        "completion_tool_call": "No tool calls found",
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert check.failure_message == "No tool calls found"
 
     # tool call without id returned
     call = Mock()
     call.id = None
     choice.message.tool_calls = [call]
-    assert {
-        "completion_tool_call": "Missing tool call ID in tool call #0: None",
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert check.failure_message == "Missing tool call ID in tool call #0: None"
 
     # no function name
     call.id = "1234"
     call.function.name = None
-    assert {
-        "completion_tool_call": "Missing tool function name in tool call #0: None",
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert (
+        check.failure_message
+        == "Missing tool function name in tool call #0: None"
+    )
 
     # incorrect json args
     call.id = "1234"
     call.function.name = "Asdf"
     call.function.arguments = r'{"object": 123'
-    assert {
-        "completion_tool_call": "Invalid argument JSON in tool call #0: '{\"object\": 123'",
-    } == await model._check_completion_streaming_tool_call_health()
+    check = await model._check_completion_streaming_tool_call_health()
+    assert (
+        check.failure_message
+        == "Invalid argument JSON in tool call #0: '{\"object\": 123'"
+    )
 
 
 def make_mock_process(returncode: int = -9) -> Mock:

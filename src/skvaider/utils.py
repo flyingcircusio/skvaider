@@ -2,8 +2,8 @@ import asyncio
 import datetime
 import re
 import unicodedata
-from collections.abc import Callable, Coroutine
-from typing import Any, Literal, TypeVar, TypeVarTuple
+from collections.abc import Callable, Coroutine, Iterator
+from typing import Any, Literal, TypeVar, TypeVarTuple, cast
 
 import httpx
 import structlog.stdlib
@@ -184,6 +184,152 @@ class RequestModel[ResponseModelT: ResponseModel](BaseModel):
     request_method: RequestMethod = Field(default="get", exclude=True)
     request_path: str = Field(exclude=True)
     response_model: type[ResponseModelT] = Field(exclude=True)
+
+
+class HealthCheckResult(BaseModel):
+    """Outcome of a single health check, including its recent history.
+
+    ``ok`` is the current verdict. ``checked_at`` is when the check last
+    ran (``None`` until it ran once). ``failure_message`` describes the
+    most recent failure, ``failed_at`` when that failure started and
+    ``recovered_at`` when the check recovered from it -- all three are
+    kept after a recovery so the history of a flapping check stays
+    visible. ``consecutive_failures`` counts the current streak (0 while
+    the check passes).
+
+    :meth:`record` folds a fresh verdict into the result and keeps that
+    history.
+    """
+
+    ok: bool = True
+    failure_message: str = ""
+    checked_at: datetime.datetime | None = None
+    failed_at: datetime.datetime | None = None
+    recovered_at: datetime.datetime | None = None
+    consecutive_failures: int = 0
+
+    @property
+    def has_run(self) -> bool:
+        return self.checked_at is not None
+
+    @classmethod
+    def passed(cls) -> "HealthCheckResult":
+        return cls()
+
+    @classmethod
+    def failed(cls, message: str) -> "HealthCheckResult":
+        return cls(ok=False, failure_message=message)
+
+    def record(
+        self, fresh: "HealthCheckResult", now: datetime.datetime | None = None
+    ) -> None:
+        """Fold ``fresh`` into this result, keeping the history."""
+        now = now or datetime.datetime.now(tz=datetime.UTC)
+        was_failing = self.has_run and not self.ok
+        self.checked_at = now
+        if fresh.ok:
+            self.ok = True
+            self.consecutive_failures = 0
+            if was_failing:
+                self.recovered_at = now
+            return
+        self.ok = False
+        self.failure_message = fresh.failure_message
+        if was_failing:
+            self.consecutive_failures += 1
+        else:
+            self.failed_at = now
+            self.consecutive_failures = 1
+
+    def clear(self) -> None:
+        """Forget the result and its history, as if the check never ran."""
+        self.ok = True
+        self.failure_message = ""
+        self.checked_at = None
+        self.failed_at = None
+        self.recovered_at = None
+        self.consecutive_failures = 0
+
+
+class ModelHealth(BaseModel):
+    """Health state of an inference model.
+
+    Every check is a typed attribute; a check that has not run yet (see
+    :attr:`HealthCheckResult.has_run`) or does not apply to the model's
+    task does not count. The overall ``status`` is derived from the checks
+    that ran. Checks fold their verdicts in through
+    :meth:`HealthCheckResult.record`, which keeps their history.
+    """
+
+    status: Literal["healthy", "unhealthy", ""] = ""
+    status_changed_at: datetime.datetime | None = None
+
+    quick_health_check: HealthCheckResult = Field(
+        default_factory=HealthCheckResult
+    )
+    deep_check_failure: HealthCheckResult = Field(
+        default_factory=HealthCheckResult
+    )
+    completion: HealthCheckResult = Field(default_factory=HealthCheckResult)
+    completion_tool_call: HealthCheckResult = Field(
+        default_factory=HealthCheckResult
+    )
+    completion_with_image_input: HealthCheckResult = Field(
+        default_factory=HealthCheckResult
+    )
+    embedding: HealthCheckResult = Field(default_factory=HealthCheckResult)
+    numerical: HealthCheckResult = Field(default_factory=HealthCheckResult)
+
+    @classmethod
+    def check_names(cls) -> tuple[str, ...]:
+        """Names of the check attributes, derived from the schema."""
+        return tuple(
+            name
+            for name in cls.model_fields
+            if name not in ("status", "status_changed_at")
+        )
+
+    def present_checks(self) -> Iterator[tuple[str, HealthCheckResult]]:
+        """Yield the name and result of every check that has run."""
+        for name in self.check_names():
+            check = cast(HealthCheckResult, getattr(self, name))
+            if check.has_run:
+                yield name, check
+
+    def has_failures(self) -> bool:
+        return any(not check.ok for _, check in self.present_checks())
+
+    def update_status(self, now: datetime.datetime | None = None) -> bool:
+        """Re-derive the status from the present checks.
+
+        Returns True when the status changed (``status_changed_at`` is
+        updated in that case).
+        """
+        now = now or datetime.datetime.now(tz=datetime.UTC)
+        present = False
+        failures = False
+        for _, check in self.present_checks():
+            present = True
+            if not check.ok:
+                failures = True
+        if not present:
+            new_status: Literal["healthy", "unhealthy", ""] = ""
+        elif failures:
+            new_status = "unhealthy"
+        else:
+            new_status = "healthy"
+        changed = new_status != self.status
+        self.status = new_status
+        if changed:
+            self.status_changed_at = now
+        return changed
+
+    def reset(self, now: datetime.datetime | None = None) -> None:
+        """Drop all checks and the status, e.g. when the process stops."""
+        for name in self.check_names():
+            cast(HealthCheckResult, getattr(self, name)).clear()
+        self.status = ""
+        self.status_changed_at = now or datetime.datetime.now(tz=datetime.UTC)
 
 
 class ModelAPI:

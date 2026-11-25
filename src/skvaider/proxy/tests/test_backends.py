@@ -1,3 +1,4 @@
+import datetime
 from collections.abc import Callable
 from unittest.mock import AsyncMock
 
@@ -12,7 +13,7 @@ from skvaider.proxy.backends import (
 )
 from skvaider.proxy.models import AIModel
 from skvaider.proxy.pool import Pool
-from skvaider.utils import TaskManager
+from skvaider.utils import HealthCheckResult, ModelHealth, TaskManager
 
 
 def _pool_with_backend(
@@ -103,13 +104,19 @@ async def test_stale_manifest_without_map_data_skips_serialization(
     backend.backend_api.assert_not_called()
 
 
+def checked(result: HealthCheckResult) -> HealthCheckResult:
+    """Mark a result as recorded, so the proxy sees the check as present."""
+    now = datetime.datetime.now(tz=datetime.UTC)
+    return result.model_copy(update={"checked_at": now})
+
+
 @pytest.fixture
 def health_response_factory():
     def factory(
         *,
         status: set[str] | None = None,
         ram: int = 100,
-        health_checks: dict[str, str] | None = None,
+        health: ModelHealth | None = None,
     ) -> BackendHealthResponse:
         return BackendHealthResponse(
             status="ok",
@@ -121,7 +128,7 @@ def health_response_factory():
                     status=status if status is not None else {"active"},
                     max_requests=1,
                     memory_usage={"ram": ram},
-                    health_checks=health_checks or {},
+                    health=health or ModelHealth(),
                 )
             ],
         )
@@ -138,7 +145,10 @@ async def test_update_health_records_named_checks(
     pool = _pool_with_backend(backend, task_managers)
     backend.backend_api = AsyncMock(
         return_value=health_response_factory(
-            health_checks={"embedding": "", "completion": "timeout"}
+            health=ModelHealth(
+                embedding=checked(HealthCheckResult.passed()),
+                completion=checked(HealthCheckResult.failed("timeout")),
+            )
         )
     )
 
@@ -147,8 +157,8 @@ async def test_update_health_records_named_checks(
     checks = pool.backends[0].models["m1"].checks
     assert [(c.name, c.status, c.message) for c in checks] == [
         ("memory", "ok", "ok"),
-        ("embedding", "ok", "ok"),
         ("completion", "critical", "timeout"),
+        ("embedding", "ok", "ok"),
     ]
 
 
@@ -181,7 +191,9 @@ async def test_update_health_skips_functional_checks_when_not_loaded(
     backend.backend_api = AsyncMock(
         return_value=health_response_factory(
             status={"inactive", "stopped"},
-            health_checks={"completion": "timeout"},
+            health=ModelHealth(
+                completion=checked(HealthCheckResult.failed("timeout"))
+            ),
         )
     )
 

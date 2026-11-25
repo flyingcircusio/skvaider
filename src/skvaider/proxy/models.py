@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 from typing import Any, Literal
 
 import structlog
@@ -20,6 +21,13 @@ class CheckResult(BaseModel):
     name: str
     status: Status
     message: str
+    # When the underlying check was last performed and, for a failed check,
+    # when the current failure streak started and how many consecutive
+    # checks have failed.
+    checked_at: datetime.datetime | None = None
+    failed_at: datetime.datetime | None = None
+    recovered_at: datetime.datetime | None = None
+    consecutive_failures: int = 0
 
     children: list["CheckResult"] = Field(default_factory=list)
 
